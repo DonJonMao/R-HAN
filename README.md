@@ -1,0 +1,128 @@
+# MAS-GFlowOpt (Trainable)
+
+## 1. 现在已实现的“真实可训练”目标
+
+### 1.0 问题条件化 + 子集选择（已实现）
+- 输入问题文本 `question_text`，编码为问题向量 `q`。
+- 先做轻量 gating：`score(agent_i | q)`，选 top-k agent 子集后再交给 GFlowNet。
+- gating 基于“相关性 + q条件互补性 + 多样性”的确定性贪心选择。
+- 额外加入可学习二阶打分器（按问题隔离的在线更新），建模 agent 组合交互价值。
+- 同一套 GFlowNet 参数共享，不同 `q` 会产生不同策略分布（任务个性化）。
+
+### 1.1 GFlowNet 主损失（已实现）
+- **Detailed-Balance loss**（论文 Eq.(4) 风格）  
+  基于转移 `G_t -> G_{t+1}` 计算：
+  - `log R(G_t), log R(G_{t+1})`
+  - `log P_F(G_{t+1}|G_t)`
+  - `log P_F(stop|G_t), log P_F(stop|G_{t+1})`
+  - 固定 backward policy `log P_B(G_t|G_{t+1}) = -log |E_{t+1}|`
+- 使用手写梯度对策略参数（`w_src, w_dst, w_stop, b_edge, b_stop`）更新。
+- 边动作策略显式引入全局上下文 `z`（`w_edge_ctx · z`），不再只靠 `(src,dst)` 偏好。
+- 并注入问题向量 `q`（例如 `q⊙src`、`q⊙dst`、`q⊙z` 特征），实现任务条件化策略。
+
+### 1.2 对比损失（已实现）
+- **NT-Xent 风格 Contrastive loss**：使用轨迹相邻状态 `(z_t, z_{t+1})` 作为正样本，其余样本作为负样本。
+- 使用可训练投影头 `proj_w` 优化对比目标。
+
+### 1.3 代理模型损失（已实现）
+- `ProxyModel` 从线性占位升级为 **MLP**。
+- 训练目标：
+  - `MSE(S(z), R(G))`
+  - `Pairwise ranking hinge loss`（保持高奖励样本在预测上更高）
+- 支持对 `z` 的梯度上升 `z <- z + eta * dS/dz`。
+
+---
+
+## 2. 奖励函数（已实现，可直接接真实 MAS）
+
+`reward.py` 中实现了组合奖励：
+
+- `BIC term`: `tanh(BIC / scale)`
+- `Task utility`: 来自 MAS 完整任务执行结果（成功率、任务分、延迟、token 成本、安全惩罚的加权组合）
+- `Contribution term`: 智能体贡献项（见下节）
+- `Question alignment term`: 问题与已选 agent 子集的对齐项
+- `Size penalty term`: 规模惩罚（关键角色豁免 + 分段惩罚）
+- 最终：
+  - `total_score = w_task*task_utility + w_bic*bic_term + w_contrib*contribution_term + w_q*question_align - lambda*active_agent_count`
+  - `R(G) = exp(temperature * total_score)`（带数值裁剪）
+- 代价控制：
+  - 支持稀疏真评估（`interval / budget / terminal-always`）
+  - 非真评估步骤优先走缓存/快层信号，避免每步都跑昂贵 MAS 消融
+  - 真值缓存键包含：问题签名 + 节点身份映射 + 具名边，避免子集/顺序变化时错配复用
+
+---
+
+## 3. 智能体贡献评测（已实现）
+
+`MASRewardModel.estimate_agent_contributions(...)` 支持：
+
+1. `loo`（默认）：  
+   `contrib_i = U(full) - U(without i)`
+2. `shapley`（近似）：  
+   Monte Carlo permutation 估计边际贡献。
+
+你只需要提供一个实现 `MASTaskEvaluator` 协议的评测器：
+
+```python
+class MyEvaluator(MASTaskEvaluator):
+    def evaluate(self, dag: DAGState, active_agent_ids=None, question_text=None, question_vector=None) -> TaskEvaluation:
+        # 运行一次真实 MAS 任务，返回指标
+        return TaskEvaluation(...)
+```
+
+框架会自动在奖励里使用该评测器并做贡献分解。
+
+---
+
+## 4. 训练入口
+
+- 仅采样+优化（不训练）：
+```bash
+python3 demo_run.py
+```
+
+- 训练后再优化（含 DB+CL+Proxy）：
+```bash
+python3 demo_train.py
+```
+
+`pipeline.py` 入口：
+
+- `MASGFlowPipeline.train(evaluator=...)`
+- `MASGFlowPipeline.run(evaluator=...)`
+- `MASGFlowPipeline.train_and_run(evaluator=...)`
+- 这些入口均支持 `question_text` 和 `agent_top_k`。
+- gating 更新默认 `train_only`（`run` 默认不更新），降低跨任务漂移。
+
+示例：
+```python
+history, out = pipeline.train_and_run(
+    evaluator=my_evaluator,
+    question_text="Design a medically safe and cost-aware diagnosis workflow.",
+    agent_top_k=4,
+)
+```
+- 精修目标支持：
+  - `refine_objective="bic"`：只看 BIC
+  - `refine_objective="composite"`：与训练一致（任务+贡献+BIC）
+
+---
+
+## 5. 关键文件
+
+- `mas_gflowopt/reward.py`: 奖励函数 + 贡献评测（LOO/Shapley）
+- `mas_gflowopt/gflownet.py`: 可训练 GFlowNet（DB loss + CL loss）
+- `mas_gflowopt/conditioning.py`: 问题向量编码 + agent subset gating
+- `mas_gflowopt/proxy.py`: MLP 代理模型（MSE + ranking）
+- `mas_gflowopt/scoring.py`: 占位 BIC + 离散数据真实 BIC (`DiscreteDataBICScorer`)
+- `mas_gflowopt/pipeline.py`: train/run/train_and_run
+- `mas_gflowopt/optimizer.py`: 复合目标精修 / BIC 精修切换
+
+---
+
+## 6. 你接入真实系统时需要替换/填充
+
+1. `MASTaskEvaluator.evaluate()`：接你的大模型编排与任务执行。  
+2. `DiscreteDataBICScorer` 数据输入：填入真实离散数据（或替换成你的评分器）。  
+3. `agent_pool` 的 profile/prompt/metadata：替换为你的正式智能体配置。  
+4. 如需更强表达能力，可把 `representation.py` 换成真实 GNN/Transformer encoder（当前可直接跑通）。  
