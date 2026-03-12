@@ -153,6 +153,10 @@ class MASConfig:
     gflownet_batch_size: int = 16
     gflownet_lr: float = 0.02
     gflownet_weight_decay: float = 1e-4
+    early_stop_metric: str = "mean_total_score"  # "mean_total_score" | "mean_reward" | "total_loss"
+    early_stop_patience: int = 0
+    early_stop_min_delta: float = 0.0
+    early_stop_warmup_epochs: int = 0
     # GFlowNet losses
     loss_db_weight: float = 1.0
     loss_cl_weight: float = 0.1
@@ -197,6 +201,7 @@ class MASConfig:
     gflownet_action_space: str = "edge_add"  # "edge_add" | "extended"
     # Refinement objective
     refine_objective: str = "composite"  # "bic" | "composite" | "auto"
+    enable_refine: bool = True
     # Task conditioning / subset selection
     enable_task_conditioning: bool = True
     enable_subset_selection: bool = True

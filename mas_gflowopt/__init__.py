@@ -11,6 +11,7 @@ This package provides an end-to-end pipeline with replaceable interfaces:
 from .agent_pool import AgentPool, default_agent_pool
 from .conditioning import TaskConditioner
 from .evaluators import (
+    BatchLLMExecutionMASTaskEvaluator,
     HeuristicEvaluatorConfig,
     HeuristicMASTaskEvaluator,
     LLMExecutionConfig,
@@ -28,6 +29,7 @@ __all__ = [
     "BICScorer",
     "DiscreteDataBICScorer",
     "GFlowNetTrainingStats",
+    "BatchLLMExecutionMASTaskEvaluator",
     "HeuristicEvaluatorConfig",
     "HeuristicMASTaskEvaluator",
     "LLMExecutionConfig",

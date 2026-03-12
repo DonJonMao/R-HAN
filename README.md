@@ -1,4 +1,72 @@
-# MAS-GFlowOpt (Trainable)
+# R-HAN
+
+当前仓库维护两条 MAS 架构搜索路线：
+
+- 旧路线：`mas_gflowopt/`
+  以 GFlowNet + proxy + refine 为主，保留用于对照与历史复现。
+- 新路线：`mas_treesearch/`
+  以 tree search + 多层评估 + 轻量 prompt 搜索为主，目标是显著减少与真实 LLM 的重复交互成本。
+
+目录归类：
+
+- 旧栈运行入口：`runners/mas_gflowopt/`
+- 新栈运行入口：`runners/mas_treesearch/`
+- 旧栈测试：`tests/mas_gflowopt/`
+- 新栈测试：`tests/mas_treesearch/`
+
+## 后续更新约定
+
+后续优化优先沿 `mas_treesearch/` 这条主线推进，推荐按下面顺序迭代：
+
+1. 数据集拆分
+   - 不再默认把所有数据集混合打乱统一训练。
+   - 优先采用“每个数据集单独 train / 单独 test”的方式。
+   - 统一从 `dataset/unified_mixed/` 派生出按数据集拆分的副本，原始数据保留不动。
+
+2. 数据标准化
+   - 每个数据集保留标准化后的 `question / answer / metadata`。
+   - 在标准化阶段显式写入：
+     - `mas_dataset_name`
+     - `mas_task_type`
+     - `mas_answer_format`
+     - `mas_root_templates`
+   - 让执行器、评测器、搜索器都直接消费这些字段，而不是每次临时猜题型。
+
+3. 数据集 profile 驱动搜索
+   - 不同数据集允许使用不同的：
+     - root templates
+     - 默认 prompt 槽位
+     - 输出格式约束
+     - reward 细则
+   - 当前已接入 profile 机制，后续新增数据集时，优先补 `mas_treesearch/profiles.py`。
+
+4. 先做软定制，再做硬定制
+   - 第一阶段先用 dataset-specific profile 调整搜索偏置。
+   - 第二阶段再按收益增量引入 dataset-specific operator。
+   - 推荐优先级：
+     - `mmlu / mmlu_pro`: `option_compare`, `option_eliminate`, `abstain_check`
+     - `normad`: `judge_binary`
+     - `knowledge_crosswords`: `fill_blanks_json`, `slotwise_verify`
+
+5. 训练与测试分离
+   - 训练阶段允许更新 `LearnableEditPrior / LearnableValueModel`。
+   - 测试阶段复用训练后的在线模型，但禁止继续学习，避免 test leakage。
+
+6. 控制真实 LLM 成本
+   - 优先复用 embedding / chat cache。
+   - 优先做单阶段搜索，而不是“训练一次再完整重复执行一次”。
+   - 新功能接入时，先问两个问题：
+     - 会不会增加重复 LLM 调用？
+     - 能不能通过缓存、低保真评估或结构约束减少调用？
+
+7. 新功能落地方式
+   - 优先先加最小可用框架，不先铺完整实验。
+   - 每次新增能力后，至少补：
+     - 一个小规模真实模型回归测试
+     - 一个轻量单元测试
+     - README 中的使用说明和后续优化建议
+
+## MAS-GFlowOpt (Trainable)
 
 ## 1. 现在已实现的“真实可训练”目标
 

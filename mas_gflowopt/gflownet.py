@@ -608,6 +608,8 @@ class GFlowNetSampler:
         batch_size = batch_size if batch_size is not None else self.config.gflownet_batch_size
 
         history: List[GFlowNetTrainingStats] = []
+        best_metric: Optional[float] = None
+        no_improve = 0
         for ep in range(1, epochs + 1):
             transitions: List[_TransitionRecord] = []
             batch_samples: List[SampledDAG] = []
@@ -675,5 +677,33 @@ class GFlowNetSampler:
                     task_tag=task_tag,
                 )
             )
+
+            metric_name = self.config.early_stop_metric.lower()
+            if metric_name == "total_loss":
+                metric_value = total_loss
+                maximize = False
+            elif metric_name == "mean_reward":
+                metric_value = mean_reward
+                maximize = True
+            else:
+                metric_value = mean_total_score
+                maximize = True
+
+            patience = max(0, int(self.config.early_stop_patience))
+            warmup = max(0, int(self.config.early_stop_warmup_epochs))
+            min_delta = max(0.0, float(self.config.early_stop_min_delta))
+            if patience > 0 and ep >= warmup:
+                if best_metric is None:
+                    best_metric = metric_value
+                    no_improve = 0
+                else:
+                    improved = metric_value > best_metric + min_delta if maximize else metric_value < best_metric - min_delta
+                    if improved:
+                        best_metric = metric_value
+                        no_improve = 0
+                    else:
+                        no_improve += 1
+                if no_improve >= patience:
+                    break
 
         return history

@@ -4,6 +4,7 @@ import json
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
@@ -417,6 +418,8 @@ class LLMExecutionConfig:
     judge_max_tokens: int = 256
     token_cost_per_word: float = 0.00001
     success_threshold: float = 0.6
+    verbose: bool = False
+    batch_max_workers: int = 4
 
 
 class LLMExecutionMASTaskEvaluator:
@@ -525,10 +528,12 @@ class LLMExecutionMASTaskEvaluator:
         start = time.perf_counter()
         outputs: Dict[str, str] = {}
         total_words = 0
-        for aid in order:
+        for idx, aid in enumerate(order, start=1):
             agent = self._agent_by_id.get(aid)
             if agent is None:
                 continue
+            if self.config.verbose:
+                print(f"[llm_exec] start agent {idx}/{len(order)} {aid}", flush=True)
             upstream_ids = incoming.get(aid, [])
             upstream_text = "\n".join(
                 f"{uid}: {outputs.get(uid,'')}" for uid in upstream_ids if outputs.get(uid, "")
@@ -548,6 +553,8 @@ class LLMExecutionMASTaskEvaluator:
             )
             outputs[aid] = content
             total_words += len(content.split())
+            if self.config.verbose:
+                print(f"[llm_exec] done agent {idx}/{len(order)} {aid} words={len(content.split())}", flush=True)
 
         sinks = [aid for aid in order if not any(aid in incoming.get(x, []) for x in order)]
         final_output = "\n".join(outputs.get(aid, "") for aid in sinks if outputs.get(aid, ""))
@@ -557,12 +564,16 @@ class LLMExecutionMASTaskEvaluator:
             "task_score(0-1), success(0或1), safety_penalty(0-1)。"
         )
         judge_input = f"任务：{question_text or ''}\n输出：\n{final_output}"
+        if self.config.verbose:
+            print("[llm_exec] start judge", flush=True)
         judge_text = self._post_chat(
             messages=[{"role": "system", "content": judge_prompt}, {"role": "user", "content": judge_input}],
             model=judge_model,
             temperature=self.config.judge_temperature,
             max_tokens=self.config.judge_max_tokens,
         )
+        if self.config.verbose:
+            print("[llm_exec] done judge", flush=True)
         parsed = self._safe_json(judge_text) or {}
         task_score = float(parsed.get("task_score", 0.0))
         safety_penalty = float(parsed.get("safety_penalty", 0.0))
@@ -591,3 +602,55 @@ class LLMExecutionMASTaskEvaluator:
                 "output_words": float(total_words),
             },
         )
+
+
+class BatchLLMExecutionMASTaskEvaluator(LLMExecutionMASTaskEvaluator):
+    def __init__(
+        self,
+        agent_pool: Optional[AgentPool] = None,
+        config: Optional[LLMExecutionConfig] = None,
+        max_workers: Optional[int] = None,
+    ):
+        super().__init__(agent_pool=agent_pool, config=config)
+        if max_workers is not None:
+            self.config.batch_max_workers = max(1, int(max_workers))
+
+    def _normalize_list(self, values, size: int):
+        if values is None:
+            return [None] * size
+        if len(values) != size:
+            raise ValueError("Batch inputs must match dags length.")
+        return list(values)
+
+    def evaluate_batch(
+        self,
+        dags: Sequence[DAGState],
+        active_agent_ids_list: Optional[Sequence[Optional[Sequence[str]]]] = None,
+        question_texts: Optional[Sequence[Optional[str]]] = None,
+        question_vectors: Optional[Sequence[Optional[List[float]]]] = None,
+    ) -> List[TaskEvaluation]:
+        size = len(dags)
+        if size == 0:
+            return []
+        active_list = self._normalize_list(active_agent_ids_list, size)
+        text_list = self._normalize_list(question_texts, size)
+        vector_list = self._normalize_list(question_vectors, size)
+
+        def _eval_one(idx: int) -> TaskEvaluation:
+            return self.evaluate(
+                dags[idx],
+                active_agent_ids=active_list[idx],
+                question_text=text_list[idx],
+                question_vector=vector_list[idx],
+            )
+
+        max_workers = max(1, int(self.config.batch_max_workers))
+        if max_workers == 1 or size == 1:
+            return [_eval_one(i) for i in range(size)]
+
+        results: List[Optional[TaskEvaluation]] = [None] * size
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_eval_one, i): i for i in range(size)}
+            for future, idx in futures.items():
+                results[idx] = future.result()
+        return [r for r in results if r is not None]

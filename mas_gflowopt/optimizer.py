@@ -73,6 +73,19 @@ class ContinuousDiscreteOptimizer:
 
         matched = match_nearest_dag(z_best_star, sampled_dags)
 
+        if not self.config.enable_refine:
+            refined = matched
+            refined_score = self.scorer.score(matched)
+            return OptimizationOutput(
+                sampled_dags=sampled_dags,
+                cluster_seeds=cluster_seeds,
+                top_optimized_representations=top,
+                z_best_star=z_best_star,
+                matched_discrete_dag=matched,
+                refined_best_dag=refined,
+                refined_best_score=refined_score,
+            )
+
         refine_mode = self.config.refine_objective.lower()
         use_composite = (
             reward_model is not None

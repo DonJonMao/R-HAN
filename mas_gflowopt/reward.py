@@ -378,6 +378,8 @@ class MASRewardModel:
         cache.values[tuple(sorted(agent_ids))] = full_utility
 
         mode = self.config.contribution_mode.lower()
+        if mode in {"none", "off", "disabled"}:
+            return {}
         if mode == "shapley":
             return self._shapley_contributions(
                 evaluator,
