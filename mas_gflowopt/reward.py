@@ -476,6 +476,7 @@ class MASRewardModel:
                 task_utility=task_utility,
                 task_score=task_score,
                 task_success=task_success,
+                task_safety_penalty=cached.task_safety_penalty,
                 contribution_term=cached.contribution_term,
                 total_score=total_score,
                 reward=reward,
@@ -496,6 +497,7 @@ class MASRewardModel:
         task_utility = 0.0
         task_score = 0.0
         task_success = 0.0
+        task_safety_penalty = 0.0
         contributions: Dict[str, float] = {}
         contribution_term = 0.0
         cfg = self.config
@@ -512,6 +514,7 @@ class MASRewardModel:
             task_utility = self.utility(full_eval)
             task_score = full_eval.task_score
             task_success = full_eval.success
+            task_safety_penalty = full_eval.safety_penalty
             did_true_eval = True
             contributions = self.estimate_agent_contributions(
                 dag,
@@ -541,6 +544,7 @@ class MASRewardModel:
                     task_utility = self.utility(full_eval)
                     task_score = full_eval.task_score
                     task_success = full_eval.success
+                    task_safety_penalty = full_eval.safety_penalty
                     did_true_eval = True
                     if cfg.reward_cache_miss_true_eval_contrib:
                         contributions = self.estimate_agent_contributions(
@@ -592,6 +596,7 @@ class MASRewardModel:
             task_utility=task_utility,
             task_score=task_score,
             task_success=task_success,
+            task_safety_penalty=task_safety_penalty,
             contribution_term=contribution_term,
             total_score=total_score,
             reward=reward,

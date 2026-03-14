@@ -58,8 +58,17 @@ class RootTemplateBuilder:
             "router",
         }
 
-    def _pick(self, candidate_ids: Sequence[str], preferred_capabilities: Sequence[str], used: Sequence[str]) -> str:
+    def _pick(
+        self,
+        candidate_ids: Sequence[str],
+        preferred_agent_ids: Sequence[str],
+        preferred_capabilities: Sequence[str],
+        used: Sequence[str],
+    ) -> str:
         by_id = self.agent_pool.by_id()
+        for aid in preferred_agent_ids:
+            if aid in candidate_ids and aid not in used:
+                return aid
         for cap in preferred_capabilities:
             for aid in candidate_ids:
                 if aid in used:
@@ -94,9 +103,25 @@ class RootTemplateBuilder:
             "router": ("routing", "planning"),
         }
         for role in roles:
-            aid = self._pick(selection.candidate_agent_ids, prefs.get(role, ("reasoning",)), used)
+            aid = self._pick(
+                selection.candidate_agent_ids,
+                profile.role_agent_preferences.get(role, ()),
+                prefs.get(role, ("reasoning",)),
+                used,
+            )
             assigned[role] = aid
             used.append(aid)
+        for required_agent_id in profile.required_agent_ids:
+            if required_agent_id in assigned.values() or required_agent_id not in selection.candidate_agent_ids:
+                continue
+            for role in roles:
+                if required_agent_id in profile.role_agent_preferences.get(role, ()):
+                    if self._role_requires_unique_agent(role) and required_agent_id in used:
+                        continue
+                    assigned[role] = required_agent_id
+                    if required_agent_id not in used:
+                        used.append(required_agent_id)
+                    break
         prompts = {role: profile.prompt_for_role(role, PromptSlots()) for role in roles}
         if template == WorkflowTemplate.SOLVE_VERIFY and "verifier" in prompts:
             prompts["verifier"] = prompts["verifier"].with_slot("verification_mode", "strict")
@@ -132,6 +157,8 @@ class TreeSearchEngine:
         self._candidate_agent_ids: List[str] = []
         self._allowed_templates: List[str] = [template.value for template in WorkflowTemplate]
         self._dataset_profile: DatasetProfile = DEFAULT_PROFILE
+        self._prompt_edit_cooldown: int = config.prompt_edit_cooldown
+        self._max_prompt_edits_per_state: int = config.max_prompt_edits_per_state
 
     @staticmethod
     def _role_requires_unique_agent(role: str) -> bool:
@@ -180,8 +207,8 @@ class TreeSearchEngine:
                         continue
                 actions.append(EditAction(kind="swap_agent", payload={"role": role, "agent_id": candidate}))
         if (
-            state.prompt_edit_count < self.config.max_prompt_edits_per_state
-            and state.non_prompt_steps_since_edit >= self.config.prompt_edit_cooldown
+            state.prompt_edit_count < self._max_prompt_edits_per_state
+            and state.non_prompt_steps_since_edit >= self._prompt_edit_cooldown
         ):
             for role, slots in sorted(state.role_to_prompt.items()):
                 for slot_name, values in _PROMPT_SLOT_VALUES.items():
@@ -230,29 +257,24 @@ class TreeSearchEngine:
             return state
         if action.kind == "change_template":
             template = WorkflowTemplate(action.payload["template"])
-            roles = roles_for_template(template)
-            role_to_agent: Dict[str, str] = {}
-            role_to_prompt: Dict[str, PromptSlots] = {}
             current_agents = state.active_agents()
             candidate_pool = current_agents + [aid for aid in self._candidate_agent_ids if aid not in current_agents]
-            used: List[str] = []
-            for idx, role in enumerate(roles):
-                aid = ""
-                for candidate in candidate_pool:
-                    if self._role_requires_unique_agent(role) and candidate in used:
-                        continue
-                    aid = candidate
-                    break
-                if not aid:
-                    aid = candidate_pool[min(idx, len(candidate_pool) - 1)]
-                role_to_agent[role] = aid
-                if aid not in used:
-                    used.append(aid)
-                role_to_prompt[role] = self._dataset_profile.prompt_for_role(role, PromptSlots())
+            builder = RootTemplateBuilder(self.agent_pool)
+            rebuilt = builder.build(
+                AgentSelection(
+                    question_vector=[],
+                    candidate_agent_ids=candidate_pool,
+                    core_agent_ids=[],
+                    explore_agent_ids=[],
+                    scores={},
+                ),
+                template.value,
+                profile=self._dataset_profile,
+            )
             return ArchitectureState(
                 template=template,
-                role_to_agent=role_to_agent,
-                role_to_prompt=role_to_prompt,
+                role_to_agent=rebuilt.role_to_agent,
+                role_to_prompt=rebuilt.role_to_prompt,
                 prompt_edit_count=0,
                 non_prompt_steps_since_edit=state.non_prompt_steps_since_edit + 1,
             )
@@ -324,7 +346,7 @@ class TreeSearchEngine:
         return candidates[-1]
 
     def _evaluate_proxy(self, node: SearchNode, question_vector: Sequence[float]) -> None:
-        proxy = self.proxy_scorer.score(node.compiled, list(question_vector))
+        proxy = self.proxy_scorer.score(node.compiled, list(question_vector), profile=self._dataset_profile)
         score = proxy.score
         uncertainty = proxy.uncertainty
         if self.config.enable_learned_value_model and self.value_model is not None:
@@ -380,6 +402,16 @@ class TreeSearchEngine:
         self._candidate_agent_ids = list(selection.candidate_agent_ids)
         self._dataset_profile = dataset_profile
         self._allowed_templates = list(dataset_profile.allowed_templates or [template.value for template in WorkflowTemplate])
+        self._prompt_edit_cooldown = (
+            dataset_profile.search_overrides.prompt_edit_cooldown or self.config.prompt_edit_cooldown
+        )
+        self._max_prompt_edits_per_state = (
+            dataset_profile.search_overrides.max_prompt_edits_per_state or self.config.max_prompt_edits_per_state
+        )
+        search_iterations = dataset_profile.search_overrides.search_iterations or self.config.search_iterations
+        tier1_fraction = dataset_profile.search_overrides.tier1_top_fraction or self.config.tier1_top_fraction
+        tier2_fraction = dataset_profile.search_overrides.tier2_top_fraction or self.config.tier2_top_fraction
+        final_top_k = dataset_profile.search_overrides.final_top_k or self.config.final_top_k
         builder = RootTemplateBuilder(self.agent_pool)
         root_templates = dataset_profile.root_templates or self.config.root_templates
         for template_name in root_templates:
@@ -390,7 +422,7 @@ class TreeSearchEngine:
             signature = node.compiled.signature()
             self._roots.append(signature)
 
-        for _ in range(self.config.search_iterations):
+        for _ in range(search_iterations):
             parent = self._select_parent()
             parent.unexpanded_actions = self._rank_actions(parent.state, parent.unexpanded_actions, selection.question_vector)
             limit = self._progressive_limit(parent.stats.visits)
@@ -420,7 +452,7 @@ class TreeSearchEngine:
                 expanded.append(child)
                 if action.kind == "stop":
                     break
-            tier1_nodes = self._tier_filter(expanded, self.config.tier1_top_fraction)
+            tier1_nodes = self._tier_filter(expanded, tier1_fraction)
             for node in tier1_nodes:
                 node.tier1 = self.evaluator.evaluate(
                     node.compiled,
@@ -428,12 +460,13 @@ class TreeSearchEngine:
                     tier="tier1",
                     reference_answer=reference_answer,
                     metadata=metadata,
+                    dataset_profile=dataset_profile,
                 )
                 node.stats.tier1_mean = node.tier1.mean_reward
                 for record in self._records:
                     if record.state_signature == node.compiled.signature():
                         record.tier1_score = node.tier1.mean_reward
-            tier2_nodes = self._tier_filter(tier1_nodes, self.config.tier2_top_fraction)
+            tier2_nodes = self._tier_filter(tier1_nodes, tier2_fraction)
             for node in tier2_nodes:
                 node.tier2 = self.evaluator.evaluate(
                     node.compiled,
@@ -441,6 +474,7 @@ class TreeSearchEngine:
                     tier="tier2",
                     reference_answer=reference_answer,
                     metadata=metadata,
+                    dataset_profile=dataset_profile,
                 )
                 node.stats.tier2_mean = node.tier2.mean_reward
                 node.stats.tier2_std = node.tier2.reward_std
@@ -476,7 +510,7 @@ class TreeSearchEngine:
             ),
             reverse=True,
         )
-        finalists = ranked[: max(1, self.config.final_top_k)]
+        finalists = ranked[: max(1, final_top_k)]
         if not finalists:
             finalists = [self._nodes[self._roots[0]]]
         for node in finalists:
@@ -487,6 +521,7 @@ class TreeSearchEngine:
                     tier="tier2",
                     reference_answer=reference_answer,
                     metadata=metadata,
+                    dataset_profile=dataset_profile,
                 )
                 node.stats.tier2_mean = node.tier2.mean_reward
                 node.stats.tier2_std = node.tier2.reward_std

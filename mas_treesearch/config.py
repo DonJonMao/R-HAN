@@ -17,7 +17,10 @@ class ChatConfig:
 
 @dataclass
 class JudgeConfig:
+    api_base: Optional[str] = None
     model: Optional[str] = None
+    api_key: Optional[str] = None
+    timeout_s: float = 60.0
     temperature: float = 0.0
     max_tokens: int = 128
 

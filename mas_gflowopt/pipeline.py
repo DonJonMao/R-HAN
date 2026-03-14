@@ -1,16 +1,25 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Optional
 
 from .agent_pool import AgentPool, default_agent_pool
-from .conditioning import TaskConditioner
+from .conditioning import TaskConditioner, TaskConditioningResult
 from .gflownet import GFlowNetSampler
 from .optimizer import ContinuousDiscreteOptimizer
 from .representation import GraphRepresentationModel
 from .reward import MASTaskEvaluator, MASRewardModel
 from .scoring import BICScorer, ScoreModel
-from .types import GFlowNetTrainingStats, MASConfig, OptimizationOutput
+from .types import GFlowNetTrainingStats, MASConfig, OptimizationOutput, Vector
 from .vectorizer import HashingVectorizer, build_openai_embedding_encoder
+
+
+@dataclass
+class _PreparedRunContext:
+    cond: TaskConditioningResult
+    full_agent_vectors: dict[str, Vector]
+    nodes: list[str]
+    agent_vectors: dict[str, Vector]
 
 
 class MASGFlowPipeline:
@@ -55,6 +64,35 @@ class MASGFlowPipeline:
         self.optimizer = ContinuousDiscreteOptimizer(
             config=self.config,
             scorer=self.scorer,
+        )
+        self._cached_full_agent_vectors: Optional[dict[str, Vector]] = None
+
+    def _full_agent_vectors(self) -> dict[str, Vector]:
+        if self._cached_full_agent_vectors is None:
+            self._cached_full_agent_vectors = self.agent_pool.vectorize(self.vectorizer)
+        return self._cached_full_agent_vectors
+
+    def _prepare_context(
+        self,
+        question_text: Optional[str],
+        agent_top_k: Optional[int],
+    ) -> _PreparedRunContext:
+        q_text = question_text if self.config.enable_task_conditioning else None
+        full_agent_vectors = self._full_agent_vectors()
+        all_nodes = self.agent_pool.as_nodes()
+        cond = self.conditioner.select_agents(
+            question_text=q_text,
+            agent_vectors=full_agent_vectors,
+            agent_ids=all_nodes,
+            top_k=agent_top_k,
+        )
+        nodes = cond.selected_agent_ids
+        agent_vectors = {aid: full_agent_vectors[aid] for aid in nodes}
+        return _PreparedRunContext(
+            cond=cond,
+            full_agent_vectors=full_agent_vectors,
+            nodes=nodes,
+            agent_vectors=agent_vectors,
         )
 
     def _should_update_gating(self, stage: str, evaluator: Optional[MASTaskEvaluator]) -> bool:
@@ -137,33 +175,35 @@ class MASGFlowPipeline:
         agent_top_k: Optional[int] = None,
         task_tag: Optional[str] = None,
     ) -> list[GFlowNetTrainingStats]:
-        q_text = question_text if self.config.enable_task_conditioning else None
-        full_agent_vectors = self.agent_pool.vectorize(self.vectorizer)
-        all_nodes = self.agent_pool.as_nodes()
-        cond = self.conditioner.select_agents(
-            question_text=q_text,
-            agent_vectors=full_agent_vectors,
-            agent_ids=all_nodes,
-            top_k=agent_top_k,
+        prepared = self._prepare_context(question_text=question_text, agent_top_k=agent_top_k)
+        return self._train_prepared(
+            evaluator=evaluator,
+            prepared=prepared,
+            task_tag=task_tag,
         )
-        nodes = cond.selected_agent_ids
-        agent_vectors = {aid: full_agent_vectors[aid] for aid in nodes}
+
+    def _train_prepared(
+        self,
+        evaluator: Optional[MASTaskEvaluator],
+        prepared: _PreparedRunContext,
+        task_tag: Optional[str],
+    ) -> list[GFlowNetTrainingStats]:
         self.sampler.initialize()
         history = self.sampler.train(
-            nodes=nodes,
-            agent_vectors=agent_vectors,
+            nodes=prepared.nodes,
+            agent_vectors=prepared.agent_vectors,
             evaluator=evaluator,
-            question_text=cond.question_text,
-            question_vector=cond.question_vector,
+            question_text=prepared.cond.question_text,
+            question_vector=prepared.cond.question_vector,
             task_tag=task_tag,
         )
         if self._should_update_gating("train", evaluator) and history:
             self.conditioner.update_from_feedback(
-                question_text=cond.question_text,
-                question_vector=cond.question_vector,
-                selected_agent_ids=nodes,
+                question_text=prepared.cond.question_text,
+                question_vector=prepared.cond.question_vector,
+                selected_agent_ids=prepared.nodes,
                 feedback_score=self._feedback_from_history(history),
-                agent_vectors=full_agent_vectors,
+                agent_vectors=prepared.full_agent_vectors,
             )
         return history
 
@@ -174,44 +214,45 @@ class MASGFlowPipeline:
         agent_top_k: Optional[int] = None,
         task_tag: Optional[str] = None,
     ) -> OptimizationOutput:
-        q_text = question_text if self.config.enable_task_conditioning else None
-        full_agent_vectors = self.agent_pool.vectorize(self.vectorizer)
-        all_nodes = self.agent_pool.as_nodes()
-        cond = self.conditioner.select_agents(
-            question_text=q_text,
-            agent_vectors=full_agent_vectors,
-            agent_ids=all_nodes,
-            top_k=agent_top_k,
+        prepared = self._prepare_context(question_text=question_text, agent_top_k=agent_top_k)
+        return self._run_prepared(
+            evaluator=evaluator,
+            prepared=prepared,
+            task_tag=task_tag,
         )
-        nodes = cond.selected_agent_ids
-        agent_vectors = {aid: full_agent_vectors[aid] for aid in nodes}
 
+    def _run_prepared(
+        self,
+        evaluator: Optional[MASTaskEvaluator],
+        prepared: _PreparedRunContext,
+        task_tag: Optional[str],
+    ) -> OptimizationOutput:
         self.sampler.initialize()
         sampled_dags = self.sampler.sample_batch(
-            nodes=nodes,
-            agent_vectors=agent_vectors,
+            nodes=prepared.nodes,
+            agent_vectors=prepared.agent_vectors,
             num_dags=self.config.num_sampled_dags,
             evaluator=evaluator,
-            question_text=cond.question_text,
-            question_vector=cond.question_vector,
+            question_text=prepared.cond.question_text,
+            question_vector=prepared.cond.question_vector,
             task_tag=task_tag,
         )
         out = self.optimizer.optimize(
             sampled_dags=sampled_dags,
             evaluator=evaluator,
             reward_model=self.reward_model,
-            question_text=cond.question_text,
-            question_vector=cond.question_vector,
-            agent_vectors=agent_vectors,
+            question_text=prepared.cond.question_text,
+            question_vector=prepared.cond.question_vector,
+            agent_vectors=prepared.agent_vectors,
         )
         if self._should_update_gating("run", evaluator) and sampled_dags:
             feedback = self._feedback_from_samples(sampled_dags)
             self.conditioner.update_from_feedback(
-                question_text=cond.question_text,
-                question_vector=cond.question_vector,
-                selected_agent_ids=nodes,
+                question_text=prepared.cond.question_text,
+                question_vector=prepared.cond.question_vector,
+                selected_agent_ids=prepared.nodes,
                 feedback_score=feedback,
-                agent_vectors=full_agent_vectors,
+                agent_vectors=prepared.full_agent_vectors,
             )
         return out
 
@@ -222,16 +263,15 @@ class MASGFlowPipeline:
         agent_top_k: Optional[int] = None,
         task_tag: Optional[str] = None,
     ) -> tuple[list[GFlowNetTrainingStats], OptimizationOutput]:
-        history = self.train(
+        prepared = self._prepare_context(question_text=question_text, agent_top_k=agent_top_k)
+        history = self._train_prepared(
             evaluator=evaluator,
-            question_text=question_text,
-            agent_top_k=agent_top_k,
+            prepared=prepared,
             task_tag=task_tag,
         )
-        out = self.run(
+        out = self._run_prepared(
             evaluator=evaluator,
-            question_text=question_text,
-            agent_top_k=agent_top_k,
+            prepared=prepared,
             task_tag=task_tag,
         )
         return history, out

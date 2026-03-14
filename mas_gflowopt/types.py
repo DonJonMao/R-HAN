@@ -105,6 +105,7 @@ class RewardBreakdown:
     task_utility: float
     task_score: float
     task_success: float
+    task_safety_penalty: float
     contribution_term: float
     total_score: float
     reward: float

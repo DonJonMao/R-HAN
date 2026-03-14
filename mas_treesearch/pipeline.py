@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+from dataclasses import asdict
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -31,7 +33,10 @@ def _env_chat_config() -> ChatConfig:
 
 def _env_judge_config() -> JudgeConfig:
     return JudgeConfig(
+        api_base=os.getenv("LLM_JUDGE_API_BASE") or None,
         model=os.getenv("LLM_JUDGE_MODEL") or None,
+        api_key=os.getenv("LLM_JUDGE_API_KEY") or None,
+        timeout_s=float(os.getenv("LLM_JUDGE_TIMEOUT_S", "60")),
         temperature=float(os.getenv("LLM_JUDGE_TEMPERATURE", "0.0")),
         max_tokens=int(os.getenv("LLM_JUDGE_MAX_TOKENS", "128")),
     )
@@ -98,7 +103,7 @@ class TreeSearchMASPipeline:
     ) -> SearchResult:
         resolved_dataset = dataset_name or ((metadata or {}).get("mas_dataset_name") if isinstance(metadata, dict) else None)
         profile = resolve_dataset_profile(resolved_dataset)
-        selection = self._conditioner.select(question_text)
+        selection = self._conditioner.select(question_text, profile=profile)
         return self._search.search(
             question_text=question_text,
             selection=selection,
@@ -107,3 +112,30 @@ class TreeSearchMASPipeline:
             dataset_profile=profile,
             learn=learn,
         )
+
+    def state_dict(self) -> dict:
+        return {
+            "search_config": asdict(self.search_config),
+            "runtime_config": asdict(self.runtime_config),
+            "chat_config": asdict(self.runtime_config.chat),
+            "judge_config": asdict(self.runtime_config.judge),
+            "embedding_config": asdict(self.runtime_config.embedding),
+            "edit_prior": self._edit_prior.state_dict() if self._edit_prior is not None else None,
+            "value_model": self._value_model.state_dict() if self._value_model is not None else None,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        edit_prior_state = state.get("edit_prior")
+        if edit_prior_state is not None and self._edit_prior is not None:
+            self._edit_prior.load_state_dict(dict(edit_prior_state))
+        value_model_state = state.get("value_model")
+        if value_model_state is not None and self._value_model is not None:
+            self._value_model.load_state_dict(dict(value_model_state))
+
+    def save_checkpoint(self, path: str, *, metadata: Optional[dict] = None) -> None:
+        payload = {
+            "metadata": metadata or {},
+            "pipeline_state": self.state_dict(),
+        }
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)

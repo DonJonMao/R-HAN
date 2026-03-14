@@ -5,6 +5,7 @@ from typing import Dict, Sequence
 
 from .agents import AgentPool
 from .gating import cosine
+from .profiles import DEFAULT_PROFILE, DatasetProfile
 from .types import ArchitectureState, CompiledArchitecture, PromptSlots, Vector, WorkflowTemplate
 
 
@@ -47,7 +48,12 @@ class StaticProxyScorer:
                     bonus += 0.12
         return bonus
 
-    def score(self, compiled: CompiledArchitecture, question_vector: Vector) -> ProxyScore:
+    def score(
+        self,
+        compiled: CompiledArchitecture,
+        question_vector: Vector,
+        profile: DatasetProfile = DEFAULT_PROFILE,
+    ) -> ProxyScore:
         state = compiled.state
         active = state.active_agents()
         alignment = self._alignment(question_vector, active)
@@ -66,14 +72,25 @@ class StaticProxyScorer:
             WorkflowTemplate.ROUTE_SOLVE: 0.50,
         }.get(state.template, 0.50)
         verification_bonus = self._verification_bonus(state.template, state)
+        required_bonus = 0.0
+        if profile.required_agent_ids:
+            required_hits = sum(1 for aid in profile.required_agent_ids if aid in active)
+            required_bonus = 0.06 * (required_hits / max(1, len(profile.required_agent_ids)))
+        preferred_bonus = 0.0
+        for role, preferred_ids in profile.role_agent_preferences.items():
+            agent_id = state.role_to_agent.get(role)
+            if agent_id and agent_id in preferred_ids:
+                preferred_bonus += 0.02
 
         score = (
             0.50 * alignment
             + 0.15 * diversity
             + template_prior
             + verification_bonus
+            + required_bonus
+            + preferred_bonus
             - size_penalty
-            - prompt_penalty
+            - (prompt_penalty * profile.proxy_prompt_penalty_scale)
         )
         uncertainty = 0.08 + 0.20 * max(0.0, 1.0 - alignment) + 0.10 * prompt_complexity
         return ProxyScore(
@@ -85,5 +102,7 @@ class StaticProxyScorer:
                 "size_penalty": size_penalty,
                 "prompt_complexity": prompt_complexity,
                 "verification_bonus": verification_bonus,
+                "required_bonus": required_bonus,
+                "preferred_bonus": preferred_bonus,
             },
         )

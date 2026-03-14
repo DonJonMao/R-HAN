@@ -36,6 +36,62 @@ def _normalize_yes_no(answer: str) -> str:
     return lowered
 
 
+def _extract_python_code(text: str) -> str:
+    cleaned = text.strip()
+    fenced = re.findall(r"```(?:python)?\s*(.*?)```", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        cleaned = max(fenced, key=len).strip()
+    return cleaned.strip()
+
+
+def _extract_boxed_expression(text: str) -> str:
+    boxed = re.findall(r"\\boxed\{([^{}]+)\}", text)
+    if boxed:
+        return boxed[-1].strip()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if lines:
+        return lines[-1]
+    return text.strip()
+
+
+def _extract_sequence_numbers(text: str) -> List[int]:
+    return [int(token) for token in re.findall(r"-?\d+", text)]
+
+
+def _canonicalize_nlgraph_answer(answer: str, metadata: Dict[str, Any]) -> str:
+    task = str(metadata.get("task", "")).strip()
+    if task in {"connectivity", "cycle"}:
+        return _compact_json({"answer": _normalize_yes_no(answer)})
+    if task == "flow":
+        nums = re.findall(r"-?\d+", answer.replace(",", ""))
+        value = int(nums[-1]) if nums else None
+        return _compact_json({"max_flow": value})
+    if task in {"hamilton", "topology"}:
+        return _compact_json({"path" if task == "hamilton" else "order": _extract_sequence_numbers(answer)})
+    if task == "shortest_path":
+        path = _extract_sequence_numbers(answer)
+        total = None
+        weight_match = re.search(r"total weight of\s*(-?\d+)", answer, flags=re.IGNORECASE)
+        if weight_match:
+            total = int(weight_match.group(1))
+        elif path:
+            total = path[-1]
+        return _compact_json({"path": path[:-1] if total is not None and path and path[-1] == total else path, "total_weight": total})
+    if task == "matching":
+        matches = [(int(a), int(b)) for a, b in re.findall(r"applicant\s+(\d+)\s*:\s*job\s+(\d+)", answer, flags=re.IGNORECASE)]
+        count_match = re.search(r"(\d+)\s+applicants can find", answer, flags=re.IGNORECASE)
+        count = int(count_match.group(1)) if count_match else len(matches)
+        return _compact_json({"matches": matches, "count": count})
+    if task == "GNN":
+        pairs = re.findall(r"node\s+(\d+)\s*:\s*\[([^\]]+)\]", answer, flags=re.IGNORECASE)
+        embeddings = {}
+        for node, vec in pairs:
+            values = [int(token) for token in re.findall(r"-?\d+", vec)]
+            embeddings[str(node)] = values
+        return _compact_json({"node_embeddings": embeddings})
+    return answer
+
+
 def _normalize_answer(record: Dict[str, Any]) -> str:
     dataset_name = str(record.get("source_dataset", "")).strip()
     answer = str(record.get("answer", "")).strip()
@@ -74,6 +130,15 @@ def _normalize_answer(record: Dict[str, Any]) -> str:
             return _compact_json(metadata["answer_all"])
         return answer
 
+    if profile.answer_format == "python_code":
+        return _extract_python_code(answer)
+
+    if profile.answer_format == "math_expression":
+        return _extract_boxed_expression(answer)
+
+    if profile.answer_format == "graph_json":
+        return _canonicalize_nlgraph_answer(answer, metadata)
+
     return answer
 
 
@@ -101,6 +166,12 @@ def _format_question(record: Dict[str, Any]) -> str:
     if dataset_name == "gsm8k":
         return question + "\n\nReturn only the final numeric answer."
 
+    if dataset_name == "multiarith":
+        return question + "\n\nSolve the arithmetic problem and return only the final numeric answer."
+
+    if dataset_name == "math":
+        return question + "\n\nReturn only the final boxed answer content as a concise mathematical expression."
+
     if dataset_name == "normad":
         return question + "\n\nAnswer with exactly one token: yes or no."
 
@@ -125,7 +196,38 @@ def _format_question(record: Dict[str, Any]) -> str:
         return "\n".join(lines)
 
     if dataset_name == "nlgraph":
-        return question + "\n\nIf a path exists, output the path clearly. Otherwise output No."
+        task = str(metadata.get("task", "")).strip()
+        schema = {
+            "hamilton": '{"path":[...]}',
+            "topology": '{"order":[...]}',
+            "connectivity": '{"answer":"yes"}',
+            "cycle": '{"answer":"yes"}',
+            "flow": '{"max_flow":0}',
+            "matching": '{"matches":[[applicant,job],...],"count":0}',
+            "shortest_path": '{"path":[...],"total_weight":0}',
+            "GNN": '{"node_embeddings":{"0":[0,0]}}',
+        }.get(task, '{"answer": ...}')
+        return question + f"\n\nReturn only a JSON object using this schema: {schema}"
+
+    if dataset_name == "humaneval":
+        entry_point = str(metadata.get("entry_point", "")).strip()
+        lines = [question]
+        if entry_point:
+            lines.append("")
+            lines.append(f"Implement the Python function `{entry_point}`.")
+        lines.append("")
+        lines.append("Return only executable Python code without Markdown fences.")
+        return "\n".join(lines)
+
+    if dataset_name == "mbpp":
+        entry_point = str(metadata.get("entry_point", "")).strip()
+        lines = [question]
+        if entry_point:
+            lines.append("")
+            lines.append(f"Implement the Python function `{entry_point}`.")
+        lines.append("")
+        lines.append("Return only executable Python code without Markdown fences.")
+        return "\n".join(lines)
 
     if dataset_name == "qasper":
         title = str(metadata.get("title", "")).strip()

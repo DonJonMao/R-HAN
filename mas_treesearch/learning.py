@@ -125,6 +125,21 @@ class LearnableEditPrior:
             self.weights[name] = self.weights.get(name, 0.0) - self.learning_rate * error * value
         self.steps += 1
 
+    def state_dict(self) -> Dict[str, object]:
+        return {
+            "learning_rate": self.learning_rate,
+            "weights": dict(self.weights),
+            "bias": self.bias,
+            "steps": self.steps,
+        }
+
+    def load_state_dict(self, state: Dict[str, object]) -> None:
+        self.learning_rate = float(state.get("learning_rate", self.learning_rate))
+        raw_weights = state.get("weights", {})
+        self.weights = {str(name): float(value) for name, value in dict(raw_weights).items()}
+        self.bias = float(state.get("bias", self.bias))
+        self.steps = int(state.get("steps", self.steps))
+
 
 @dataclass
 class LearnableValueModel:
@@ -148,3 +163,22 @@ class LearnableValueModel:
             self.weights[name] = self.weights.get(name, 0.0) - self.learning_rate * error * value
         self.residual_ema = 0.9 * self.residual_ema + 0.1 * abs(error)
         self.steps += 1
+
+    def state_dict(self) -> Dict[str, object]:
+        return {
+            "learning_rate": self.learning_rate,
+            "init_uncertainty": self.init_uncertainty,
+            "weights": dict(self.weights),
+            "bias": self.bias,
+            "steps": self.steps,
+            "residual_ema": self.residual_ema,
+        }
+
+    def load_state_dict(self, state: Dict[str, object]) -> None:
+        self.learning_rate = float(state.get("learning_rate", self.learning_rate))
+        self.init_uncertainty = float(state.get("init_uncertainty", self.init_uncertainty))
+        raw_weights = state.get("weights", {})
+        self.weights = {str(name): float(value) for name, value in dict(raw_weights).items()}
+        self.bias = float(state.get("bias", self.bias))
+        self.steps = int(state.get("steps", self.steps))
+        self.residual_ema = float(state.get("residual_ema", self.residual_ema))

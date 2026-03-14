@@ -5,7 +5,7 @@ import json
 import os
 import time
 import urllib.request
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from mas_gflowopt import MASConfig, MASGFlowPipeline
 from mas_gflowopt.evaluators import (
@@ -13,6 +13,7 @@ from mas_gflowopt.evaluators import (
     LLMExecutionConfig,
     LLMExecutionMASTaskEvaluator,
 )
+from mas_gflowopt.types import DAGState, OptimizationOutput
 
 
 def load_questions(path: str, max_samples: int | None) -> list[dict[str, Any]]:
@@ -119,6 +120,26 @@ def format_progress(prefix: str, idx: int, total: int, start_ts: float) -> str:
     )
 
 
+def graph_signature(dag: DAGState) -> tuple[tuple[str, ...], tuple[tuple[int, int], ...]]:
+    return tuple(str(node) for node in dag.nodes), tuple(sorted((int(src), int(dst)) for src, dst in dag.edges))
+
+
+def cached_eval_from_output(out: OptimizationOutput) -> Optional[dict[str, float]]:
+    target = graph_signature(out.refined_best_dag)
+    for sampled in out.sampled_dags:
+        if graph_signature(sampled.graph) != target:
+            continue
+        rb = sampled.reward_breakdown
+        if rb is None:
+            continue
+        return {
+            "task_score": float(rb.task_score),
+            "success": float(rb.task_success),
+            "safety_penalty": float(rb.task_safety_penalty),
+        }
+    return None
+
+
 def run_train(
     pipeline: MASGFlowPipeline,
     evaluator: LLMExecutionMASTaskEvaluator,
@@ -140,24 +161,48 @@ def run_train(
         nonlocal pending
         if not pending:
             return
-        dags = [p["dag"] for p in pending]
-        questions = [p["question"] for p in pending]
-        if hasattr(evaluator, "evaluate_batch"):
-            results = evaluator.evaluate_batch(dags, question_texts=questions)
+        uncached = [p for p in pending if p.get("cached_eval") is None]
+        if uncached:
+            dags = [p["dag"] for p in uncached]
+            questions = [p["question"] for p in uncached]
+            if hasattr(evaluator, "evaluate_batch"):
+                fresh = evaluator.evaluate_batch(dags, question_texts=questions)
+            else:
+                fresh = [evaluator.evaluate(dag, question_text=q) for dag, q in zip(dags, questions)]
+            fresh_rows = [
+                {
+                    "task_score": float(item.task_score),
+                    "success": float(item.success),
+                    "safety_penalty": float(item.safety_penalty),
+                }
+                for item in fresh
+            ]
         else:
-            results = [evaluator.evaluate(dag, question_text=q) for dag, q in zip(dags, questions)]
-        for payload, eval_result in zip(pending, results):
+            fresh_rows = []
+
+        fresh_iter = iter(fresh_rows)
+        resolved: list[dict[str, float]] = []
+        for payload in pending:
+            if payload.get("cached_eval") is not None:
+                resolved.append(dict(payload["cached_eval"]))
+            else:
+                resolved.append(next(fresh_iter))
+
+        for payload, eval_result in zip(pending, resolved):
             dataset = payload["dataset"]
             category = payload["category"]
             idx = payload["idx"]
             elapsed_s = time.perf_counter() - float(payload["start_ts"])
-            update_stats(by_dataset, dataset, float(eval_result.task_score), float(eval_result.success))
-            update_stats(by_category, category, float(eval_result.task_score), float(eval_result.success))
+            score = float(eval_result["task_score"])
+            success = float(eval_result["success"])
+            safety_penalty = float(eval_result["safety_penalty"])
+            update_stats(by_dataset, dataset, score, success)
+            update_stats(by_category, category, score, success)
             latest_reward = float(payload["latest_reward"])
             print(
                 f"[train] item {idx}/{len(samples)} dataset={dataset} category={category} "
-                f"task_score={float(eval_result.task_score):.4f} success={float(eval_result.success):.4f} "
-                f"safety={float(eval_result.safety_penalty):.4f} reward={latest_reward:.4f} "
+                f"task_score={score:.4f} success={success:.4f} "
+                f"safety={safety_penalty:.4f} reward={latest_reward:.4f} "
                 f"elapsed_s={elapsed_s:.2f}",
                 flush=True,
             )
@@ -222,6 +267,7 @@ def run_train(
                 "question": sample["question"],
                 "latest_reward": latest_reward,
                 "start_ts": item_start,
+                "cached_eval": cached_eval_from_output(out),
             }
         )
         if batch_eval_size > 0 and len(pending) >= batch_eval_size:
@@ -256,19 +302,41 @@ def run_test(
         nonlocal pending
         if not pending:
             return
-        dags = [p["dag"] for p in pending]
-        questions = [p["question"] for p in pending]
-        if hasattr(evaluator, "evaluate_batch"):
-            results = evaluator.evaluate_batch(dags, question_texts=questions)
+        uncached = [p for p in pending if p.get("cached_eval") is None]
+        if uncached:
+            dags = [p["dag"] for p in uncached]
+            questions = [p["question"] for p in uncached]
+            if hasattr(evaluator, "evaluate_batch"):
+                fresh = evaluator.evaluate_batch(dags, question_texts=questions)
+            else:
+                fresh = [evaluator.evaluate(dag, question_text=q) for dag, q in zip(dags, questions)]
+            fresh_rows = [
+                {
+                    "task_score": float(item.task_score),
+                    "success": float(item.success),
+                    "safety_penalty": float(item.safety_penalty),
+                }
+                for item in fresh
+            ]
         else:
-            results = [evaluator.evaluate(dag, question_text=q) for dag, q in zip(dags, questions)]
-        for payload, eval_result in zip(pending, results):
+            fresh_rows = []
+
+        fresh_iter = iter(fresh_rows)
+        resolved: list[dict[str, float]] = []
+        for payload in pending:
+            if payload.get("cached_eval") is not None:
+                resolved.append(dict(payload["cached_eval"]))
+            else:
+                resolved.append(next(fresh_iter))
+
+        for payload, eval_result in zip(pending, resolved):
             dataset = payload["dataset"]
             category = payload["category"]
             idx = payload["idx"]
             elapsed_s = time.perf_counter() - float(payload["start_ts"])
-            score = float(eval_result.task_score)
-            success = float(eval_result.success)
+            score = float(eval_result["task_score"])
+            success = float(eval_result["success"])
+            safety_penalty = float(eval_result["safety_penalty"])
             update_stats(by_dataset, dataset, score, success)
             update_stats(by_category, category, score, success)
             if accum_by_dataset is not None:
@@ -279,7 +347,7 @@ def run_test(
                 {
                     "task_score": score,
                     "success": success,
-                    "safety_penalty": float(eval_result.safety_penalty),
+                    "safety_penalty": safety_penalty,
                 }
             )
             if accum_metrics is not None:
@@ -287,13 +355,13 @@ def run_test(
                     {
                         "task_score": score,
                         "success": success,
-                        "safety_penalty": float(eval_result.safety_penalty),
+                        "safety_penalty": safety_penalty,
                     }
                 )
             print(
                 f"[test] item {idx}/{len(samples)} dataset={dataset} category={category} "
-                f"task_score={float(eval_result.task_score):.4f} success={float(eval_result.success):.4f} "
-                f"safety={float(eval_result.safety_penalty):.4f} elapsed_s={elapsed_s:.2f}",
+                f"task_score={score:.4f} success={success:.4f} "
+                f"safety={safety_penalty:.4f} elapsed_s={elapsed_s:.2f}",
                 flush=True,
             )
             if log_every > 0 and idx % log_every == 0:
@@ -332,6 +400,7 @@ def run_test(
                 "dag": out.refined_best_dag,
                 "question": sample["question"],
                 "start_ts": item_start,
+                "cached_eval": cached_eval_from_output(out),
             }
         )
         if batch_eval_size > 0 and len(pending) >= batch_eval_size:

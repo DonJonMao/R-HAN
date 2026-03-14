@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import sqrt
 from typing import Dict, List, Optional, Tuple
 
 from .agents import AgentPool
 from .cache import DictCache
 from .clients import OpenAICompatClient
-from .config import TierRuntimeConfig, TieredEvalConfig
+from .config import ChatConfig, TierRuntimeConfig, TieredEvalConfig
+from .profiles import DEFAULT_PROFILE, DatasetProfile
 from .prompting import build_system_prompt, build_user_prompt, render_question_text
 from .reward import reward_from_evaluation
 from .types import ArchitectureState, CompiledArchitecture, EvalSummary, PromptSlots, TaskEvaluation
@@ -30,6 +33,16 @@ class MultiFidelityEvaluator:
         self.agent_pool = agent_pool
         self._by_id = agent_pool.by_id()
         self._chat = OpenAICompatClient(config.chat)
+        judge_chat_config = ChatConfig(
+            api_base=config.judge.api_base or config.chat.api_base,
+            model=config.judge.model or config.chat.model,
+            api_key=config.judge.api_key or config.chat.api_key,
+            timeout_s=config.judge.timeout_s,
+            temperature=config.judge.temperature,
+            max_tokens=config.judge.max_tokens,
+            max_retries=config.chat.max_retries,
+        )
+        self._judge = OpenAICompatClient(judge_chat_config)
         self._chat_cache: DictCache[str] = DictCache()
         self._eval_cache: DictCache[EvalSummary] = DictCache()
 
@@ -54,13 +67,15 @@ class MultiFidelityEvaluator:
         runtime: TierRuntimeConfig,
         model: Optional[str] = None,
         cacheable: bool = True,
+        client: str = "chat",
     ) -> str:
         key = json.dumps(
             {
+                "client": client,
                 "messages": messages,
                 "temperature": runtime.temperature,
                 "max_tokens": runtime.max_tokens,
-                "model": model or self.config.chat.model,
+                "model": model or (self.config.judge.model if client == "judge" else self.config.chat.model),
             },
             sort_keys=True,
             ensure_ascii=False,
@@ -69,7 +84,8 @@ class MultiFidelityEvaluator:
             cached = self._chat_cache.get(key)
             if cached is not None:
                 return cached
-        value = self._chat.chat(
+        active_client = self._judge if client == "judge" else self._chat
+        value = active_client.chat(
             messages,
             temperature=runtime.temperature,
             max_tokens=runtime.max_tokens,
@@ -78,6 +94,23 @@ class MultiFidelityEvaluator:
         if cacheable and self.config.enable_chat_cache:
             self._chat_cache.put(key, value)
         return value
+
+    def _resolve_runtime(self, tier: str, dataset_profile: DatasetProfile) -> TierRuntimeConfig:
+        runtime = self.config.tier1 if tier == "tier1" else self.config.tier2
+        overrides = dataset_profile.runtime_overrides
+        if tier == "tier1":
+            return replace(
+                runtime,
+                repeats=overrides.tier1_repeats or runtime.repeats,
+                max_tokens=overrides.tier1_max_tokens or runtime.max_tokens,
+                judge_max_tokens=overrides.tier1_judge_max_tokens or runtime.judge_max_tokens,
+            )
+        return replace(
+            runtime,
+            repeats=overrides.tier2_repeats or runtime.repeats,
+            max_tokens=overrides.tier2_max_tokens or runtime.max_tokens,
+            judge_max_tokens=overrides.tier2_judge_max_tokens or runtime.judge_max_tokens,
+        )
 
     def _role_task_instruction(self, compiled: CompiledArchitecture, role: str) -> str:
         template = compiled.state.template.value
@@ -343,6 +376,296 @@ class MultiFidelityEvaluator:
                 return None
         return MultiFidelityEvaluator._extract_last_number(cleaned)
 
+    @staticmethod
+    def _dataset_name(metadata: Optional[dict]) -> str:
+        if metadata and isinstance(metadata.get("mas_dataset_name"), str):
+            return str(metadata["mas_dataset_name"]).strip()
+        return ""
+
+    @staticmethod
+    def _extract_python_code(text: str) -> str:
+        cleaned = MultiFidelityEvaluator._strip_hidden_reasoning(text).strip()
+        fenced = re.findall(r"```(?:python)?\s*(.*?)```", cleaned, flags=re.DOTALL | re.IGNORECASE)
+        if fenced:
+            cleaned = max(fenced, key=len).strip()
+        return cleaned.strip()
+
+    @staticmethod
+    def _extract_sequence_numbers(text: str) -> List[int]:
+        return [int(token) for token in re.findall(r"-?\d+", text)]
+
+    @staticmethod
+    def _extract_boxed_expression(text: str) -> str:
+        boxed = re.findall(r"\\boxed\{([^{}]+)\}", text)
+        if boxed:
+            return boxed[-1].strip()
+        cleaned = MultiFidelityEvaluator._strip_hidden_reasoning(text)
+        lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+        if lines:
+            return lines[-1]
+        return cleaned.strip()
+
+    @staticmethod
+    def _normalize_math_expression(text: str) -> str:
+        expr = MultiFidelityEvaluator._extract_boxed_expression(text)
+        expr = expr.replace("$", "").replace("\\left", "").replace("\\right", "")
+        expr = re.sub(r"\s+", "", expr)
+        return expr
+
+    @staticmethod
+    def _parse_nlgraph_edges(question_text: str) -> Dict[Tuple[int, int], int]:
+        weighted_edges: Dict[Tuple[int, int], int] = {}
+        for src, dst, weight in re.findall(
+            r"edge (?:between|from node)\s+node\s+(\d+)\s+(?:and|to)\s+node\s+(\d+)\s+with weight\s+(-?\d+)",
+            question_text,
+            flags=re.IGNORECASE,
+        ):
+            weighted_edges[(int(src), int(dst))] = int(weight)
+            weighted_edges[(int(dst), int(src))] = int(weight)
+        for src, dst in re.findall(r"\((\d+),(\d+)\)", question_text):
+            weighted_edges.setdefault((int(src), int(dst)), 1)
+            weighted_edges.setdefault((int(dst), int(src)), 1)
+        return weighted_edges
+
+    @staticmethod
+    def _path_weight(path: List[int], edges: Dict[Tuple[int, int], int]) -> Optional[int]:
+        if len(path) < 2:
+            return None
+        total = 0
+        for src, dst in zip(path, path[1:]):
+            if (src, dst) not in edges:
+                return None
+            total += edges[(src, dst)]
+        return total
+
+    @staticmethod
+    def _score_knowledge_crosswords(
+        final_output: str,
+        reference_answer: Optional[str],
+        metadata: Optional[dict],
+    ) -> Optional[Tuple[float, float, float, Dict[str, object]]]:
+        gold = None
+        if metadata and isinstance(metadata.get("answer_all"), list):
+            gold = [str(item) for item in metadata["answer_all"]]
+        elif reference_answer:
+            try:
+                parsed = json.loads(reference_answer)
+                if isinstance(parsed, list):
+                    gold = [str(item) for item in parsed]
+            except Exception:
+                gold = None
+        if not gold:
+            return None
+        parsed_pred = MultiFidelityEvaluator._extract_json_list(final_output)
+        if parsed_pred is None:
+            return 0.0, 0.0, 0.8, {"used_dataset_specific": True, "format_ok": False}
+        pred = [str(item) for item in json.loads(parsed_pred)]
+        matches = sum(1 for p, g in zip(pred, gold) if p == g)
+        accuracy = matches / max(1, len(gold))
+        format_ok = len(pred) == len(gold)
+        task_score = accuracy if format_ok else max(0.0, accuracy - 0.2)
+        success = 1.0 if format_ok and accuracy >= 0.999 else 0.0
+        safety_penalty = max(0.0, 0.6 * (1.0 - accuracy) + (0.15 if not format_ok else 0.0))
+        return task_score, success, safety_penalty, {
+            "used_dataset_specific": True,
+            "format_ok": format_ok,
+            "matches": matches,
+            "total": len(gold),
+        }
+
+    @staticmethod
+    def _score_code_generation(
+        final_output: str,
+        metadata: Optional[dict],
+    ) -> Optional[Tuple[float, float, float, Dict[str, object]]]:
+        if not metadata:
+            return None
+        candidate_code = MultiFidelityEvaluator._extract_python_code(final_output)
+        if not candidate_code:
+            return 0.0, 0.0, 0.9, {"used_dataset_specific": True, "error": "empty_code"}
+        entry_point = metadata.get("entry_point")
+        humaneval_test = metadata.get("test")
+        mbpp_tests = metadata.get("test_list")
+        setup_code = str(metadata.get("test_setup_code") or "")
+        script_lines = [
+            "import math",
+            "import itertools",
+            "import functools",
+            "import collections",
+            "import heapq",
+            "import bisect",
+            candidate_code,
+        ]
+        if isinstance(humaneval_test, str) and isinstance(entry_point, str) and entry_point:
+            script_lines.extend(
+                [
+                    humaneval_test,
+                    f"check({entry_point})",
+                    "print('PASS')",
+                ]
+            )
+        elif isinstance(mbpp_tests, list) and mbpp_tests:
+            script_lines.append(setup_code)
+            script_lines.append("passed = 0")
+            script_lines.append(f"total = {len(mbpp_tests)}")
+            for expr in mbpp_tests:
+                escaped = json.dumps(str(expr))
+                script_lines.extend(
+                    [
+                        f"_expr = {escaped}",
+                        "try:",
+                        "    exec(_expr, globals(), globals())",
+                        "    passed += 1",
+                        "except Exception:",
+                        "    pass",
+                    ]
+                )
+            script_lines.append("print(f'PASS_COUNT={passed}/{total}')")
+        else:
+            return None
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", "\n".join(script_lines)],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return 0.0, 0.0, 0.9, {"used_dataset_specific": True, "error": "timeout"}
+        stdout = proc.stdout.strip()
+        stderr = proc.stderr.strip()
+        if "PASS_COUNT=" in stdout:
+            match = re.search(r"PASS_COUNT=(\d+)/(\d+)", stdout)
+            passed = int(match.group(1)) if match else 0
+            total = int(match.group(2)) if match else max(1, len(mbpp_tests))
+            accuracy = passed / max(1, total)
+            return accuracy, 1.0 if accuracy >= 0.999 else 0.0, 0.0 if accuracy >= 0.999 else 0.5 * (1.0 - accuracy), {
+                "used_dataset_specific": True,
+                "passed": passed,
+                "total": total,
+                "stderr": stderr,
+            }
+        passed = proc.returncode == 0 and "PASS" in stdout
+        return (1.0 if passed else 0.0), (1.0 if passed else 0.0), (0.0 if passed else 0.8), {
+            "used_dataset_specific": True,
+            "stderr": stderr,
+            "stdout": stdout,
+        }
+
+    def _score_nlgraph(
+        self,
+        question_text: str,
+        final_output: str,
+        reference_answer: Optional[str],
+        metadata: Optional[dict],
+    ) -> Optional[Tuple[float, float, float, Dict[str, object]]]:
+        if not metadata:
+            return None
+        task = str(metadata.get("task") or "").strip()
+        if not task:
+            return None
+        pred_text = self._strip_hidden_reasoning(final_output)
+        ref_text = reference_answer or ""
+        if task in {"connectivity", "cycle"}:
+            pred = self._normalize_yes_no_output(pred_text)
+            ref = self._normalize_yes_no_output(ref_text)
+            correct = pred == ref
+            return (1.0 if correct else 0.0), (1.0 if correct else 0.0), (0.0 if correct else 0.6), {
+                "used_dataset_specific": True,
+                "task": task,
+                "pred": pred,
+                "ref": ref,
+            }
+        if task == "flow":
+            pred_num = self._extract_last_number(pred_text)
+            ref_num = self._extract_last_number(ref_text)
+            correct = pred_num is not None and ref_num is not None and abs(pred_num - ref_num) <= 1e-6
+            return (1.0 if correct else 0.0), (1.0 if correct else 0.0), (0.0 if correct else 0.6), {
+                "used_dataset_specific": True,
+                "task": task,
+                "pred_num": pred_num,
+                "ref_num": ref_num,
+            }
+        if task == "topology":
+            order = self._extract_sequence_numbers(pred_text)
+            constraints = [(int(a), int(b)) for a, b in re.findall(r"node (\d+) should be visited before node (\d+)", question_text)]
+            if not order or not constraints:
+                return 0.0, 0.0, 0.7, {"used_dataset_specific": True, "task": task, "format_ok": False}
+            position = {node: idx for idx, node in enumerate(order)}
+            satisfied = sum(1 for a, b in constraints if a in position and b in position and position[a] < position[b])
+            valid = satisfied == len(constraints) and len(position) == len(order)
+            score = satisfied / max(1, len(constraints))
+            return score, (1.0 if valid else 0.0), (0.0 if valid else 0.4 * (1.0 - score)), {
+                "used_dataset_specific": True,
+                "task": task,
+                "constraints_satisfied": satisfied,
+                "constraints_total": len(constraints),
+            }
+        if task == "hamilton":
+            path = self._extract_sequence_numbers(pred_text)
+            edges = self._parse_nlgraph_edges(question_text)
+            max_node = max((max(src, dst) for src, dst in edges.keys()), default=-1)
+            expected_nodes = max_node + 1
+            if not path:
+                return 0.0, 0.0, 0.8, {"used_dataset_specific": True, "task": task, "format_ok": False}
+            unique_ratio = len(set(path)) / max(1, expected_nodes)
+            valid_edges = sum(1 for src, dst in zip(path, path[1:]) if (src, dst) in edges)
+            edge_ratio = valid_edges / max(1, len(path) - 1)
+            valid = len(path) == expected_nodes and len(set(path)) == expected_nodes and edge_ratio >= 0.999
+            score = min(1.0, 0.5 * unique_ratio + 0.5 * edge_ratio)
+            return score, (1.0 if valid else 0.0), (0.0 if valid else 0.5 * (1.0 - score)), {
+                "used_dataset_specific": True,
+                "task": task,
+                "path_length": len(path),
+                "expected_nodes": expected_nodes,
+                "edge_ratio": edge_ratio,
+            }
+        if task == "shortest_path":
+            path = self._extract_sequence_numbers(pred_text)
+            edges = self._parse_nlgraph_edges(question_text)
+            ref_weight = self._extract_last_number(ref_text)
+            pred_weight = self._extract_last_number(pred_text)
+            computed_weight = self._path_weight(path, edges) if path else None
+            target_match = pred_weight is not None and ref_weight is not None and abs(pred_weight - ref_weight) <= 1e-6
+            inferred_match = computed_weight is not None and ref_weight is not None and abs(computed_weight - ref_weight) <= 1e-6
+            valid = target_match or inferred_match
+            score = 1.0 if valid else (0.4 if computed_weight is not None else 0.0)
+            return score, (1.0 if valid else 0.0), (0.0 if valid else 0.5), {
+                "used_dataset_specific": True,
+                "task": task,
+                "pred_weight": pred_weight,
+                "computed_weight": computed_weight,
+                "ref_weight": ref_weight,
+            }
+        if task == "matching":
+            count_match = re.search(r"(\d+)\s+applicants can find", ref_text, flags=re.IGNORECASE)
+            ref_count = int(count_match.group(1)) if count_match else None
+            pred_count_match = re.search(r"(\d+)\s+applicants can find", pred_text, flags=re.IGNORECASE)
+            pred_count = int(pred_count_match.group(1)) if pred_count_match else None
+            correct = pred_count is not None and ref_count is not None and pred_count == ref_count
+            return (1.0 if correct else 0.0), (1.0 if correct else 0.0), (0.0 if correct else 0.6), {
+                "used_dataset_specific": True,
+                "task": task,
+                "pred_count": pred_count,
+                "ref_count": ref_count,
+            }
+        if task == "GNN":
+            pred_pairs = dict(re.findall(r"node\s+(\d+)\s*:\s*\[([^\]]+)\]", pred_text, flags=re.IGNORECASE))
+            ref_pairs = dict(re.findall(r"node\s+(\d+)\s*:\s*\[([^\]]+)\]", ref_text, flags=re.IGNORECASE))
+            if not ref_pairs:
+                return None
+            matches = sum(1 for node, vec in ref_pairs.items() if pred_pairs.get(node, "").replace(" ", "") == vec.replace(" ", ""))
+            total = len(ref_pairs)
+            accuracy = matches / max(1, total)
+            return accuracy, (1.0 if accuracy >= 0.999 else 0.0), (0.0 if accuracy >= 0.999 else 0.5 * (1.0 - accuracy)), {
+                "used_dataset_specific": True,
+                "task": task,
+                "matches": matches,
+                "total": total,
+            }
+        return None
+
     def _score_with_reference(
         self,
         question_text: str,
@@ -352,6 +675,22 @@ class MultiFidelityEvaluator:
     ) -> Optional[Tuple[float, float, float, Dict[str, object]]]:
         if not reference_answer and not metadata:
             return None
+        dataset_name = self._dataset_name(metadata)
+        if dataset_name == "knowledge_crosswords":
+            return self._score_knowledge_crosswords(final_output, reference_answer, metadata)
+        if dataset_name == "nlgraph":
+            return self._score_nlgraph(question_text, final_output, reference_answer, metadata)
+        if dataset_name in {"humaneval", "mbpp"}:
+            return self._score_code_generation(final_output, metadata)
+        if dataset_name == "math" and reference_answer:
+            pred_expr = self._normalize_math_expression(final_output)
+            ref_expr = self._normalize_math_expression(reference_answer)
+            correct = bool(pred_expr) and pred_expr == ref_expr
+            return (1.0 if correct else 0.0), (1.0 if correct else 0.0), (0.0 if correct else 0.6), {
+                "used_dataset_specific": True,
+                "pred_expr": pred_expr,
+                "ref_expr": ref_expr,
+            }
         task_type = self._task_type(question_text, reference_answer=reference_answer, metadata=metadata)
         debug: Dict[str, object] = {"task_type": task_type, "reference_answer": reference_answer}
         if task_type == "mcq":
@@ -487,6 +826,12 @@ class MultiFidelityEvaluator:
             rules.append("这是判断题。最后只能输出 yes 或 no，且只能保留这一项。")
         elif answer_format == "json_list":
             rules.append("最后只能输出一个 JSON 数组，不要附带任何解释、项目符号或 Markdown 标记。")
+        elif answer_format == "graph_json":
+            rules.append("最后只能输出一个 JSON 对象，字段名和结构必须严格符合题目要求。")
+        elif answer_format == "python_code":
+            rules.append("最后只能输出可直接执行的 Python 代码，不要加 Markdown 代码块或解释。")
+        elif answer_format == "math_expression":
+            rules.append("最后只输出最终数学表达式，不要输出证明、推导或额外文字。")
         elif answer_format == "short_span":
             rules.append("最后只输出一个尽量短的答案短语，不要输出完整解释。")
         elif answer_format == "question_defined":
@@ -519,6 +864,10 @@ class MultiFidelityEvaluator:
             parsed = self._extract_json_list(cleaned)
             if parsed is not None:
                 return parsed
+        if answer_format == "python_code":
+            return self._extract_python_code(cleaned)
+        if answer_format == "math_expression":
+            return self._extract_boxed_expression(cleaned)
         if answer_format == "short_span" and cleaned:
             return cleaned.splitlines()[0].strip()
         return cleaned
@@ -530,6 +879,7 @@ class MultiFidelityEvaluator:
         runtime: TierRuntimeConfig,
         reference_answer: Optional[str] = None,
         metadata: Optional[dict] = None,
+        dataset_profile: DatasetProfile = DEFAULT_PROFILE,
     ) -> TaskEvaluation:
         start = time.perf_counter()
         ctx = ExecutionContext(role_outputs={}, trace=[])
@@ -577,12 +927,6 @@ class MultiFidelityEvaluator:
             reference_answer=reference_answer,
             metadata=metadata,
         )
-        judge_runtime = TierRuntimeConfig(
-            max_tokens=runtime.max_tokens,
-            judge_max_tokens=runtime.judge_max_tokens,
-            repeats=runtime.repeats,
-            temperature=0.0,
-        )
         debug_info: Dict[str, object] = {}
         dataset_specific = self._score_with_reference(rendered_question, final_output, reference_answer, metadata)
         parsed = {}
@@ -613,6 +957,7 @@ class MultiFidelityEvaluator:
                     temperature=self.config.judge.temperature,
                 ),
                 model=judge_model,
+                client="judge",
             )
             parsed = self._safe_json(judge_text) or {}
             task_score = float(parsed.get("task_score", 0.0))
@@ -679,17 +1024,25 @@ class MultiFidelityEvaluator:
         tier: str,
         reference_answer: Optional[str] = None,
         metadata: Optional[dict] = None,
+        dataset_profile: DatasetProfile = DEFAULT_PROFILE,
     ) -> EvalSummary:
-        runtime = self.config.tier1 if tier == "tier1" else self.config.tier2
-        cache_key = f"{tier}|{compiled.signature()}|{question_text}|{reference_answer}|{json.dumps(metadata or {}, sort_keys=True, ensure_ascii=False)}"
+        runtime = self._resolve_runtime(tier, dataset_profile)
+        cache_key = (
+            f"{tier}|{dataset_profile.name}|{compiled.signature()}|{question_text}|{reference_answer}|"
+            f"{json.dumps(metadata or {}, sort_keys=True, ensure_ascii=False)}"
+        )
         cached = self._eval_cache.get(cache_key)
         if cached is not None:
             return cached
 
-        prompt_penalty = sum(slot.complexity() for slot in compiled.state.role_to_prompt.values()) / max(
-            1, len(compiled.state.role_to_prompt)
+        prompt_penalty = (
+            sum(slot.complexity() for slot in compiled.state.role_to_prompt.values()) / max(
+                1, len(compiled.state.role_to_prompt)
+            )
+        ) * dataset_profile.reward_prompt_penalty_scale
+        size_penalty = (
+            max(0.0, len(compiled.state.active_agents()) - 4) * dataset_profile.reward_size_penalty_scale
         )
-        size_penalty = max(0.0, len(compiled.state.active_agents()) - 4)
 
         runs = [
             self._run_architecture_once(
@@ -698,6 +1051,7 @@ class MultiFidelityEvaluator:
                 runtime,
                 reference_answer=reference_answer,
                 metadata=metadata,
+                dataset_profile=dataset_profile,
             )
             for _ in range(runtime.repeats)
         ]
