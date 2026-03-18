@@ -61,6 +61,11 @@ def _stable_split(key: str) -> str:
     return "test"
 
 
+def _stable_train_validation_split(key: str) -> str:
+    value = int(hashlib.sha1(key.encode("utf-8")).hexdigest()[:8], 16) % 100
+    return "validation" if value < 10 else "train"
+
+
 def _restandardize_processed_record(row: Dict[str, Any], split: str) -> Dict[str, Any]:
     base = dict(row)
     base["question"] = row.get("original_question") or row.get("question") or ""
@@ -155,6 +160,38 @@ def _collect_mbpp(raw_path: Path) -> Dict[str, List[Dict[str, Any]]]:
     return grouped
 
 
+def _collect_math(raw_root: Path) -> Dict[str, List[Dict[str, Any]]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {"train": [], "validation": [], "test": []}
+    for source_split in ("train", "test"):
+        split_root = raw_root / source_split
+        if not split_root.exists():
+            continue
+        for path in sorted(split_root.rglob("*.json")):
+            row = json.loads(path.read_text(encoding="utf-8"))
+            rel_path = path.relative_to(raw_root).as_posix()
+            stem = path.relative_to(raw_root).with_suffix("").as_posix()
+            split = "test" if source_split == "test" else _stable_train_validation_split(stem)
+            category = str(row.get("type", "")).strip() or path.parent.name
+            level = str(row.get("level", "")).strip()
+            raw_record = {
+                "id": f"math:{source_split}:{stem}",
+                "source_dataset": "math",
+                "category": category,
+                "question": str(row.get("problem", "")).strip(),
+                "answer": str(row.get("solution", "")).strip(),
+                "metadata": {
+                    "uid": f"math:{source_split}:{stem}",
+                    "path": str(path),
+                    "relative_path": rel_path,
+                    "source_split": source_split,
+                    "level": level,
+                    "type": category,
+                },
+            }
+            grouped[split].append(standardize_record(raw_record, split))
+    return grouped
+
+
 def _write_dataset(output_root: Path, dataset_name: str, split_rows: Dict[str, List[Dict[str, Any]]]) -> Dict[str, int]:
     counts: Dict[str, int] = {}
     dataset_dir = output_root / dataset_name
@@ -212,9 +249,12 @@ def main() -> None:
 
     math_data_root = repo_root / "dataset/math/MATH"
     if math_data_root.exists():
-        manifest["missing_datasets"]["math"] = {
-            "reason": "builder not implemented for local MATH tree yet",
-            "path": str(math_data_root),
+        split_rows = _collect_math(math_data_root)
+        counts = _write_dataset(output_root, "math", split_rows)
+        manifest["datasets"]["math"] = {
+            "source": "raw_local",
+            "counts": counts,
+            "profile": profile_summary(["math"])["math"],
         }
     else:
         manifest["missing_datasets"]["math"] = {

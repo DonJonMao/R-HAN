@@ -37,6 +37,39 @@ class LearnableSecondOrderGater:
         self.dim = dim
         self._states: "OrderedDict[str, _GatingState]" = OrderedDict()
 
+    def state_dict(self) -> Dict[str, object]:
+        return {
+            "dim": self.dim,
+            "states": [
+                {
+                    "question_key": q_key,
+                    "state": {
+                        "w_rel": float(state.w_rel),
+                        "w_div": float(state.w_div),
+                        "w_pair": [float(x) for x in state.w_pair],
+                        "agent_bias": {str(k): float(v) for k, v in state.agent_bias.items()},
+                        "ema_feedback": float(state.ema_feedback),
+                        "ema_initialized": bool(state.ema_initialized),
+                    },
+                }
+                for q_key, state in self._states.items()
+            ],
+        }
+
+    def load_state_dict(self, payload: Dict[str, object]) -> None:
+        self._states = OrderedDict()
+        for entry in payload.get("states", []):
+            q_key = str(entry.get("question_key", ""))
+            raw_state = entry.get("state", {}) or {}
+            self._states[q_key] = _GatingState(
+                w_rel=float(raw_state.get("w_rel", 0.0)),
+                w_div=float(raw_state.get("w_div", 0.0)),
+                w_pair=[float(x) for x in raw_state.get("w_pair", [])],
+                agent_bias={str(k): float(v) for k, v in (raw_state.get("agent_bias", {}) or {}).items()},
+                ema_feedback=float(raw_state.get("ema_feedback", 0.0)),
+                ema_initialized=bool(raw_state.get("ema_initialized", False)),
+            )
+
     @staticmethod
     def _clip(x: float, lim: float) -> float:
         if lim <= 0.0:
@@ -205,6 +238,16 @@ class TaskConditioner:
             config=config,
             dim=config.embedding_dim,
         )
+
+    def state_dict(self) -> Dict[str, object]:
+        return {
+            "gater": self.gater.state_dict(),
+        }
+
+    def load_state_dict(self, payload: Dict[str, object]) -> None:
+        gater_state = payload.get("gater")
+        if isinstance(gater_state, dict):
+            self.gater.load_state_dict(gater_state)
 
     def encode_question(self, question_text: Optional[str]) -> Vector:
         if not question_text:

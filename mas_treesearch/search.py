@@ -160,6 +160,21 @@ class TreeSearchEngine:
         self._prompt_edit_cooldown: int = config.prompt_edit_cooldown
         self._max_prompt_edits_per_state: int = config.max_prompt_edits_per_state
 
+    def state_dict(self) -> dict:
+        return {
+            "rng_state": self.rng.getstate(),
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        def _to_tuple(value: object) -> object:
+            if isinstance(value, list):
+                return tuple(_to_tuple(item) for item in value)
+            return value
+
+        rng_state = state.get("rng_state")
+        if rng_state is not None:
+            self.rng.setstate(_to_tuple(rng_state))
+
     @staticmethod
     def _role_requires_unique_agent(role: str) -> bool:
         return RootTemplateBuilder._role_requires_unique_agent(role)

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
+import random
 from dataclasses import dataclass
 from typing import Optional
+
+import torch
 
 from .agent_pool import AgentPool, default_agent_pool
 from .conditioning import TaskConditioner, TaskConditioningResult
@@ -66,6 +70,50 @@ class MASGFlowPipeline:
             scorer=self.scorer,
         )
         self._cached_full_agent_vectors: Optional[dict[str, Vector]] = None
+
+    def state_dict(self) -> dict:
+        return {
+            "config": self.config.__dict__.copy(),
+            "repr_model": self.repr_model.state_dict(),
+            "conditioner": self.conditioner.state_dict(),
+            "sampler": self.sampler.state_dict(),
+            "python_random_state": random.getstate(),
+            "torch_random_state": torch.get_rng_state(),
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        repr_state = state.get("repr_model")
+        if isinstance(repr_state, dict):
+            self.repr_model.load_state_dict(repr_state)
+        conditioner_state = state.get("conditioner")
+        if isinstance(conditioner_state, dict):
+            self.conditioner.load_state_dict(conditioner_state)
+        sampler_state = state.get("sampler")
+        if isinstance(sampler_state, dict):
+            self.sampler.load_state_dict(sampler_state)
+        python_random_state = state.get("python_random_state")
+        if python_random_state is not None:
+            random.setstate(python_random_state)
+        torch_random_state = state.get("torch_random_state")
+        if torch_random_state is not None:
+            torch.set_rng_state(torch_random_state)
+        self._cached_full_agent_vectors = None
+
+    def save_checkpoint(self, path: str, *, metadata: Optional[dict] = None) -> None:
+        payload = {
+            "metadata": metadata or {},
+            "pipeline_state": self.state_dict(),
+        }
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        torch.save(payload, path)
+
+    def load_checkpoint(self, path: str) -> dict:
+        payload = torch.load(path, map_location="cpu")
+        self.load_state_dict(dict(payload.get("pipeline_state", {})))
+        metadata = payload.get("metadata", {})
+        if isinstance(metadata, dict):
+            return metadata
+        return {}
 
     def _full_agent_vectors(self) -> dict[str, Vector]:
         if self._cached_full_agent_vectors is None:

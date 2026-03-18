@@ -7,6 +7,224 @@
 - 新路线：`mas_treesearch/`
   以 tree search + 多层评估 + 轻量 prompt 搜索为主，目标是显著减少与真实 LLM 的重复交互成本。
 
+## 当前训练主线
+
+当前实际在维护和运行的两套 dataset-separated 训练入口：
+
+- TreeSearch：`train_mas_treesearch_target_suite.py`
+- GFlowOpt：`train_mas_gflowopt_target_suite.py`
+
+两者都直接读取 `dataset/mas_treesearch_target_suite_20260314/` 下的 `train / validation / test`，并按数据集单独训练、单独验证、单独测试，不再走“全数据集混合打乱”的旧流程。
+
+### 1. TreeSearch 当前架构
+
+代码主目录：
+
+- `mas_treesearch/`
+- 训练入口：`train_mas_treesearch_target_suite.py`
+
+核心流程：
+
+1. 用 embedding 对问题做任务条件化，先从 agent pool 里选候选 agent 子集。
+2. 基于 root template 构造初始 MAS 架构状态。
+3. 在离散结构空间里做 tree search：
+   - 改 template
+   - 换角色对应 agent
+   - 改轻量 prompt slot
+   - stop
+4. 每个候选节点先走 proxy 打分，再走两层真实评估：
+   - `tier1`: 便宜的粗筛
+   - `tier2`: 更贵的最终评估
+5. 训练时在线更新两个轻量学习模块：
+   - `LearnableEditPrior`
+   - `LearnableValueModel`
+6. 最终对每题输出当前最优编排结构。
+
+TreeSearch 的几个关键组件：
+
+- `mas_treesearch/gating.py`: 任务条件化 agent 子集选择
+- `mas_treesearch/search.py`: 主 tree search、动作展开、progressive widening、PUCT 风格父节点选择
+- `mas_treesearch/evaluator.py`: 多层评估器
+- `mas_treesearch/learning.py`: `LearnableEditPrior` / `LearnableValueModel`
+- `mas_treesearch/pipeline.py`: 端到端 pipeline 与 checkpoint
+
+当前 target-suite 训练脚本默认参数：
+
+| 参数 | 当前值 |
+| --- | --- |
+| 数据入口 | `dataset/mas_treesearch_target_suite_20260314` |
+| 输出目录 | `outputs/mas_treesearch_target_suite_train_20260314_212033` |
+| `seed` | `7` |
+| `search_iterations` | `6` |
+| `candidate_core_k / explore_k / max_k` | `4 / 2 / 6` |
+| `tier1_max_tokens` | `160` |
+| `tier2_max_tokens` | `384` |
+| `tier1_repeats / tier2_repeats` | `1 / 1` |
+| learned edit prior | 开启 |
+| learned value model | 开启 |
+| `checkpoint_every` | `25` |
+| `resume` | 开启时按数据集内进度继续 |
+
+当前在线服务配置以环境变量注入：
+
+- `LLM_API_BASE=http://127.0.0.1:8043`
+- `LLM_MODEL=qwen3-8b-train`
+- `LLM_JUDGE_API_BASE=http://127.0.0.1:8045`
+- `LLM_JUDGE_MODEL=qwen3-32b-judge`
+- `EMBED_API_BASE=http://127.0.0.1:8018`
+- `EMBED_MODEL=/mnt/nvme/Qwen3-Embedding-8B`
+- `LLM_MAX_TOKENS=512`
+- `LLM_JUDGE_MAX_TOKENS=128`
+
+说明：
+
+- `SearchConfig` 的完整默认定义在 `mas_treesearch/config.py`
+- 训练脚本只覆盖最核心的一组参数；其余仍走 `SearchConfig` / `TieredEvalConfig` 默认值
+- dataset profile 会进一步覆盖 root templates、prompt 偏置和少量搜索约束，定义在 `mas_treesearch/profiles.py`
+
+### 2. GFlowOpt 当前架构
+
+代码主目录：
+
+- `mas_gflowopt/`
+- 训练入口：`train_mas_gflowopt_target_suite.py`
+
+核心流程：
+
+1. 先用 task conditioning 从 agent pool 中选 top-k agent 子集。
+2. 在该子图上用可训练 GFlowNet 采样 DAG 轨迹。
+3. 奖励函数综合：
+   - task utility
+   - BIC/proxy term
+   - contribution term
+   - question alignment
+   - size penalty
+4. 训练时优化：
+   - detailed-balance loss
+   - contrastive loss
+5. 采样后再走离散优化器做 refine；当前 target-suite 训练默认关闭 refine。
+6. 可学习 gating 会根据训练反馈更新，但当前策略偏保守，优先保证稳定性。
+
+GFlowOpt 的几个关键组件：
+
+- `mas_gflowopt/conditioning.py`: task-conditioned subset selection / gating
+- `mas_gflowopt/gflownet.py`: GFlowNet sampler、DB loss、contrastive loss
+- `mas_gflowopt/representation.py`: 图表示模型
+- `mas_gflowopt/reward.py`: 组合奖励与贡献估计
+- `mas_gflowopt/optimizer.py`: refine / 离散后处理
+- `mas_gflowopt/pipeline.py`: 端到端 pipeline 与 checkpoint
+
+当前 target-suite 训练脚本默认参数：
+
+| 参数 | 当前值 |
+| --- | --- |
+| 数据入口 | `dataset/mas_treesearch_target_suite_20260314` |
+| 输出目录 | `outputs/mas_gflowopt_target_suite_train_resume_fixidx_20260315_102622` |
+| `seed` | `7` |
+| `agent_top_k` | `6` |
+| `gflownet_train_epochs` | `1` |
+| `gflownet_batch_size` | `1` |
+| `num_sampled_dags` | `1` |
+| `contribution_mode` | `none` |
+| `true_eval_interval` | `6`，但当前被 `--one-eval-per-trajectory` 覆盖 |
+| `true_eval_budget` | `4`，但当前被 `--one-eval-per-trajectory` 覆盖 |
+| `one_eval_per_trajectory` | 开启 |
+| `disable_refine` | 开启 |
+| `batch_eval_workers` | `12` |
+| `early_stop_metric` | `total_loss` |
+| `early_stop_patience` | `3` |
+| `early_stop_min_delta` | `0.0001` |
+| `early_stop_warmup_epochs` | `1` |
+| `checkpoint_every` | `25` |
+
+当前在线服务配置：
+
+- `LLM_API_BASE=http://127.0.0.1:8039`
+- `LLM_MODEL=qwen3-8b`
+- embedding 由脚本参数指定：
+  - `--embedding-api-base http://127.0.0.1:8018`
+  - `--embedding-model /mnt/nvme/Qwen3-Embedding-8B`
+
+说明：
+
+- `MASConfig` 的完整默认定义在 `mas_gflowopt/types.py`
+- target-suite 训练脚本通过 `_build_config()` 把一组实验参数写入 `MASConfig`
+- 当前 target-suite 训练显式跳过了 `gsm8k`
+
+### 3. 当前 checkpoint 设计
+
+两套训练现在都支持：
+
+- dataset-level checkpoint
+- suite-level progress
+- resume 后跳过已完成数据集
+- resume 后在数据集内部继续训练
+
+TreeSearch checkpoint 落点：
+
+- suite 进度：`outputs/mas_treesearch_target_suite_train_20260314_212033/suite_progress.json`
+- 每个数据集一个 checkpoint：
+  - `outputs/mas_treesearch_target_suite_train_20260314_212033/<dataset>/checkpoint.json`
+
+当前正在跑的数据集实例：
+
+- `outputs/mas_treesearch_target_suite_train_20260314_212033/mbpp/checkpoint.json`
+
+TreeSearch checkpoint 内容分两部分：
+
+- `metadata`
+  - 当前数据集计划
+  - sampled ids
+  - 已完成训练条数 `train_index_completed`
+  - `validation_round`
+  - `train_rows` / `periodic_validation_rows`
+  - 统计量与阶段标记
+- `pipeline_state`
+  - `search_config`
+  - `runtime_config`
+  - `edit_prior`
+  - `value_model`
+  - `search_engine` 随机状态
+
+GFlowOpt checkpoint 落点：
+
+- suite 进度：`outputs/mas_gflowopt_target_suite_train_resume_fixidx_20260315_102622/suite_progress.json`
+- 每个数据集一个 checkpoint：
+  - `outputs/mas_gflowopt_target_suite_train_resume_fixidx_20260315_102622/<dataset>/checkpoint.pt`
+
+当前正在跑的数据集实例：
+
+- `outputs/mas_gflowopt_target_suite_train_resume_fixidx_20260315_102622/multiarith/checkpoint.pt`
+
+GFlowOpt checkpoint 内容也分两部分：
+
+- `metadata`
+  - sampled ids
+  - `train_index_completed`
+  - `validation_round`
+  - `train_rows` / `periodic_validation_rows`
+  - 统计量与阶段标记
+- `pipeline_state`
+  - `config`
+  - `repr_model`
+  - `conditioner`
+  - `sampler`
+  - `python_random_state`
+  - `torch_random_state`
+
+### 4. 当前最重要的参数入口
+
+如果你要改“实验设置”，优先看这几个文件：
+
+- TreeSearch 主训练参数：`train_mas_treesearch_target_suite.py`
+- TreeSearch 默认结构参数：`mas_treesearch/config.py`
+- TreeSearch dataset-specific 偏置：`mas_treesearch/profiles.py`
+- GFlowOpt 主训练参数：`train_mas_gflowopt_target_suite.py`
+- GFlowOpt 默认总配置：`mas_gflowopt/types.py`
+- 两套 pipeline 的 checkpoint 实现：
+  - `mas_treesearch/pipeline.py`
+  - `mas_gflowopt/pipeline.py`
+
 目录归类：
 
 - 旧栈运行入口：`runners/mas_gflowopt/`

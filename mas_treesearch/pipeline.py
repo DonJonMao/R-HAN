@@ -122,6 +122,7 @@ class TreeSearchMASPipeline:
             "embedding_config": asdict(self.runtime_config.embedding),
             "edit_prior": self._edit_prior.state_dict() if self._edit_prior is not None else None,
             "value_model": self._value_model.state_dict() if self._value_model is not None else None,
+            "search_engine": self._search.state_dict(),
         }
 
     def load_state_dict(self, state: dict) -> None:
@@ -131,11 +132,24 @@ class TreeSearchMASPipeline:
         value_model_state = state.get("value_model")
         if value_model_state is not None and self._value_model is not None:
             self._value_model.load_state_dict(dict(value_model_state))
+        search_state = state.get("search_engine")
+        if isinstance(search_state, dict):
+            self._search.load_state_dict(search_state)
 
     def save_checkpoint(self, path: str, *, metadata: Optional[dict] = None) -> None:
         payload = {
             "metadata": metadata or {},
             "pipeline_state": self.state_dict(),
         }
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+    def load_checkpoint(self, path: str) -> dict:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        self.load_state_dict(dict(payload.get("pipeline_state", {})))
+        metadata = payload.get("metadata", {})
+        if isinstance(metadata, dict):
+            return metadata
+        return {}

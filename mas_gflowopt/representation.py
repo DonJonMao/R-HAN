@@ -56,6 +56,49 @@ class GraphRepresentationModel:
         self.w_src_ctx = [rng.uniform(-0.5, 0.5) for _ in range(dim)]
         self.w_dst_ctx = [rng.uniform(-0.5, 0.5) for _ in range(dim)]
 
+    def state_dict(self) -> Dict[str, object]:
+        return {
+            "smooth_alpha": float(self.smooth_alpha),
+            "message_steps": int(self.message_steps),
+            "attn_edge_bias": float(self.attn_edge_bias),
+            "attn_self_bias": float(self.attn_self_bias),
+            "w_self": [float(x) for x in self.w_self],
+            "w_in": [float(x) for x in self.w_in],
+            "w_out": [float(x) for x in self.w_out],
+            "w_res": [float(x) for x in self.w_res],
+            "w_q": [float(x) for x in self.w_q],
+            "w_k": [float(x) for x in self.w_k],
+            "w_v": [float(x) for x in self.w_v],
+            "w_pool": [float(x) for x in self.w_pool],
+            "w_src": [float(x) for x in self.w_src],
+            "w_dst": [float(x) for x in self.w_dst],
+            "w_src_ctx": [float(x) for x in self.w_src_ctx],
+            "w_dst_ctx": [float(x) for x in self.w_dst_ctx],
+        }
+
+    def load_state_dict(self, payload: Dict[str, object]) -> None:
+        self.smooth_alpha = float(payload.get("smooth_alpha", self.smooth_alpha))
+        self.message_steps = max(1, int(payload.get("message_steps", self.message_steps)))
+        self.attn_edge_bias = float(payload.get("attn_edge_bias", self.attn_edge_bias))
+        self.attn_self_bias = float(payload.get("attn_self_bias", self.attn_self_bias))
+        for name in (
+            "w_self",
+            "w_in",
+            "w_out",
+            "w_res",
+            "w_q",
+            "w_k",
+            "w_v",
+            "w_pool",
+            "w_src",
+            "w_dst",
+            "w_src_ctx",
+            "w_dst_ctx",
+        ):
+            value = payload.get(name)
+            if isinstance(value, list):
+                setattr(self, name, [float(x) for x in value])
+
     @staticmethod
     def _zeros(dim: int) -> Vector:
         return [0.0] * dim

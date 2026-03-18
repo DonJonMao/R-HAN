@@ -157,6 +157,27 @@ class GFlowNetSampler:
             )
         self._initialized = True
 
+    def state_dict(self) -> Dict[str, object]:
+        return {
+            "policy": self.policy.state_dict(),
+            "proj": self.proj.state_dict(),
+            "optimizer": self.optimizer.state_dict() if self.optimizer is not None else None,
+            "rng_state": self.rng.getstate(),
+            "initialized": bool(self._initialized),
+        }
+
+    def load_state_dict(self, payload: Dict[str, object]) -> None:
+        self.policy.load_state_dict(payload.get("policy", {}))
+        self.proj.load_state_dict(payload.get("proj", {}))
+        if payload.get("optimizer") is not None:
+            self.initialize()
+            if self.optimizer is not None:
+                self.optimizer.load_state_dict(payload["optimizer"])
+        rng_state = payload.get("rng_state")
+        if rng_state is not None:
+            self.rng.setstate(rng_state)
+        self._initialized = bool(payload.get("initialized", self._initialized))
+
     def _forward_edge_ops(self, dag: DAGState) -> List[GraphOp]:
         mode = self.config.gflownet_action_space.lower()
         if mode == "edge_add":
