@@ -9,7 +9,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-from mas_treesearch import SearchConfig, TieredEvalConfig, TreeSearchMASPipeline, load_processed_split
+from mas_treesearch import (
+    SearchConfig,
+    TieredEvalConfig,
+    TreeSearchMASPipeline,
+    has_structure_output,
+    load_processed_split,
+    resolve_primary_reward,
+    resolve_result_output,
+    resolve_result_signature,
+    resolve_result_summary,
+    resolve_structure_summary,
+)
 
 
 DEFAULT_DATASET_PLAN: Dict[str, Dict[str, int]] = {
@@ -24,6 +35,19 @@ DEFAULT_DATASET_PLAN: Dict[str, Dict[str, int]] = {
     "math": {"max_train": 600, "max_validation": 150, "max_test": 200, "periodic_every": 75, "periodic_size": 20},
 }
 
+AFLOW_FOUR_DATASET_PLAN: Dict[str, Dict[str, int]] = {
+    "humaneval": {"max_train": -1, "max_validation": 0, "max_test": -1, "periodic_every": 1000000, "periodic_size": 0},
+    "mbpp": {"max_train": -1, "max_validation": 0, "max_test": -1, "periodic_every": 1000000, "periodic_size": 0},
+    "gsm8k": {"max_train": -1, "max_validation": 0, "max_test": -1, "periodic_every": 1000000, "periodic_size": 0},
+    "math": {"max_train": -1, "max_validation": 0, "max_test": -1, "periodic_every": 1000000, "periodic_size": 0},
+}
+
+GENERAL_THREEWAY_DATASET_PLAN: Dict[str, Dict[str, int]] = {
+    "mmlu_pro": {"max_train": -1, "max_validation": 0, "max_test": -1, "periodic_every": 1000000, "periodic_size": 0},
+    "nlgraph": {"max_train": -1, "max_validation": 0, "max_test": -1, "periodic_every": 1000000, "periodic_size": 0},
+    "knowledge_crosswords": {"max_train": -1, "max_validation": 0, "max_test": -1, "periodic_every": 1000000, "periodic_size": 0},
+}
+
 
 @dataclass
 class RunningStats:
@@ -34,6 +58,12 @@ class RunningStats:
     latency: float = 0.0
     token_cost: float = 0.0
     safety_penalty: float = 0.0
+    structure_reward: float = 0.0
+    coverage: float = 0.0
+    complementarity: float = 0.0
+    redundancy_quality: float = 0.0
+    structural_faithfulness: float = 0.0
+    runtime_affordability: float = 0.0
 
     def add(self, row: Dict[str, Any]) -> None:
         self.count += 1
@@ -43,6 +73,12 @@ class RunningStats:
         self.latency += float(row["latency"])
         self.token_cost += float(row["token_cost"])
         self.safety_penalty += float(row["safety_penalty"])
+        self.structure_reward += float(row.get("structure_reward", 0.0))
+        self.coverage += float(row.get("coverage", 0.0))
+        self.complementarity += float(row.get("complementarity", 0.0))
+        self.redundancy_quality += float(row.get("redundancy_quality", 0.0))
+        self.structural_faithfulness += float(row.get("structural_faithfulness", 0.0))
+        self.runtime_affordability += float(row.get("runtime_affordability", 0.0))
 
     def mean_dict(self) -> Dict[str, float]:
         if self.count == 0:
@@ -53,6 +89,12 @@ class RunningStats:
                 "latency": 0.0,
                 "token_cost": 0.0,
                 "safety_penalty": 0.0,
+                "structure_reward": 0.0,
+                "coverage": 0.0,
+                "complementarity": 0.0,
+                "redundancy_quality": 0.0,
+                "structural_faithfulness": 0.0,
+                "runtime_affordability": 0.0,
             }
         return {
             "reward": self.reward / self.count,
@@ -61,6 +103,12 @@ class RunningStats:
             "latency": self.latency / self.count,
             "token_cost": self.token_cost / self.count,
             "safety_penalty": self.safety_penalty / self.count,
+            "structure_reward": self.structure_reward / self.count,
+            "coverage": self.coverage / self.count,
+            "complementarity": self.complementarity / self.count,
+            "redundancy_quality": self.redundancy_quality / self.count,
+            "structural_faithfulness": self.structural_faithfulness / self.count,
+            "runtime_affordability": self.runtime_affordability / self.count,
         }
 
     def state_dict(self) -> Dict[str, float]:
@@ -72,6 +120,12 @@ class RunningStats:
             "latency": float(self.latency),
             "token_cost": float(self.token_cost),
             "safety_penalty": float(self.safety_penalty),
+            "structure_reward": float(self.structure_reward),
+            "coverage": float(self.coverage),
+            "complementarity": float(self.complementarity),
+            "redundancy_quality": float(self.redundancy_quality),
+            "structural_faithfulness": float(self.structural_faithfulness),
+            "runtime_affordability": float(self.runtime_affordability),
         }
 
     @classmethod
@@ -85,6 +139,12 @@ class RunningStats:
             latency=float(payload.get("latency", 0.0)),
             token_cost=float(payload.get("token_cost", 0.0)),
             safety_penalty=float(payload.get("safety_penalty", 0.0)),
+            structure_reward=float(payload.get("structure_reward", 0.0)),
+            coverage=float(payload.get("coverage", 0.0)),
+            complementarity=float(payload.get("complementarity", 0.0)),
+            redundancy_quality=float(payload.get("redundancy_quality", 0.0)),
+            structural_faithfulness=float(payload.get("structural_faithfulness", 0.0)),
+            runtime_affordability=float(payload.get("runtime_affordability", 0.0)),
         )
 
 
@@ -94,6 +154,13 @@ def _utc_now() -> str:
 
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _write_jsonl(path: Path, rows: Iterable[Dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 def _load_json_dict(path: Path) -> Dict[str, Any] | None:
@@ -126,45 +193,82 @@ def _validate_resume_ids(current_items: List[Dict[str, Any]], saved_ids: List[st
 
 
 def _row_from_result(dataset_name: str, split: str, item: Dict[str, Any], result: Any) -> Dict[str, Any]:
-    summary = result.best_node.tier2
-    if summary is None:
-        raise RuntimeError(f"No tier2 summary for dataset={dataset_name} split={split} id={item.get('id', '')}")
-    signature = result.best_node.compiled.signature()
-    return {
+    summary = resolve_result_summary(result)
+    structure = resolve_structure_summary(result)
+    reward = resolve_primary_reward(result)
+    if reward is None:
+        raise RuntimeError(f"No summary available for dataset={dataset_name} split={split} id={item.get('id', '')}")
+    signature = resolve_result_signature(result)
+    row = {
         "id": item.get("id", ""),
         "split": split,
         "dataset": dataset_name,
         "category": item.get("category", ""),
-        "reward": float(summary.mean_reward),
-        "task_score": float(summary.mean_task_score),
-        "success": float(summary.mean_success),
-        "latency": float(summary.mean_latency),
-        "token_cost": float(summary.mean_token_cost),
-        "safety_penalty": float(summary.mean_safety_penalty),
+        "reward": float(reward),
+        "task_score": float(summary.mean_task_score) if summary is not None else float(structure.metrics.execution_probe if structure is not None else 0.0),
+        "success": float(summary.mean_success) if summary is not None else float(structure.metrics.execution_probe if structure is not None else 0.0),
+        "latency": float(summary.mean_latency) if summary is not None else 0.0,
+        "token_cost": float(summary.mean_token_cost) if summary is not None else 0.0,
+        "safety_penalty": float(summary.mean_safety_penalty) if summary is not None else float(max(0.0, 1.0 - (structure.metrics.deployability if structure is not None else 0.0))),
         "signature": signature,
-        "output": summary.evaluations[0].raw_output if summary.evaluations else "",
+        "output": resolve_result_output(result),
     }
+    if has_structure_output(result) and structure is not None:
+        row["structure_reward"] = float(structure.metrics.total_reward)
+        row["coverage"] = float(structure.metrics.coverage)
+        row["complementarity"] = float(structure.metrics.complementarity)
+        row["redundancy_quality"] = float(structure.metrics.redundancy_quality)
+        row["structural_faithfulness"] = float(structure.metrics.structural_faithfulness)
+        row["runtime_affordability"] = float(structure.metrics.runtime_affordability)
+    return row
 
 
 def _print_row(prefix: str, idx: int, total: int, row: Dict[str, Any], *, elapsed_s: float) -> None:
-    print(
-        f"{prefix} {idx}/{total} "
-        f"id={row['id']} reward={row['reward']:.4f} task={row['task_score']:.4f} "
-        f"success={row['success']:.4f} latency={row['latency']:.2f} token={row['token_cost']:.4f} "
-        f"safety={row['safety_penalty']:.4f} elapsed_s={elapsed_s:.1f} signature={row['signature']}",
-        flush=True,
-    )
+    parts = [
+        f"{prefix} {idx}/{total}",
+        f"id={row['id']}",
+        f"reward={row['reward']:.4f}",
+        f"task={row['task_score']:.4f}",
+        f"success={row['success']:.4f}",
+        f"latency={row['latency']:.2f}",
+        f"token={row['token_cost']:.4f}",
+        f"safety={row['safety_penalty']:.4f}",
+    ]
+    if "structure_reward" in row:
+        parts.extend(
+            [
+                f"struct_reward={row['structure_reward']:.4f}",
+                f"coverage={row['coverage']:.4f}",
+                f"complementarity={row['complementarity']:.4f}",
+                f"redundancy={row['redundancy_quality']:.4f}",
+                f"faithfulness={row['structural_faithfulness']:.4f}",
+                f"affordability={row['runtime_affordability']:.4f}",
+            ]
+        )
+    parts.extend([f"elapsed_s={elapsed_s:.1f}", f"signature={row['signature']}"])
+    print(" ".join(parts), flush=True)
 
 
 def _print_summary(prefix: str, stats: RunningStats, *, elapsed_s: float) -> None:
     metrics = stats.mean_dict()
-    print(
-        f"{prefix} count={stats.count} avg_reward={metrics['reward']:.4f} "
-        f"avg_task={metrics['task_score']:.4f} avg_success={metrics['success']:.4f} "
-        f"avg_latency={metrics['latency']:.2f} avg_token={metrics['token_cost']:.4f} "
-        f"avg_safety={metrics['safety_penalty']:.4f} elapsed_s={elapsed_s:.1f}",
-        flush=True,
-    )
+    parts = [
+        f"{prefix}",
+        f"count={stats.count}",
+        f"avg_reward={metrics['reward']:.4f}",
+        f"avg_task={metrics['task_score']:.4f}",
+        f"avg_success={metrics['success']:.4f}",
+        f"avg_latency={metrics['latency']:.2f}",
+        f"avg_token={metrics['token_cost']:.4f}",
+        f"avg_safety={metrics['safety_penalty']:.4f}",
+        f"avg_struct_reward={metrics['structure_reward']:.4f}",
+        f"avg_coverage={metrics['coverage']:.4f}",
+        f"avg_complementarity={metrics['complementarity']:.4f}",
+        f"avg_redundancy={metrics['redundancy_quality']:.4f}",
+        f"avg_faithfulness={metrics['structural_faithfulness']:.4f}",
+        f"avg_affordability={metrics['runtime_affordability']:.4f}",
+        f"elapsed_s={elapsed_s:.1f}",
+    ]
+    print(" ".join(parts), flush=True)
 
 
 def _periodic_window(items: List[Dict[str, Any]], *, round_idx: int, window: int) -> List[Dict[str, Any]]:
@@ -261,6 +365,20 @@ def _suite_progress_path(output_root: Path) -> Path:
     return output_root / "suite_progress.json"
 
 
+def _resolve_dataset_plan(dataset_name: str, preset: str) -> Dict[str, int]:
+    if preset == "default":
+        return dict(DEFAULT_DATASET_PLAN[dataset_name])
+    if preset == "aflow_four":
+        if dataset_name not in AFLOW_FOUR_DATASET_PLAN:
+            raise ValueError(f"Dataset {dataset_name} is not supported by plan preset aflow_four")
+        return dict(AFLOW_FOUR_DATASET_PLAN[dataset_name])
+    if preset == "general_threeway":
+        if dataset_name not in GENERAL_THREEWAY_DATASET_PLAN:
+            raise ValueError(f"Dataset {dataset_name} is not supported by plan preset general_threeway")
+        return dict(GENERAL_THREEWAY_DATASET_PLAN[dataset_name])
+    raise ValueError(f"Unsupported plan preset: {preset}")
+
+
 def _run_dataset(
     dataset_name: str,
     *,
@@ -268,6 +386,7 @@ def _run_dataset(
     output_root: Path,
     search_config: SearchConfig,
     runtime_config: TieredEvalConfig,
+    pipeline_mode: str,
     plan: Dict[str, int],
     seed: int,
     resume: bool,
@@ -288,7 +407,11 @@ def _run_dataset(
     dataset_output_root.mkdir(parents=True, exist_ok=True)
     checkpoint_path = dataset_output_root / "checkpoint.json"
 
-    pipeline = TreeSearchMASPipeline(search_config=search_config, runtime_config=runtime_config)
+    pipeline = TreeSearchMASPipeline(
+        search_config=search_config,
+        runtime_config=runtime_config,
+        pipeline_mode=pipeline_mode,
+    )
     effective_runtime = _runtime_config_dict(pipeline.runtime_config)
 
     train_rows: List[Dict[str, Any]] = []
@@ -476,6 +599,10 @@ def _run_dataset(
     }
     report_path = dataset_output_root / "report.json"
     _write_json(report_path, report)
+    _write_jsonl(dataset_output_root / "train_rows.jsonl", train_rows)
+    _write_jsonl(dataset_output_root / "periodic_validation_rows.jsonl", periodic_validation_rows)
+    _write_jsonl(dataset_output_root / "validation_rows.jsonl", validation_rows)
+    _write_jsonl(dataset_output_root / "test_rows.jsonl", test_rows)
     print(f"[report][{dataset_name}] {report_path}", flush=True)
 
     metadata = _checkpoint_metadata(
@@ -521,6 +648,20 @@ def main() -> None:
     parser.add_argument("--tier2-repeats", type=int, default=1)
     parser.add_argument("--disable-learned-prior", action="store_true")
     parser.add_argument("--disable-learned-value", action="store_true")
+    parser.add_argument(
+        "--plan-preset",
+        choices=("default", "aflow_four", "general_threeway"),
+        default="default",
+        help=(
+            "Dataset plan preset. aflow_four expects an AFlow-style 20/80 data root for humaneval/mbpp/gsm8k/math. "
+            "general_threeway expects train/validation/test views mapped from stage1_train/stage2_train/final_eval."
+        ),
+    )
+    parser.add_argument(
+        "--pipeline-mode",
+        choices=("structure_only", "structure_plus_union_runtime"),
+        default="structure_only",
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--checkpoint-every", type=int, default=25)
     args = parser.parse_args()
@@ -582,7 +723,7 @@ def main() -> None:
             print(f"[resume][{dataset_name}] already completed, skipping", flush=True)
             continue
 
-        plan = dict(DEFAULT_DATASET_PLAN[dataset_name])
+        plan = _resolve_dataset_plan(dataset_name, args.plan_preset)
         suite_progress["datasets"][dataset_name] = {
             "status": "running",
             "seed": args.seed + index * 100,
@@ -597,6 +738,7 @@ def main() -> None:
             output_root=output_root,
             search_config=search_config,
             runtime_config=runtime_config,
+            pipeline_mode=args.pipeline_mode,
             plan=plan,
             seed=args.seed + index * 100,
             resume=args.resume,

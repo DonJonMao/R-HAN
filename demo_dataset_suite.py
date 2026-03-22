@@ -14,8 +14,14 @@ from mas_treesearch import (
     SearchConfig,
     TieredEvalConfig,
     TreeSearchMASPipeline,
+    has_structure_output,
     list_processed_datasets,
     load_processed_split,
+    resolve_primary_reward,
+    resolve_result_output,
+    resolve_result_signature,
+    resolve_result_summary,
+    resolve_structure_summary,
 )
 
 
@@ -116,23 +122,33 @@ def _row_from_result(
     item: Dict[str, Any],
     result: Any,
 ) -> Dict[str, Any]:
-    summary = result.best_node.tier2
-    if summary is None:
-        raise RuntimeError(f"No tier2 summary for dataset={dataset_name} id={item.get('id', '')}")
-    return {
+    summary = resolve_result_summary(result)
+    structure = resolve_structure_summary(result)
+    reward = resolve_primary_reward(result)
+    if reward is None:
+        raise RuntimeError(f"No summary available for dataset={dataset_name} id={item.get('id', '')}")
+    row = {
         "id": item.get("id", ""),
         "split": split,
         "dataset": dataset_name,
         "category": item.get("category", ""),
-        "reward": float(summary.mean_reward),
-        "task_score": float(summary.mean_task_score),
-        "success": float(summary.mean_success),
-        "latency": float(summary.mean_latency),
-        "token_cost": float(summary.mean_token_cost),
-        "safety_penalty": float(summary.mean_safety_penalty),
-        "signature": result.best_node.compiled.signature(),
-        "output": summary.evaluations[0].raw_output if summary.evaluations else "",
+        "reward": float(reward),
+        "task_score": float(summary.mean_task_score) if summary is not None else float(structure.metrics.execution_probe if structure is not None else 0.0),
+        "success": float(summary.mean_success) if summary is not None else float(structure.metrics.execution_probe if structure is not None else 0.0),
+        "latency": float(summary.mean_latency) if summary is not None else 0.0,
+        "token_cost": float(summary.mean_token_cost) if summary is not None else 0.0,
+        "safety_penalty": float(summary.mean_safety_penalty) if summary is not None else float(max(0.0, 1.0 - (structure.metrics.deployability if structure is not None else 0.0))),
+        "signature": resolve_result_signature(result),
+        "output": resolve_result_output(result),
     }
+    if has_structure_output(result) and structure is not None:
+        row["structure_reward"] = float(structure.metrics.total_reward)
+        row["coverage"] = float(structure.metrics.coverage)
+        row["complementarity"] = float(structure.metrics.complementarity)
+        row["redundancy_quality"] = float(structure.metrics.redundancy_quality)
+        row["structural_faithfulness"] = float(structure.metrics.structural_faithfulness)
+        row["runtime_affordability"] = float(structure.metrics.runtime_affordability)
+    return row
 
 
 def _summary_from_rows(name: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -188,6 +204,7 @@ def _run_dataset(
     output_root: Path,
     search_config: SearchConfig,
     runtime_config: TieredEvalConfig,
+    pipeline_mode: str,
     max_pool_size: int,
     split_seed: int,
     log_every: int,
@@ -197,6 +214,7 @@ def _run_dataset(
     pipeline = TreeSearchMASPipeline(
         search_config=search_config,
         runtime_config=runtime_config,
+        pipeline_mode=pipeline_mode,
     )
     dataset_dir = _safe_dataset_dir(output_root, dataset_name)
     dataset_dir.mkdir(parents=True, exist_ok=True)
@@ -346,6 +364,11 @@ def main() -> None:
     parser.add_argument("--disable-learned-prior", action="store_true")
     parser.add_argument("--disable-learned-value", action="store_true")
     parser.add_argument("--debug-judge", action="store_true")
+    parser.add_argument(
+        "--pipeline-mode",
+        choices=("structure_only", "structure_plus_union_runtime"),
+        default="structure_only",
+    )
     args = parser.parse_args()
 
     datasets = list(args.dataset)
@@ -400,6 +423,7 @@ def main() -> None:
             output_root=output_root,
             search_config=search_config,
             runtime_config=runtime_config,
+            pipeline_mode=args.pipeline_mode,
             max_pool_size=args.max_pool_size,
             split_seed=args.split_seed,
             log_every=args.log_every,

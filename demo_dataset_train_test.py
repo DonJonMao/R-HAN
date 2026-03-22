@@ -12,8 +12,14 @@ from mas_treesearch import (
     TieredEvalConfig,
     TreeSearchMASPipeline,
     build_processed_datasets,
+    has_structure_output,
     list_processed_datasets,
     load_processed_split,
+    resolve_primary_reward,
+    resolve_result_output,
+    resolve_result_signature,
+    resolve_result_summary,
+    resolve_structure_summary,
 )
 
 
@@ -72,22 +78,31 @@ def _run_phase(
             dataset_name=item.get("source_dataset"),
             learn=learn,
         )
-        summary = result.best_node.tier2
-        if summary is None:
-            raise RuntimeError(f"No tier2 summary for {item.get('id', '')}")
+        summary = resolve_result_summary(result)
+        structure = resolve_structure_summary(result)
+        reward = resolve_primary_reward(result)
+        if reward is None:
+            raise RuntimeError(f"No summary available for {item.get('id', '')}")
         row = {
             "id": item.get("id", ""),
             "split": split,
             "dataset": item.get("source_dataset", ""),
             "category": item.get("category", ""),
-            "reward": float(summary.mean_reward),
-            "task_score": float(summary.mean_task_score),
-            "success": float(summary.mean_success),
-            "latency": float(summary.mean_latency),
-            "token_cost": float(summary.mean_token_cost),
-            "signature": result.best_node.compiled.signature(),
-            "output": summary.evaluations[0].raw_output if summary.evaluations else "",
+            "reward": float(reward),
+            "task_score": float(summary.mean_task_score) if summary is not None else float(structure.metrics.execution_probe if structure is not None else 0.0),
+            "success": float(summary.mean_success) if summary is not None else float(structure.metrics.execution_probe if structure is not None else 0.0),
+            "latency": float(summary.mean_latency) if summary is not None else 0.0,
+            "token_cost": float(summary.mean_token_cost) if summary is not None else 0.0,
+            "signature": resolve_result_signature(result),
+            "output": resolve_result_output(result),
         }
+        if has_structure_output(result) and structure is not None:
+            row["structure_reward"] = float(structure.metrics.total_reward)
+            row["coverage"] = float(structure.metrics.coverage)
+            row["complementarity"] = float(structure.metrics.complementarity)
+            row["redundancy_quality"] = float(structure.metrics.redundancy_quality)
+            row["structural_faithfulness"] = float(structure.metrics.structural_faithfulness)
+            row["runtime_affordability"] = float(structure.metrics.runtime_affordability)
         rows.append(row)
         if log_every > 0 and (idx == 1 or idx % log_every == 0 or idx == len(items_list)):
             print(
@@ -135,6 +150,11 @@ def main() -> None:
     parser.add_argument("--disable-learned-prior", action="store_true")
     parser.add_argument("--disable-learned-value", action="store_true")
     parser.add_argument("--debug-judge", action="store_true")
+    parser.add_argument(
+        "--pipeline-mode",
+        choices=("structure_only", "structure_plus_union_runtime"),
+        default="structure_only",
+    )
     parser.add_argument("--log-every", type=int, default=10)
     parser.add_argument("--report-file", default="", help="Optional JSON report path.")
     args = parser.parse_args()
@@ -171,6 +191,7 @@ def main() -> None:
         pipeline = TreeSearchMASPipeline(
             search_config=search_config,
             runtime_config=runtime_config,
+            pipeline_mode=args.pipeline_mode,
         )
         dataset_report: dict[str, Any] = {}
 

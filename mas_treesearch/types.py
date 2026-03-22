@@ -122,13 +122,42 @@ class EvalSummary:
 
 
 @dataclass
+class StructureMetrics:
+    coverage: float
+    complementarity: float
+    redundancy_quality: float
+    structural_faithfulness: float
+    runtime_affordability: float
+    topology_quality: float
+    diversity_quality: float
+    deployability: float
+    execution_probe: float
+    total_reward: float
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class StructureSummary:
+    mode: str
+    signature: str
+    selected_topology_signatures: List[str]
+    selected_topology_scores: List[float]
+    metrics: StructureMetrics
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class SearchRecord:
     state_signature: str
     parent_signature: Optional[str]
     action: str
     proxy_score: float
-    tier1_score: Optional[float]
-    tier2_score: Optional[float]
+    precheck_score: Optional[float] = None
+    tier1_score: Optional[float] = None
+    tier2_score: Optional[float] = None
+    precheck_feedback: Optional[float] = None
+    tier1_feedback: Optional[float] = None
+    tier2_feedback: Optional[float] = None
 
 
 @dataclass
@@ -137,9 +166,13 @@ class SearchNodeStats:
     q_mean: float = 0.0
     q_max: float = float("-inf")
     proxy_mean: float = 0.0
+    precheck_mean: float = 0.0
     tier1_mean: float = 0.0
     tier2_mean: float = 0.0
     tier2_std: float = 0.0
+    precheck_feedback: float = 0.0
+    tier1_feedback: float = 0.0
+    tier2_feedback: float = 0.0
 
 
 @dataclass
@@ -153,6 +186,7 @@ class SearchNode:
     unexpanded_actions: List["EditAction"] = field(default_factory=list)
     proxy_score: Optional[float] = None
     proxy_uncertainty: Optional[float] = None
+    precheck: Optional[EvalSummary] = None
     tier1: Optional[EvalSummary] = None
     tier2: Optional[EvalSummary] = None
 
@@ -176,3 +210,72 @@ class SearchResult:
     top_nodes: List[SearchNode]
     records: List[SearchRecord]
     nodes: Dict[str, SearchNode]
+    pipeline_mode: str = "structure_only"
+    selected_topology_nodes: List[SearchNode] = field(default_factory=list)
+    union_graph: Optional["UnionGraph"] = None
+    structure_summary: Optional[StructureSummary] = None
+    final_summary: Optional[EvalSummary] = None
+    final_signature: str = ""
+    turn_traces: List[Dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class MemoryChunk:
+    chunk_id: str
+    agent_id: str
+    role: str
+    turn_index: int
+    source_type: str
+    text: str
+    embedding: Vector
+    token_estimate: int
+    confidence: float = 0.0
+    importance: float = 0.0
+    novelty: float = 0.0
+    error_tag: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class UnionNode:
+    node_id: str
+    agent_id: str
+    role: str
+    node_type: str
+    source_graph_ids: List[str]
+    support_count: int
+    avg_graph_score: float
+    root_frequency: float = 0.0
+    sink_frequency: float = 0.0
+    topo_level_mean: float = 0.0
+    topo_level_var: float = 0.0
+    state_vector: Vector = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class UnionEdge:
+    src: str
+    dst: str
+    edge_type: str
+    source_graph_ids: List[str]
+    support_count: int
+    support_ratio: float
+    avg_parent_score: float
+    best_parent_score: float
+    initial_keep_logit: float
+    dynamic_keep_weight: float
+    level_delta_mean: float = 1.0
+    latency_prior: float = 0.0
+    token_cost_prior: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class UnionGraph:
+    nodes: Dict[str, UnionNode]
+    edges: List[UnionEdge]
+    source_topology_signatures: List[str]
+    root_node_ids: List[str]
+    sink_node_ids: List[str]
+    metadata: Dict[str, Any] = field(default_factory=dict)

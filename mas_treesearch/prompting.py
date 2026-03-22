@@ -72,16 +72,19 @@ def build_user_prompt(
     upstream_outputs: Dict[str, str],
     task_instruction: str,
     metadata: Optional[dict] = None,
+    task_context: str = "",
     answer_contract: str = "",
 ) -> str:
     upstream = "\n".join(f"[{name}]\n{text}" for name, text in upstream_outputs.items() if text.strip())
     if not upstream:
         upstream = "无上游信息。"
     rendered_question = render_question_text(question_text, metadata=metadata)
+    context_block = f"\n任务上下文：\n{task_context}\n" if task_context.strip() else ""
     contract_block = f"\n输出约束：\n{answer_contract}\n" if answer_contract.strip() else ""
     return (
         f"问题：\n{rendered_question}\n\n"
         f"上游信息：\n{upstream}\n\n"
         f"当前任务：\n{task_instruction}\n"
+        f"{context_block}"
         f"{contract_block}"
     )

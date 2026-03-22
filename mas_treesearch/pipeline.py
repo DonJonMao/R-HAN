@@ -9,14 +9,17 @@ from typing import Optional
 from .agents import AgentPool, default_agent_pool
 from .cache import DictCache
 from .clients import CachedEmbedder
-from .config import ChatConfig, EmbeddingConfig, JudgeConfig, SearchConfig, TieredEvalConfig
+from .config import ChatConfig, EmbeddingConfig, JudgeConfig, SearchConfig, TieredEvalConfig, UnionRuntimeConfig
 from .profiles import resolve_dataset_profile
 from .evaluator import MultiFidelityEvaluator
 from .gating import TaskConditioner
 from .learning import FeatureBuilder, LearnableEditPrior, LearnableValueModel
 from .proxy import StaticProxyScorer
+from .reward import risk_adjusted_score
 from .search import TreeSearchEngine
+from .topology_set import TopologySetScorer
 from .types import SearchResult
+from .union_runtime import GraphMerger, UnionRuntime
 
 
 def _env_chat_config() -> ChatConfig:
@@ -56,6 +59,8 @@ def _env_embedding_config() -> EmbeddingConfig:
 class TreeSearchMASPipeline:
     search_config: SearchConfig = field(default_factory=SearchConfig)
     runtime_config: TieredEvalConfig = field(default_factory=TieredEvalConfig)
+    union_config: UnionRuntimeConfig = field(default_factory=UnionRuntimeConfig)
+    pipeline_mode: str = "structure_only"
     agent_pool: Optional[AgentPool] = None
 
     def __post_init__(self) -> None:
@@ -91,6 +96,9 @@ class TreeSearchMASPipeline:
             edit_prior=self._edit_prior,
             value_model=self._value_model,
         )
+        self._topology_scorer = TopologySetScorer(self.search_config, self.union_config)
+        self._graph_merger = GraphMerger(self.union_config)
+        self._union_runtime = UnionRuntime(self.union_config, self._evaluator, self.agent_pool, self._embedder)
 
     def search(
         self,
@@ -100,11 +108,15 @@ class TreeSearchMASPipeline:
         metadata: Optional[dict] = None,
         dataset_name: Optional[str] = None,
         learn: bool = True,
+        pipeline_mode: Optional[str] = None,
     ) -> SearchResult:
+        active_mode = pipeline_mode or self.pipeline_mode
+        if active_mode not in {"structure_only", "structure_plus_union_runtime"}:
+            raise ValueError(f"Unsupported pipeline_mode: {active_mode}")
         resolved_dataset = dataset_name or ((metadata or {}).get("mas_dataset_name") if isinstance(metadata, dict) else None)
         profile = resolve_dataset_profile(resolved_dataset)
         selection = self._conditioner.select(question_text, profile=profile)
-        return self._search.search(
+        result = self._search.search(
             question_text=question_text,
             selection=selection,
             reference_answer=reference_answer,
@@ -112,11 +124,59 @@ class TreeSearchMASPipeline:
             dataset_profile=profile,
             learn=learn,
         )
+        result.pipeline_mode = active_mode
+        selected_topologies = self._topology_scorer.select(
+            result.nodes.values(),
+            dataset_profile=profile,
+            fallback_best=result.best_node,
+        )
+        result.selected_topology_nodes = list(selected_topologies)
+        if not selected_topologies:
+            return result
+        union_graph = self._graph_merger.merge(selected_topologies)
+        result.union_graph = union_graph
+        result.structure_summary = self._topology_scorer.summarize(
+            selected_topologies,
+            union_graph,
+            dataset_profile=profile,
+            mode=active_mode,
+        )
+        if result.structure_summary is not None:
+            result.final_signature = result.structure_summary.signature
+        if active_mode == "structure_only" or not self.union_config.enable_union_runtime:
+            return result
+        union_out = self._union_runtime.run(
+            union_graph,
+            question_text=question_text,
+            metadata=metadata,
+            reference_answer=reference_answer,
+            dataset_profile=profile,
+        )
+        baseline_summary = result.best_node.tier2
+        use_union = True
+        if baseline_summary is not None:
+            baseline_reward = risk_adjusted_score(baseline_summary, self.search_config.risk_std_penalty)
+            union_reward = risk_adjusted_score(union_out.summary, self.search_config.risk_std_penalty)
+            if union_reward < baseline_reward:
+                use_union = False
+            union_out.turn_traces.append(
+                {
+                    "selection_decision": "union" if use_union else "fallback_best_tree",
+                    "union_reward": union_reward,
+                    "baseline_reward": baseline_reward,
+                }
+            )
+        result.final_summary = union_out.summary if use_union else baseline_summary
+        result.final_signature = union_out.signature if use_union else result.best_node.compiled.signature()
+        result.turn_traces = union_out.turn_traces
+        return result
 
     def state_dict(self) -> dict:
         return {
             "search_config": asdict(self.search_config),
             "runtime_config": asdict(self.runtime_config),
+            "union_config": asdict(self.union_config),
+            "pipeline_mode": self.pipeline_mode,
             "chat_config": asdict(self.runtime_config.chat),
             "judge_config": asdict(self.runtime_config.judge),
             "embedding_config": asdict(self.runtime_config.embedding),
@@ -132,6 +192,9 @@ class TreeSearchMASPipeline:
         value_model_state = state.get("value_model")
         if value_model_state is not None and self._value_model is not None:
             self._value_model.load_state_dict(dict(value_model_state))
+        pipeline_mode = state.get("pipeline_mode")
+        if isinstance(pipeline_mode, str) and pipeline_mode:
+            self.pipeline_mode = pipeline_mode
         search_state = state.get("search_engine")
         if isinstance(search_state, dict):
             self._search.load_state_dict(search_state)

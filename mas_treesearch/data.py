@@ -160,17 +160,17 @@ def _format_question(record: Dict[str, Any]) -> str:
 
     if dataset_name in {"mmlu", "popqa", "cqa"}:
         if "CONFIDENCE -" in question.upper():
-            return question + "\n\nRemember: output exactly two lines in the required format."
-        return question + "\n\nRemember: output exactly one line in the required format."
+            return question + "\n\nThink carefully across all options. Output exactly two lines in the required format and nothing else."
+        return question + "\n\nThink carefully across all options. Output exactly one line in the required format and nothing else."
 
     if dataset_name == "gsm8k":
-        return question + "\n\nReturn only the final numeric answer."
+        return question + "\n\nCompute carefully and return only the final numeric answer."
 
     if dataset_name == "multiarith":
-        return question + "\n\nSolve the arithmetic problem and return only the final numeric answer."
+        return question + "\n\nSolve the arithmetic problem carefully and return only the final numeric answer."
 
     if dataset_name == "math":
-        return question + "\n\nReturn only the final boxed answer content as a concise mathematical expression."
+        return question + "\n\nReturn only the final boxed answer content as a concise, simplified mathematical expression."
 
     if dataset_name == "normad":
         return question + "\n\nAnswer with exactly one token: yes or no."
@@ -192,7 +192,7 @@ def _format_question(record: Dict[str, Any]) -> str:
                 if isinstance(values, list):
                     lines.append(f"{blank}: {', '.join(str(v) for v in values)}")
         lines.append("")
-        lines.append("Return only a JSON array of filled values following the blank order.")
+        lines.append("Return only a JSON array of filled values following the blank order. Do not output explanations.")
         return "\n".join(lines)
 
     if dataset_name == "nlgraph":
@@ -207,7 +207,7 @@ def _format_question(record: Dict[str, Any]) -> str:
             "shortest_path": '{"path":[...],"total_weight":0}',
             "GNN": '{"node_embeddings":{"0":[0,0]}}',
         }.get(task, '{"answer": ...}')
-        return question + f"\n\nReturn only a JSON object using this schema: {schema}"
+        return question + f"\n\nReturn only a JSON object using this schema: {schema}. Do not output explanations."
 
     if dataset_name == "humaneval":
         entry_point = str(metadata.get("entry_point", "")).strip()
@@ -215,6 +215,13 @@ def _format_question(record: Dict[str, Any]) -> str:
         if entry_point:
             lines.append("")
             lines.append(f"Implement the Python function `{entry_point}`.")
+        test_text = str(metadata.get("test", "")).strip()
+        if test_text:
+            assert_lines = [line.strip() for line in test_text.splitlines() if "assert" in line][:2]
+            if assert_lines:
+                lines.append("")
+                lines.append("Visible test examples:")
+                lines.extend(assert_lines)
         lines.append("")
         lines.append("Return only executable Python code without Markdown fences.")
         return "\n".join(lines)
@@ -225,6 +232,11 @@ def _format_question(record: Dict[str, Any]) -> str:
         if entry_point:
             lines.append("")
             lines.append(f"Implement the Python function `{entry_point}`.")
+        test_list = metadata.get("test_list")
+        if isinstance(test_list, list) and test_list:
+            lines.append("")
+            lines.append("Visible test examples:")
+            lines.extend(str(item).strip() for item in test_list[:2] if str(item).strip())
         lines.append("")
         lines.append("Return only executable Python code without Markdown fences.")
         return "\n".join(lines)
@@ -238,11 +250,11 @@ def _format_question(record: Dict[str, Any]) -> str:
         if abstract:
             parts.append(f"Paper abstract: {abstract}")
         parts.append(f"Question: {question}")
-        parts.append("Return a short answer phrase only.")
+        parts.append("Return a short answer phrase only. Prefer evidence grounded in the provided paper metadata/context.")
         return "\n\n".join(parts)
 
     if dataset_name == "gaia":
-        return question + "\n\nFollow the exact output format requested in the question."
+        return question + "\n\nFollow the exact output format requested in the question. If no format is given, keep the final answer minimal."
 
     if profile.answer_format == "short_span":
         return question + "\n\nReturn only a short answer span."

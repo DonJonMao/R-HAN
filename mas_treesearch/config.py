@@ -70,6 +70,22 @@ class TieredEvalConfig:
 
 
 @dataclass
+class UnionRuntimeConfig:
+    enable_union_runtime: bool = True
+    selected_topology_k: int = 3
+    candidate_pool_k: int = 8
+    turn_count: int = 5
+    edge_prune_threshold: float = 0.42
+    memory_top_k: int = 4
+    memory_max_chars: int = 900
+    controller_max_chars: int = 1200
+    topology_quality_floor: float = 0.05
+    topology_diversity_weight: float = 0.32
+    topology_union_bonus: float = 0.08
+    union_size_penalty_scale: float = 0.04
+
+
+@dataclass
 class SearchConfig:
     random_seed: int = 7
     candidate_core_k: int = 4
@@ -85,6 +101,8 @@ class SearchConfig:
     uncertainty_penalty: float = 0.10
     progressive_widening_alpha: float = 1.5
     progressive_widening_base: int = 2
+    enable_code_precheck: bool = True
+    code_precheck_top_fraction: float = 0.50
     tier1_top_fraction: float = 0.25
     tier2_top_fraction: float = 0.20
     final_top_k: int = 3

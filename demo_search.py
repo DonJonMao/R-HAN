@@ -5,7 +5,18 @@ import json
 import random
 from typing import Any
 
-from mas_treesearch import SearchConfig, TieredEvalConfig, TreeSearchMASPipeline
+from mas_treesearch import (
+    SearchConfig,
+    TieredEvalConfig,
+    TreeSearchMASPipeline,
+    has_structure_output,
+    is_union_result,
+    resolve_primary_reward,
+    resolve_result_output,
+    resolve_result_signature,
+    resolve_result_summary,
+    resolve_structure_summary,
+)
 
 
 def load_question_from_jsonl(path: str, index: int) -> dict[str, Any]:
@@ -30,6 +41,7 @@ def load_question_from_jsonl(path: str, index: int) -> dict[str, Any]:
 def summarize_node(node, debug_judge: bool = False) -> str:
     tier2 = node.tier2
     tier1 = node.tier1
+    precheck = node.precheck
     active_agents = node.state.active_agents()
     lines = [
         f"signature={node.compiled.signature()}",
@@ -49,6 +61,15 @@ def summarize_node(node, debug_judge: bool = False) -> str:
             f"success={tier1.mean_success:.4f} "
             f"latency={tier1.mean_latency:.2f} "
             f"token_cost={tier1.mean_token_cost:.4f}"
+        )
+    if precheck is not None:
+        lines.append(
+            "precheck="
+            f"reward={precheck.mean_reward:.4f} "
+            f"task={precheck.mean_task_score:.4f} "
+            f"success={precheck.mean_success:.4f} "
+            f"latency={precheck.mean_latency:.2f} "
+            f"token_cost={precheck.mean_token_cost:.4f}"
         )
     if tier2 is not None:
         lines.append(
@@ -111,6 +132,11 @@ def main() -> None:
     parser.add_argument("--debug-judge", action="store_true")
     parser.add_argument("--random-count", type=int, default=1, help="Randomly evaluate N items from --question-file.")
     parser.add_argument("--random-seed", type=int, default=7)
+    parser.add_argument(
+        "--pipeline-mode",
+        choices=("structure_only", "structure_plus_union_runtime"),
+        default="structure_only",
+    )
     args = parser.parse_args()
 
     search_config = SearchConfig(
@@ -131,6 +157,7 @@ def main() -> None:
     pipeline = TreeSearchMASPipeline(
         search_config=search_config,
         runtime_config=runtime_config,
+        pipeline_mode=args.pipeline_mode,
     )
 
     items: list[tuple[str, dict[str, Any], Optional[str], Optional[dict]]] = []
@@ -200,6 +227,56 @@ def main() -> None:
             print(sig, flush=True)
         print("=== Best Node ===", flush=True)
         print(summarize_node(result.best_node, debug_judge=args.debug_judge), flush=True)
+        if has_structure_output(result):
+            structure = resolve_structure_summary(result)
+            if structure is not None:
+                metrics = structure.metrics
+                print("=== Structure Output ===", flush=True)
+                print(f"mode={result.pipeline_mode}", flush=True)
+                print(f"structure_signature={structure.signature}", flush=True)
+                print(
+                    "selected_topologies="
+                    + json.dumps(structure.selected_topology_signatures, ensure_ascii=False),
+                    flush=True,
+                )
+                print(
+                    "selected_topology_scores="
+                    + json.dumps([round(score, 4) for score in structure.selected_topology_scores], ensure_ascii=False),
+                    flush=True,
+                )
+                print(
+                    "structure_metrics="
+                    f"coverage={metrics.coverage:.4f} "
+                    f"complementarity={metrics.complementarity:.4f} "
+                    f"redundancy={metrics.redundancy_quality:.4f} "
+                    f"faithfulness={metrics.structural_faithfulness:.4f} "
+                    f"affordability={metrics.runtime_affordability:.4f} "
+                    f"probe={metrics.execution_probe:.4f} "
+                    f"total={metrics.total_reward:.4f}",
+                    flush=True,
+                )
+        if is_union_result(result):
+            final_summary = resolve_result_summary(result)
+            print("=== Union Runtime ===", flush=True)
+            print(f"final_signature={resolve_result_signature(result)}", flush=True)
+            if result.selected_topology_nodes:
+                print(
+                    "selected_topologies="
+                    + json.dumps([node.compiled.signature() for node in result.selected_topology_nodes], ensure_ascii=False),
+                    flush=True,
+                )
+            if final_summary is not None:
+                print(
+                    "final_summary="
+                    f"reward={final_summary.mean_reward:.4f} "
+                    f"task={final_summary.mean_task_score:.4f} "
+                    f"success={final_summary.mean_success:.4f} "
+                    f"latency={final_summary.mean_latency:.2f} "
+                    f"token_cost={final_summary.mean_token_cost:.4f}",
+                    flush=True,
+                )
+                print(f"final_output={resolve_result_output(result)}", flush=True)
+            print(f"turns={len(result.turn_traces)}", flush=True)
         print("=== Top Nodes ===", flush=True)
         for idx, node in enumerate(result.top_nodes, start=1):
             print(f"[top {idx}]", flush=True)
@@ -213,13 +290,14 @@ def main() -> None:
                 f"tier1={record.tier1_score} tier2={record.tier2_score}",
                 flush=True,
             )
-        best = result.best_node.tier2
-        if best is not None:
+        best = resolve_result_summary(result)
+        primary_reward = resolve_primary_reward(result)
+        if primary_reward is not None:
             aggregate.append(
                 {
-                    "reward": best.mean_reward,
-                    "task_score": best.mean_task_score,
-                    "success": best.mean_success,
+                    "reward": primary_reward,
+                    "task_score": best.mean_task_score if best is not None else (result.structure_summary.metrics.execution_probe if result.structure_summary is not None else 0.0),
+                    "success": best.mean_success if best is not None else (result.structure_summary.metrics.execution_probe if result.structure_summary is not None else 0.0),
                 }
             )
     if aggregate:

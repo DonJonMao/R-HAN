@@ -157,8 +157,73 @@ class TreeSearchEngine:
         self._candidate_agent_ids: List[str] = []
         self._allowed_templates: List[str] = [template.value for template in WorkflowTemplate]
         self._dataset_profile: DatasetProfile = DEFAULT_PROFILE
+        self._metadata: dict = {}
         self._prompt_edit_cooldown: int = config.prompt_edit_cooldown
         self._max_prompt_edits_per_state: int = config.max_prompt_edits_per_state
+
+    def _feedback_signal(self, summary) -> float:
+        if summary is None:
+            return 0.0
+        return self.evaluator.feedback_signal(
+            summary,
+            dataset_profile=self._dataset_profile,
+            metadata=self._metadata,
+        )
+
+    def _effective_summary_score(self, summary, *, tier: str) -> float:
+        if summary is None:
+            return float("-inf")
+        base = risk_adjusted_score(summary, self.config.risk_std_penalty if tier == "tier2" else 0.0)
+        feedback = self._feedback_signal(summary)
+        if self._dataset_profile.task_type == "code_generation":
+            if tier == "precheck":
+                weight = 0.35
+            elif tier == "tier1":
+                weight = 0.30
+            else:
+                weight = 0.18
+            return base + weight * feedback
+        if self._dataset_profile.task_type in {"graph_reasoning", "structured_list"}:
+            weight = 0.10 if tier == "tier1" else 0.06
+            return base + weight * feedback
+        return base
+
+    def _precheck_candidates(self, nodes: List[SearchNode]) -> List[SearchNode]:
+        if not nodes or not self.config.enable_code_precheck or self._dataset_profile.task_type != "code_generation":
+            return []
+        limit = max(1, int(math.ceil(len(nodes) * self.config.code_precheck_top_fraction)))
+        ranked = sorted(
+            nodes,
+            key=lambda node: (
+                node.proxy_score if node.proxy_score is not None else float("-inf"),
+                -(node.proxy_uncertainty if node.proxy_uncertainty is not None else 0.0),
+                node.compiled.signature(),
+            ),
+            reverse=True,
+        )
+        return ranked[:limit]
+
+    def _observed_node_score(self, node: SearchNode) -> float:
+        if node.tier2 is not None:
+            return self._effective_summary_score(node.tier2, tier="tier2")
+        if node.tier1 is not None:
+            return 0.92 * self._effective_summary_score(node.tier1, tier="tier1")
+        if node.precheck is not None:
+            return 0.85 * self._effective_summary_score(node.precheck, tier="precheck")
+        return node.proxy_score if node.proxy_score is not None else float("-inf")
+
+    def _node_rank_key(self, node: SearchNode) -> tuple[float, ...]:
+        return (
+            1.0 if node.tier2 is not None else 0.0,
+            self._effective_summary_score(node.tier2, tier="tier2") if node.tier2 is not None else float("-inf"),
+            1.0 if node.tier1 is not None else 0.0,
+            self._effective_summary_score(node.tier1, tier="tier1") if node.tier1 is not None else float("-inf"),
+            1.0 if node.precheck is not None else 0.0,
+            self._effective_summary_score(node.precheck, tier="precheck") if node.precheck is not None else float("-inf"),
+            node.stats.q_mean,
+            node.proxy_score if node.proxy_score is not None else float("-inf"),
+            -(node.proxy_uncertainty if node.proxy_uncertainty is not None else 0.0),
+        )
 
     def state_dict(self) -> dict:
         return {
@@ -339,7 +404,8 @@ class TreeSearchEngine:
         scored = sorted(
             self._nodes.values(),
             key=lambda node: (
-                node.stats.q_mean if node.stats.visits > 0 else float("-inf"),
+                max(node.stats.q_mean if node.stats.visits > 0 else float("-inf"), self._observed_node_score(node)),
+                self._observed_node_score(node),
                 node.proxy_score if node.proxy_score is not None else float("-inf"),
             ),
             reverse=True,
@@ -348,7 +414,7 @@ class TreeSearchEngine:
         weights = []
         for node in candidates:
             prior = node.proxy_score if node.proxy_score is not None else 0.1
-            exploit = node.stats.q_mean
+            exploit = max(node.stats.q_mean if node.stats.visits > 0 else float("-inf"), self._observed_node_score(node))
             bonus = self.config.puct_c * prior * math.sqrt(max(1, node.stats.visits + 1)) / (1 + len(node.children))
             weights.append(max(1e-6, exploit + bonus + 1.0))
         total = sum(weights)
@@ -361,7 +427,12 @@ class TreeSearchEngine:
         return candidates[-1]
 
     def _evaluate_proxy(self, node: SearchNode, question_vector: Sequence[float]) -> None:
-        proxy = self.proxy_scorer.score(node.compiled, list(question_vector), profile=self._dataset_profile)
+        proxy = self.proxy_scorer.score(
+            node.compiled,
+            list(question_vector),
+            profile=self._dataset_profile,
+            metadata=self._metadata,
+        )
         score = proxy.score
         uncertainty = proxy.uncertainty
         if self.config.enable_learned_value_model and self.value_model is not None:
@@ -394,7 +465,14 @@ class TreeSearchEngine:
         ranked = sorted(
             nodes,
             key=lambda n: (
-                n.tier1.mean_reward if n.tier1 is not None else (n.proxy_score if n.proxy_score is not None else float("-inf")),
+                self._effective_summary_score(n.tier1, tier="tier1")
+                if n.tier1 is not None
+                else (
+                    self._effective_summary_score(n.precheck, tier="precheck")
+                    if n.precheck is not None
+                    else (n.proxy_score if n.proxy_score is not None else float("-inf"))
+                ),
+                self._effective_summary_score(n.precheck, tier="precheck") if n.precheck is not None else float("-inf"),
                 -(n.proxy_uncertainty if n.proxy_uncertainty is not None else 0.0),
             ),
             reverse=True,
@@ -416,6 +494,7 @@ class TreeSearchEngine:
         self._roots = []
         self._candidate_agent_ids = list(selection.candidate_agent_ids)
         self._dataset_profile = dataset_profile
+        self._metadata = dict(metadata or {})
         self._allowed_templates = list(dataset_profile.allowed_templates or [template.value for template in WorkflowTemplate])
         self._prompt_edit_cooldown = (
             dataset_profile.search_overrides.prompt_edit_cooldown or self.config.prompt_edit_cooldown
@@ -460,13 +539,33 @@ class TreeSearchEngine:
                         parent_signature=parent.compiled.signature(),
                         action=action.describe(),
                         proxy_score=child.proxy_score or 0.0,
+                        precheck_score=None,
                         tier1_score=None,
                         tier2_score=None,
+                        precheck_feedback=None,
+                        tier1_feedback=None,
+                        tier2_feedback=None,
                     )
                 )
                 expanded.append(child)
                 if action.kind == "stop":
                     break
+            for node in self._precheck_candidates(expanded):
+                node.precheck = self.evaluator.fast_code_precheck(
+                    node.compiled,
+                    question_text,
+                    reference_answer=reference_answer,
+                    metadata=metadata,
+                    dataset_profile=dataset_profile,
+                )
+                if node.precheck is None:
+                    continue
+                node.stats.precheck_mean = node.precheck.mean_reward
+                node.stats.precheck_feedback = self._feedback_signal(node.precheck)
+                for record in self._records:
+                    if record.state_signature == node.compiled.signature():
+                        record.precheck_score = node.precheck.mean_reward
+                        record.precheck_feedback = node.stats.precheck_feedback
             tier1_nodes = self._tier_filter(expanded, tier1_fraction)
             for node in tier1_nodes:
                 node.tier1 = self.evaluator.evaluate(
@@ -478,9 +577,11 @@ class TreeSearchEngine:
                     dataset_profile=dataset_profile,
                 )
                 node.stats.tier1_mean = node.tier1.mean_reward
+                node.stats.tier1_feedback = self._feedback_signal(node.tier1)
                 for record in self._records:
                     if record.state_signature == node.compiled.signature():
                         record.tier1_score = node.tier1.mean_reward
+                        record.tier1_feedback = node.stats.tier1_feedback
             tier2_nodes = self._tier_filter(tier1_nodes, tier2_fraction)
             for node in tier2_nodes:
                 node.tier2 = self.evaluator.evaluate(
@@ -493,6 +594,7 @@ class TreeSearchEngine:
                 )
                 node.stats.tier2_mean = node.tier2.mean_reward
                 node.stats.tier2_std = node.tier2.reward_std
+                node.stats.tier2_feedback = self._feedback_signal(node.tier2)
                 if learn and self.config.enable_learned_value_model and self.value_model is not None:
                     state_feats = self.feature_builder.state_features(node.compiled, selection.question_vector)
                     self.value_model.update(state_feats, node.tier2.mean_reward)
@@ -513,16 +615,13 @@ class TreeSearchEngine:
                 for record in self._records:
                     if record.state_signature == node.compiled.signature():
                         record.tier2_score = node.tier2.mean_reward
-                reward = risk_adjusted_score(node.tier2, self.config.risk_std_penalty)
+                        record.tier2_feedback = node.stats.tier2_feedback
+                reward = self._effective_summary_score(node.tier2, tier="tier2")
                 self._backpropagate(node, reward)
 
         ranked = sorted(
             self._nodes.values(),
-            key=lambda node: (
-                risk_adjusted_score(node.tier2, self.config.risk_std_penalty) if node.tier2 else float("-inf"),
-                node.stats.q_mean,
-                node.proxy_score if node.proxy_score is not None else float("-inf"),
-            ),
+            key=self._node_rank_key,
             reverse=True,
         )
         finalists = ranked[: max(1, final_top_k)]
@@ -540,9 +639,10 @@ class TreeSearchEngine:
                 )
                 node.stats.tier2_mean = node.tier2.mean_reward
                 node.stats.tier2_std = node.tier2.reward_std
+                node.stats.tier2_feedback = self._feedback_signal(node.tier2)
         finalists = sorted(
             finalists,
-            key=lambda node: risk_adjusted_score(node.tier2, self.config.risk_std_penalty) if node.tier2 else float("-inf"),
+            key=self._node_rank_key,
             reverse=True,
         )
         return SearchResult(

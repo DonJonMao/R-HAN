@@ -15,7 +15,7 @@ from .clients import OpenAICompatClient
 from .config import ChatConfig, TierRuntimeConfig, TieredEvalConfig
 from .profiles import DEFAULT_PROFILE, DatasetProfile
 from .prompting import build_system_prompt, build_user_prompt, render_question_text
-from .reward import reward_from_evaluation
+from .reward import reward_from_evaluation, reward_weights_for_profile
 from .types import ArchitectureState, CompiledArchitecture, EvalSummary, PromptSlots, TaskEvaluation
 
 
@@ -112,7 +112,13 @@ class MultiFidelityEvaluator:
             judge_max_tokens=overrides.tier2_judge_max_tokens or runtime.judge_max_tokens,
         )
 
-    def _role_task_instruction(self, compiled: CompiledArchitecture, role: str) -> str:
+    def _role_task_instruction(
+        self,
+        compiled: CompiledArchitecture,
+        role: str,
+        dataset_profile: DatasetProfile = DEFAULT_PROFILE,
+        metadata: Optional[dict] = None,
+    ) -> str:
         template = compiled.state.template.value
         mapping = {
             "solver": "给出一个尽可能正确的候选答案。",
@@ -126,7 +132,188 @@ class MultiFidelityEvaluator:
             "judge": "比较两位辩手的观点，给出更可靠的最终结论。若题目要求固定格式，严格只输出该格式。",
             "router": "分析问题重点，决定求解方向。",
         }
-        return f"当前架构模板：{template}。{mapping.get(role, '完成你在当前架构中的子任务。')}"
+        extra: List[str] = []
+        if dataset_profile.task_type == "code_generation":
+            entry_point = str((metadata or {}).get("entry_point") or "").strip()
+            extra.append("这是 Python 代码生成任务，优先给出完整、可执行、对边界条件稳健的实现。")
+            if entry_point:
+                extra.append(f"必须实现且保留函数名 `{entry_point}`。")
+            if role in {"critic", "verifier", "judge"}:
+                extra.append("重点检查函数签名、返回值、异常边界、空输入和隐藏测试失败风险。")
+            else:
+                extra.append("不要输出解释性文字、Markdown 代码块或伪代码。")
+        elif dataset_profile.task_type == "mcq":
+            extra.append("这是多项选择题。重点比较候选选项差异，避免输出题外解释。")
+            if role in {"verifier", "judge"}:
+                extra.append("优先检查选项编号是否合法、是否存在格式污染、以及是否误选了保守/弃答选项。")
+        elif dataset_profile.task_type in {"numeric", "math_expression"}:
+            extra.append("优先确保结论正确，再考虑表达简洁。")
+            if role in {"verifier", "critic"}:
+                extra.append("重点检查数字、符号、边界条件和最后化简形式。")
+        elif dataset_profile.task_type == "graph_reasoning":
+            extra.append("这是图推理任务。优先保证结构约束满足，再考虑语言自然度。")
+            if role in {"verifier", "judge"}:
+                extra.append("重点检查 JSON 结构、节点顺序、边约束和数值一致性。")
+        elif dataset_profile.task_type == "structured_list":
+            extra.append("这是结构化填空任务。必须保持元素顺序稳定，避免多余文本。")
+        elif dataset_profile.task_type == "boolean":
+            extra.append("这是是非判断任务。最终只能给出 yes 或 no，不要模糊表达。")
+        elif dataset_profile.answer_format in {"short_span", "question_defined"}:
+            extra.append("保持答案短且精确，优先满足题目显式格式要求。")
+        suffix = " ".join(extra).strip()
+        if suffix:
+            suffix = " " + suffix
+        return f"当前架构模板：{template}。{mapping.get(role, '完成你在当前架构中的子任务。')}{suffix}"
+
+    @staticmethod
+    def _extract_assert_examples(text: str, *, limit: int = 2) -> List[str]:
+        if not isinstance(text, str) or not text.strip():
+            return []
+        lines = [line.strip() for line in text.splitlines() if "assert" in line]
+        return lines[:limit]
+
+    def _task_context(
+        self,
+        question_text: str,
+        *,
+        dataset_profile: DatasetProfile = DEFAULT_PROFILE,
+        metadata: Optional[dict] = None,
+        role: str = "",
+    ) -> str:
+        metadata = metadata or {}
+        lines: List[str] = []
+        if dataset_profile.task_type == "code_generation":
+            entry_point = str(metadata.get("entry_point") or "").strip()
+            if entry_point:
+                lines.append(f"Required function: `{entry_point}`.")
+            visible_tests: List[str] = []
+            if isinstance(metadata.get("test_list"), list):
+                test_list = [str(item).strip() for item in metadata["test_list"] if str(item).strip()]
+                if test_list:
+                    lines.append(f"Visible tests: {len(test_list)}.")
+                    visible_tests = test_list[:2]
+            elif isinstance(metadata.get("test"), str):
+                visible_tests = self._extract_assert_examples(str(metadata["test"]), limit=2)
+                if visible_tests:
+                    lines.append(f"Visible assertions: {len(self._extract_assert_examples(str(metadata['test']), limit=50))}.")
+            if visible_tests and role in {"solver", "solver_a", "solver_b", "generator", "reviser", "verifier", "critic"}:
+                lines.append("Example visible checks:")
+                lines.extend(f"- {item}" for item in visible_tests)
+            if metadata.get("test_setup_code"):
+                lines.append("There is helper setup code available in the tests; do not redefine conflicting names unless needed.")
+        elif dataset_profile.task_type == "mcq":
+            option_count = self._extract_mcq_option_range(question_text)
+            if option_count <= 0 and isinstance(metadata.get("options"), list):
+                option_count = len(metadata["options"])
+            if option_count > 0:
+                lines.append(f"Valid option range: 1 to {option_count}.")
+            if "I Don't Know/ None of the above" in question_text:
+                lines.append("Only choose the abstain option if other options are unsupported.")
+        elif dataset_profile.task_type in {"numeric", "math_expression"}:
+            lines.append("Keep track of the final scalar/expression exactly; intermediate reasoning may be discarded later.")
+        elif dataset_profile.task_type == "graph_reasoning":
+            task_name = str(metadata.get("task") or "").strip()
+            if task_name:
+                lines.append(f"Graph subtask: {task_name}.")
+            lines.append("The final answer must preserve canonical JSON structure and respect graph constraints exactly.")
+        elif dataset_profile.task_type == "structured_list":
+            blanks = metadata.get("blanks")
+            if isinstance(blanks, list) and blanks:
+                lines.append(f"Blank count: {len(blanks)}. Preserve blank order exactly.")
+        elif dataset_profile.task_type == "boolean":
+            lines.append("Map the final judgement to a single lowercase token: yes or no.")
+        elif dataset_profile.answer_format == "short_span":
+            lines.append("The answer should be a short span copied or normalized from the most relevant evidence.")
+        elif dataset_profile.answer_format == "question_defined":
+            lines.append("Respect the explicit format required by the question; if unspecified, keep the answer minimal.")
+        return "\n".join(lines)
+
+    def _code_precheck_role(self, compiled: CompiledArchitecture) -> Optional[str]:
+        preferred = ("reviser", "aggregator", "solver", "generator", "solver_a", "solver_b", "verifier", "judge")
+        roles = set(compiled.execution_roles)
+        for role in preferred:
+            if role in roles:
+                agent_id = compiled.state.role_to_agent.get(role, "")
+                agent = self._by_id.get(agent_id)
+                if agent and any(cap in agent.capabilities for cap in ("code", "algorithm", "reasoning")):
+                    return role
+        for role in compiled.execution_roles:
+            if role in roles:
+                return role
+        return None
+
+    def fast_code_precheck(
+        self,
+        compiled: CompiledArchitecture,
+        question_text: str,
+        *,
+        reference_answer: Optional[str] = None,
+        metadata: Optional[dict] = None,
+        dataset_profile: DatasetProfile = DEFAULT_PROFILE,
+    ) -> Optional[EvalSummary]:
+        if dataset_profile.task_type != "code_generation":
+            return None
+        role = self._code_precheck_role(compiled)
+        if not role:
+            return None
+        agent_id = compiled.state.role_to_agent.get(role, "")
+        agent = self._by_id.get(agent_id)
+        if agent is None:
+            return None
+        slots = compiled.state.role_to_prompt.get(role, PromptSlots())
+        runtime = TierRuntimeConfig(
+            max_tokens=min(160, max(96, self.config.tier1.max_tokens)),
+            judge_max_tokens=min(96, self.config.judge.max_tokens),
+            repeats=1,
+            temperature=min(0.1, self.config.tier1.temperature),
+        )
+        answer_contract = self._output_contract(
+            question_text,
+            reference_answer=reference_answer,
+            metadata=metadata,
+        )
+        task_context = self._task_context(
+            question_text,
+            dataset_profile=dataset_profile,
+            metadata=metadata,
+            role=role,
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": build_system_prompt(agent, slots, extra_role_hint=f"{role}_fast_precheck"),
+            },
+            {
+                "role": "user",
+                "content": build_user_prompt(
+                    question_text=question_text,
+                    upstream_outputs={},
+                    task_instruction=(
+                        "快速给出一个可执行的候选 Python 实现，用于预检。"
+                        "优先保证函数签名、基础正确性和可见测试通过率；不要输出解释。"
+                    ),
+                    metadata=metadata,
+                    task_context=task_context,
+                    answer_contract=answer_contract,
+                ),
+            },
+        ]
+        start = time.perf_counter()
+        output = self._cached_chat(messages, runtime=runtime)
+        latency = time.perf_counter() - start
+        token_cost = sum(len(message["content"].split()) for message in messages) * self.config.token_cost_per_word
+        return self.evaluate_output(
+            question_text,
+            output,
+            tier="precheck",
+            reference_answer=reference_answer,
+            metadata=metadata,
+            dataset_profile=dataset_profile,
+            trace=[{"role": role, "agent_id": agent_id, "content": output}],
+            custom_metrics={"precheck": 1.0},
+            latency=latency,
+            token_cost=token_cost,
+        )
 
     @staticmethod
     def _task_type(question_text: str, reference_answer: Optional[str] = None, metadata: Optional[dict] = None) -> str:
@@ -487,6 +674,18 @@ class MultiFidelityEvaluator:
         humaneval_test = metadata.get("test")
         mbpp_tests = metadata.get("test_list")
         setup_code = str(metadata.get("test_setup_code") or "")
+        syntax_ok = False
+        entry_defined = False
+        exec_error = ""
+        try:
+            compile(candidate_code, "<candidate>", "exec")
+            syntax_ok = True
+            if isinstance(entry_point, str) and entry_point:
+                entry_defined = bool(re.search(rf"def\s+{re.escape(entry_point)}\s*\(", candidate_code))
+            else:
+                entry_defined = True
+        except Exception as exc:
+            exec_error = str(exc)
         script_lines = [
             "import math",
             "import itertools",
@@ -532,7 +731,14 @@ class MultiFidelityEvaluator:
                 check=False,
             )
         except subprocess.TimeoutExpired:
-            return 0.0, 0.0, 0.9, {"used_dataset_specific": True, "error": "timeout"}
+            partial = 0.12 * float(syntax_ok) + 0.18 * float(entry_defined)
+            return partial, 0.0, 0.85 - 0.20 * float(syntax_ok) - 0.10 * float(entry_defined), {
+                "used_dataset_specific": True,
+                "error": "timeout",
+                "syntax_ok": syntax_ok,
+                "entry_defined": entry_defined,
+                "exec_error": exec_error,
+            }
         stdout = proc.stdout.strip()
         stderr = proc.stderr.strip()
         if "PASS_COUNT=" in stdout:
@@ -540,17 +746,38 @@ class MultiFidelityEvaluator:
             passed = int(match.group(1)) if match else 0
             total = int(match.group(2)) if match else max(1, len(mbpp_tests))
             accuracy = passed / max(1, total)
-            return accuracy, 1.0 if accuracy >= 0.999 else 0.0, 0.0 if accuracy >= 0.999 else 0.5 * (1.0 - accuracy), {
+            task_score = min(1.0, 0.72 * accuracy + 0.12 * float(syntax_ok) + 0.16 * float(entry_defined))
+            safety_penalty = 0.0 if accuracy >= 0.999 else max(
+                0.0,
+                0.55 * (1.0 - accuracy) - 0.08 * float(syntax_ok) - 0.05 * float(entry_defined),
+            )
+            return task_score, 1.0 if accuracy >= 0.999 else 0.0, safety_penalty, {
                 "used_dataset_specific": True,
                 "passed": passed,
                 "total": total,
                 "stderr": stderr,
+                "syntax_ok": syntax_ok,
+                "entry_defined": entry_defined,
+                "exec_error": exec_error,
             }
         passed = proc.returncode == 0 and "PASS" in stdout
-        return (1.0 if passed else 0.0), (1.0 if passed else 0.0), (0.0 if passed else 0.8), {
+        if passed:
+            return 1.0, 1.0, 0.0, {
+                "used_dataset_specific": True,
+                "stderr": stderr,
+                "stdout": stdout,
+                "syntax_ok": syntax_ok,
+                "entry_defined": entry_defined,
+            }
+        partial = 0.15 * float(syntax_ok) + 0.20 * float(entry_defined)
+        safety_penalty = max(0.0, 0.78 - 0.18 * float(syntax_ok) - 0.10 * float(entry_defined))
+        return partial, 0.0, safety_penalty, {
             "used_dataset_specific": True,
             "stderr": stderr,
             "stdout": stdout,
+            "syntax_ok": syntax_ok,
+            "entry_defined": entry_defined,
+            "exec_error": exec_error,
         }
 
     def _score_nlgraph(
@@ -567,9 +794,30 @@ class MultiFidelityEvaluator:
             return None
         pred_text = self._strip_hidden_reasoning(final_output)
         ref_text = reference_answer or ""
+        pred_json = self._safe_json(pred_text) if isinstance(pred_text, str) else None
+        ref_json = self._safe_json(ref_text) if isinstance(ref_text, str) else None
+
+        def _as_int_list(value: object) -> List[int]:
+            if not isinstance(value, list):
+                return []
+            out: List[int] = []
+            for item in value:
+                try:
+                    out.append(int(item))
+                except Exception:
+                    continue
+            return out
+
+        def _json_field(obj: Optional[dict], key: str) -> Optional[object]:
+            if isinstance(obj, dict) and key in obj:
+                return obj.get(key)
+            return None
+
         if task in {"connectivity", "cycle"}:
-            pred = self._normalize_yes_no_output(pred_text)
-            ref = self._normalize_yes_no_output(ref_text)
+            pred_val = _json_field(pred_json, "answer")
+            ref_val = _json_field(ref_json, "answer")
+            pred = self._normalize_yes_no_output(str(pred_val)) if pred_val is not None else self._normalize_yes_no_output(pred_text)
+            ref = self._normalize_yes_no_output(str(ref_val)) if ref_val is not None else self._normalize_yes_no_output(ref_text)
             correct = pred == ref
             return (1.0 if correct else 0.0), (1.0 if correct else 0.0), (0.0 if correct else 0.6), {
                 "used_dataset_specific": True,
@@ -578,8 +826,10 @@ class MultiFidelityEvaluator:
                 "ref": ref,
             }
         if task == "flow":
-            pred_num = self._extract_last_number(pred_text)
-            ref_num = self._extract_last_number(ref_text)
+            pred_val = _json_field(pred_json, "max_flow")
+            ref_val = _json_field(ref_json, "max_flow")
+            pred_num = float(pred_val) if isinstance(pred_val, (int, float)) else self._extract_last_number(pred_text)
+            ref_num = float(ref_val) if isinstance(ref_val, (int, float)) else self._extract_last_number(ref_text)
             correct = pred_num is not None and ref_num is not None and abs(pred_num - ref_num) <= 1e-6
             return (1.0 if correct else 0.0), (1.0 if correct else 0.0), (0.0 if correct else 0.6), {
                 "used_dataset_specific": True,
@@ -588,7 +838,8 @@ class MultiFidelityEvaluator:
                 "ref_num": ref_num,
             }
         if task == "topology":
-            order = self._extract_sequence_numbers(pred_text)
+            order_val = _json_field(pred_json, "order")
+            order = _as_int_list(order_val) if order_val is not None else self._extract_sequence_numbers(pred_text)
             constraints = [(int(a), int(b)) for a, b in re.findall(r"node (\d+) should be visited before node (\d+)", question_text)]
             if not order or not constraints:
                 return 0.0, 0.0, 0.7, {"used_dataset_specific": True, "task": task, "format_ok": False}
@@ -603,7 +854,8 @@ class MultiFidelityEvaluator:
                 "constraints_total": len(constraints),
             }
         if task == "hamilton":
-            path = self._extract_sequence_numbers(pred_text)
+            path_val = _json_field(pred_json, "path")
+            path = _as_int_list(path_val) if path_val is not None else self._extract_sequence_numbers(pred_text)
             edges = self._parse_nlgraph_edges(question_text)
             max_node = max((max(src, dst) for src, dst in edges.keys()), default=-1)
             expected_nodes = max_node + 1
@@ -622,10 +874,13 @@ class MultiFidelityEvaluator:
                 "edge_ratio": edge_ratio,
             }
         if task == "shortest_path":
-            path = self._extract_sequence_numbers(pred_text)
+            path_val = _json_field(pred_json, "path")
+            path = _as_int_list(path_val) if path_val is not None else self._extract_sequence_numbers(pred_text)
             edges = self._parse_nlgraph_edges(question_text)
-            ref_weight = self._extract_last_number(ref_text)
-            pred_weight = self._extract_last_number(pred_text)
+            ref_weight_val = _json_field(ref_json, "total_weight")
+            pred_weight_val = _json_field(pred_json, "total_weight")
+            ref_weight = float(ref_weight_val) if isinstance(ref_weight_val, (int, float)) else self._extract_last_number(ref_text)
+            pred_weight = float(pred_weight_val) if isinstance(pred_weight_val, (int, float)) else self._extract_last_number(pred_text)
             computed_weight = self._path_weight(path, edges) if path else None
             target_match = pred_weight is not None and ref_weight is not None and abs(pred_weight - ref_weight) <= 1e-6
             inferred_match = computed_weight is not None and ref_weight is not None and abs(computed_weight - ref_weight) <= 1e-6
@@ -639,10 +894,16 @@ class MultiFidelityEvaluator:
                 "ref_weight": ref_weight,
             }
         if task == "matching":
-            count_match = re.search(r"(\d+)\s+applicants can find", ref_text, flags=re.IGNORECASE)
-            ref_count = int(count_match.group(1)) if count_match else None
-            pred_count_match = re.search(r"(\d+)\s+applicants can find", pred_text, flags=re.IGNORECASE)
-            pred_count = int(pred_count_match.group(1)) if pred_count_match else None
+            ref_count_val = _json_field(ref_json, "count")
+            pred_count_val = _json_field(pred_json, "count")
+            ref_count = int(ref_count_val) if isinstance(ref_count_val, (int, float)) else None
+            pred_count = int(pred_count_val) if isinstance(pred_count_val, (int, float)) else None
+            if ref_count is None:
+                count_match = re.search(r"(\d+)\s+applicants can find", ref_text, flags=re.IGNORECASE)
+                ref_count = int(count_match.group(1)) if count_match else None
+            if pred_count is None:
+                pred_count_match = re.search(r"(\d+)\s+applicants can find", pred_text, flags=re.IGNORECASE)
+                pred_count = int(pred_count_match.group(1)) if pred_count_match else None
             correct = pred_count is not None and ref_count is not None and pred_count == ref_count
             return (1.0 if correct else 0.0), (1.0 if correct else 0.0), (0.0 if correct else 0.6), {
                 "used_dataset_specific": True,
@@ -651,6 +912,21 @@ class MultiFidelityEvaluator:
                 "ref_count": ref_count,
             }
         if task == "GNN":
+            pred_emb_val = _json_field(pred_json, "node_embeddings")
+            ref_emb_val = _json_field(ref_json, "node_embeddings")
+            if isinstance(ref_emb_val, dict):
+                ref_emb = {str(k): _as_int_list(v) for k, v in ref_emb_val.items()}
+                pred_emb = {str(k): _as_int_list(v) for k, v in pred_emb_val.items()} if isinstance(pred_emb_val, dict) else {}
+                total = len(ref_emb)
+                matches = sum(1 for node, vec in ref_emb.items() if pred_emb.get(node) == vec)
+                accuracy = matches / max(1, total)
+                return accuracy, (1.0 if accuracy >= 0.999 else 0.0), (0.0 if accuracy >= 0.999 else 0.5 * (1.0 - accuracy)), {
+                    "used_dataset_specific": True,
+                    "task": task,
+                    "format_ok": isinstance(pred_emb_val, dict),
+                    "matches": matches,
+                    "total": total,
+                }
             pred_pairs = dict(re.findall(r"node\s+(\d+)\s*:\s*\[([^\]]+)\]", pred_text, flags=re.IGNORECASE))
             ref_pairs = dict(re.findall(r"node\s+(\d+)\s*:\s*\[([^\]]+)\]", ref_text, flags=re.IGNORECASE))
             if not ref_pairs:
@@ -661,6 +937,7 @@ class MultiFidelityEvaluator:
             return accuracy, (1.0 if accuracy >= 0.999 else 0.0), (0.0 if accuracy >= 0.999 else 0.5 * (1.0 - accuracy)), {
                 "used_dataset_specific": True,
                 "task": task,
+                "format_ok": True,
                 "matches": matches,
                 "total": total,
             }
@@ -826,12 +1103,19 @@ class MultiFidelityEvaluator:
             rules.append("这是判断题。最后只能输出 yes 或 no，且只能保留这一项。")
         elif answer_format == "json_list":
             rules.append("最后只能输出一个 JSON 数组，不要附带任何解释、项目符号或 Markdown 标记。")
+            rules.append("数组长度和元素顺序必须与题目要求严格一致。")
         elif answer_format == "graph_json":
             rules.append("最后只能输出一个 JSON 对象，字段名和结构必须严格符合题目要求。")
+            rules.append("不要输出自然语言解释，不要丢字段，不要改变键名。")
         elif answer_format == "python_code":
             rules.append("最后只能输出可直接执行的 Python 代码，不要加 Markdown 代码块或解释。")
+            entry_point = str((metadata or {}).get("entry_point") or "").strip()
+            if entry_point:
+                rules.append(f"必须定义题目要求的函数 `{entry_point}`，且函数名不得改动。")
+            rules.append("尽量避免额外的顶层打印、示例调用、解释注释或与题意无关的辅助代码。")
         elif answer_format == "math_expression":
             rules.append("最后只输出最终数学表达式，不要输出证明、推导或额外文字。")
+            rules.append("如果有等价形式，优先输出最简洁、最标准的形式。")
         elif answer_format == "short_span":
             rules.append("最后只输出一个尽量短的答案短语，不要输出完整解释。")
         elif answer_format == "question_defined":
@@ -872,55 +1156,19 @@ class MultiFidelityEvaluator:
             return cleaned.splitlines()[0].strip()
         return cleaned
 
-    def _run_architecture_once(
+    def _evaluate_final_output(
         self,
-        compiled: CompiledArchitecture,
         question_text: str,
-        runtime: TierRuntimeConfig,
+        final_output: str,
+        *,
         reference_answer: Optional[str] = None,
         metadata: Optional[dict] = None,
-        dataset_profile: DatasetProfile = DEFAULT_PROFILE,
+        trace: Optional[List[Dict[str, str]]] = None,
+        latency: float = 0.0,
+        token_cost: float = 0.0,
+        custom_metrics: Optional[Dict[str, float]] = None,
     ) -> TaskEvaluation:
-        start = time.perf_counter()
-        ctx = ExecutionContext(role_outputs={}, trace=[])
-        state = compiled.state
-        sink_roles = set(self._sink_roles(compiled))
         rendered_question = render_question_text(question_text, metadata=metadata)
-        answer_contract = self._output_contract(
-            rendered_question,
-            reference_answer=reference_answer,
-            metadata=metadata,
-        )
-
-        for role in compiled.execution_roles:
-            agent_id = state.role_to_agent[role]
-            agent = self._by_id[agent_id]
-            slots = state.role_to_prompt.get(role, PromptSlots())
-            upstream_roles = self._upstream_roles(compiled, role)
-            upstream_outputs = {r: ctx.role_outputs.get(r, "") for r in upstream_roles if ctx.role_outputs.get(r, "")}
-            messages = [
-                {
-                    "role": "system",
-                    "content": build_system_prompt(agent, slots, extra_role_hint=role),
-                },
-                {
-                    "role": "user",
-                    "content": build_user_prompt(
-                        question_text=question_text,
-                        upstream_outputs=upstream_outputs,
-                        task_instruction=self._role_task_instruction(compiled, role),
-                        metadata=metadata,
-                        answer_contract=answer_contract if role in sink_roles else "",
-                    ),
-                },
-            ]
-            content = self._cached_chat(messages, runtime=runtime)
-            ctx.role_outputs[role] = content
-            ctx.trace.append({"role": role, "agent_id": agent_id, "content": content})
-
-        final_output = "\n\n".join(
-            ctx.role_outputs.get(role, "") for role in self._sink_roles(compiled) if ctx.role_outputs.get(role, "")
-        )
         final_output = self._sanitize_final_output(
             rendered_question,
             final_output,
@@ -947,16 +1195,15 @@ class MultiFidelityEvaluator:
                 {"role": "system", "content": judge_prompt},
                 {"role": "user", "content": judge_input},
             ]
-            judge_model = self.config.judge.model or self.config.chat.model
             judge_text = self._cached_chat(
                 judge_messages,
                 runtime=TierRuntimeConfig(
-                    max_tokens=runtime.judge_max_tokens,
-                    judge_max_tokens=runtime.judge_max_tokens,
+                    max_tokens=self.config.judge.max_tokens,
+                    judge_max_tokens=self.config.judge.max_tokens,
                     repeats=1,
                     temperature=self.config.judge.temperature,
                 ),
-                model=judge_model,
+                model=self.config.judge.model or self.config.chat.model,
                 client="judge",
             )
             parsed = self._safe_json(judge_text) or {}
@@ -990,8 +1237,6 @@ class MultiFidelityEvaluator:
                 "final_success": success,
                 "final_safety_penalty": safety_penalty,
             }
-        latency = time.perf_counter() - start
-        token_cost = sum(len(item["content"].split()) for item in ctx.trace) * self.config.token_cost_per_word
         return TaskEvaluation(
             task_score=task_score,
             success=success,
@@ -999,9 +1244,81 @@ class MultiFidelityEvaluator:
             token_cost=token_cost,
             safety_penalty=safety_penalty,
             raw_output=final_output,
-            trace=ctx.trace,
-            custom_metrics={"num_roles": float(len(compiled.execution_roles))},
+            trace=list(trace or []),
+            custom_metrics=dict(custom_metrics or {}),
             debug_info=debug_info,
+        )
+
+    def _run_architecture_once(
+        self,
+        compiled: CompiledArchitecture,
+        question_text: str,
+        runtime: TierRuntimeConfig,
+        reference_answer: Optional[str] = None,
+        metadata: Optional[dict] = None,
+        dataset_profile: DatasetProfile = DEFAULT_PROFILE,
+    ) -> TaskEvaluation:
+        start = time.perf_counter()
+        ctx = ExecutionContext(role_outputs={}, trace=[])
+        state = compiled.state
+        sink_roles = set(self._sink_roles(compiled))
+        answer_contract = self._output_contract(
+            question_text,
+            reference_answer=reference_answer,
+            metadata=metadata,
+        )
+
+        for role in compiled.execution_roles:
+            agent_id = state.role_to_agent[role]
+            agent = self._by_id[agent_id]
+            slots = state.role_to_prompt.get(role, PromptSlots())
+            upstream_roles = self._upstream_roles(compiled, role)
+            upstream_outputs = {r: ctx.role_outputs.get(r, "") for r in upstream_roles if ctx.role_outputs.get(r, "")}
+            messages = [
+                {
+                    "role": "system",
+                    "content": build_system_prompt(agent, slots, extra_role_hint=role),
+                },
+                {
+                    "role": "user",
+                    "content": build_user_prompt(
+                        question_text=question_text,
+                        upstream_outputs=upstream_outputs,
+                        task_instruction=self._role_task_instruction(
+                            compiled,
+                            role,
+                            dataset_profile=dataset_profile,
+                            metadata=metadata,
+                        ),
+                        metadata=metadata,
+                        task_context=self._task_context(
+                            question_text,
+                            dataset_profile=dataset_profile,
+                            metadata=metadata,
+                            role=role,
+                        ),
+                        answer_contract=answer_contract if role in sink_roles else "",
+                    ),
+                },
+            ]
+            content = self._cached_chat(messages, runtime=runtime)
+            ctx.role_outputs[role] = content
+            ctx.trace.append({"role": role, "agent_id": agent_id, "content": content})
+
+        final_output = "\n\n".join(
+            ctx.role_outputs.get(role, "") for role in self._sink_roles(compiled) if ctx.role_outputs.get(role, "")
+        )
+        latency = time.perf_counter() - start
+        token_cost = sum(len(item["content"].split()) for item in ctx.trace) * self.config.token_cost_per_word
+        return self._evaluate_final_output(
+            question_text,
+            final_output,
+            reference_answer=reference_answer,
+            metadata=metadata,
+            trace=ctx.trace,
+            latency=latency,
+            token_cost=token_cost,
+            custom_metrics={"num_roles": float(len(compiled.execution_roles))},
         )
 
     @staticmethod
@@ -1060,6 +1377,7 @@ class MultiFidelityEvaluator:
                 ev,
                 size_penalty=size_penalty,
                 prompt_penalty=prompt_penalty,
+                weights=reward_weights_for_profile(dataset_profile, metadata),
             )
             for ev in runs
         ]
@@ -1078,3 +1396,90 @@ class MultiFidelityEvaluator:
         )
         self._eval_cache.put(cache_key, summary)
         return summary
+
+    def evaluate_output(
+        self,
+        question_text: str,
+        final_output: str,
+        *,
+        tier: str,
+        reference_answer: Optional[str] = None,
+        metadata: Optional[dict] = None,
+        dataset_profile: DatasetProfile = DEFAULT_PROFILE,
+        custom_metrics: Optional[Dict[str, float]] = None,
+        trace: Optional[List[Dict[str, str]]] = None,
+        size_penalty: float = 0.0,
+        prompt_penalty: float = 0.0,
+        latency: float = 0.0,
+        token_cost: float = 0.0,
+    ) -> EvalSummary:
+        cache_key = (
+            f"output|{tier}|{dataset_profile.name}|{question_text}|{reference_answer}|{final_output}|"
+            f"{json.dumps(metadata or {}, sort_keys=True, ensure_ascii=False)}"
+        )
+        cached = self._eval_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        evaluation = self._evaluate_final_output(
+            question_text,
+            final_output,
+            reference_answer=reference_answer,
+            metadata=metadata,
+            trace=trace,
+            custom_metrics=custom_metrics,
+            latency=latency,
+            token_cost=token_cost,
+        )
+        reward = reward_from_evaluation(
+            evaluation,
+            size_penalty=size_penalty,
+            prompt_penalty=prompt_penalty,
+            weights=reward_weights_for_profile(dataset_profile, metadata),
+        )
+        summary = EvalSummary(
+            tier=tier,
+            mean_reward=reward,
+            reward_std=0.0,
+            mean_task_score=evaluation.task_score,
+            mean_success=evaluation.success,
+            mean_latency=evaluation.latency,
+            mean_token_cost=evaluation.token_cost,
+            mean_safety_penalty=evaluation.safety_penalty,
+            evaluations=[evaluation],
+        )
+        self._eval_cache.put(cache_key, summary)
+        return summary
+
+    @staticmethod
+    def feedback_signal(
+        summary: EvalSummary,
+        *,
+        dataset_profile: DatasetProfile = DEFAULT_PROFILE,
+        metadata: Optional[dict] = None,
+    ) -> float:
+        if not summary.evaluations:
+            return 0.0
+        if dataset_profile.task_type == "code_generation":
+            signals: List[float] = []
+            for evaluation in summary.evaluations:
+                ds = evaluation.debug_info.get("dataset_specific", {})
+                if not isinstance(ds, dict):
+                    ds = {}
+                syntax_ok = 1.0 if ds.get("syntax_ok") else 0.0
+                entry_defined = 1.0 if ds.get("entry_defined") else 0.0
+                passed = ds.get("passed")
+                total = ds.get("total")
+                pass_ratio = 0.0
+                if isinstance(passed, int) and isinstance(total, int) and total > 0:
+                    pass_ratio = passed / total
+                elif evaluation.success > 0.0:
+                    pass_ratio = 1.0
+                signal = 0.55 * pass_ratio + 0.20 * syntax_ok + 0.15 * entry_defined + 0.10 * evaluation.task_score
+                signals.append(max(0.0, min(1.0, signal)))
+            return sum(signals) / max(1, len(signals))
+        if dataset_profile.task_type in {"graph_reasoning", "structured_list"}:
+            return max(0.0, min(1.0, summary.mean_task_score))
+        if dataset_profile.task_type == "mcq":
+            return max(0.0, min(1.0, summary.mean_success * 0.7 + summary.mean_task_score * 0.3))
+        del metadata
+        return max(0.0, min(1.0, summary.mean_task_score))
