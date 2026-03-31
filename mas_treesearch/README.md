@@ -80,3 +80,26 @@ python /mnt/nvme/projects/R-HAN/demo_dataset_train_test.py \
 - learnable gater 的训练逻辑
 - 子图执行缓存与跨任务经验回放
 - 更复杂的多 block workflow 组合搜索
+
+## 二阶段说明
+
+`mas_treesearch/` 当前仍然只负责第一阶段：
+
+- tree search 拓扑生成
+- top-k 互补结构选择
+- `union graph` 合并
+- 轻量 `union_runtime` 基线
+
+正式的第二阶段三层图运行时已经单独拆到 `mas_stage2/`，避免影响当前一阶段训练。第二阶段代码默认以 `UnionGraph` 为输入，包含：
+
+- 私有题内记忆
+- latent-backed local composer
+- graph-mediated exported messages
+- global controller
+- active subgraph pruning
+- feedback event 记录与 replay bundle
+
+因此如果后续继续推进“拓扑生成 + 权重优化解耦”的主线，当前推荐分工是：
+
+- 第一阶段：`mas_treesearch/`
+- 第二阶段：`mas_stage2/`

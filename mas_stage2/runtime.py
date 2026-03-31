@@ -114,6 +114,9 @@ class Stage2Runtime:
             bucket[event.event_type] = bucket.get(event.event_type, 0) + 1
         return by_target
 
+    def _token_cost_from_estimate(self, token_estimate: int) -> float:
+        return float(token_estimate) * float(self.evaluator.config.token_cost_per_word)
+
     @staticmethod
     def _clamp01(value: float) -> float:
         return max(0.0, min(1.0, float(value)))
@@ -1055,6 +1058,8 @@ class Stage2Runtime:
         previous_exports: Dict[str, ExportedMemoryMessage] = {}
         turn_traces: List[TurnTrace] = []
         final_sink_outputs: Dict[str, str] = {}
+        turn_token_estimates: List[int] = []
+        turn_token_costs: List[float] = []
 
         for turn_index in range(self.config.graph.turn_count):
             active_edges = self._activate_edges(graph, controller_state, previous_feedback, turn_index=turn_index)
@@ -1071,6 +1076,7 @@ class Stage2Runtime:
             node_traces: List[NodeTurnTrace] = []
             current_exports: Dict[str, ExportedMemoryMessage] = {}
             sink_outputs: Dict[str, str] = {}
+            turn_token_estimate = 0
             for node in active_task_nodes:
                 trace, output_record, export_message = self._run_task_node(
                     graph,
@@ -1086,13 +1092,19 @@ class Stage2Runtime:
                     current_turn=turn_index,
                 )
                 self._memory_store.add(output_record)
+                turn_token_estimate += int(output_record.token_estimate)
                 current_exports[node.node_id] = export_message
                 node_traces.append(trace)
                 if node.node_id in graph.sink_node_ids:
                     sink_outputs[node.node_id] = trace.output
             feedback_events = self._extract_feedback_events(graph, node_traces, turn_index=turn_index)
-            for record in self._feedback_records(graph, feedback_events, episode_id=episode_id):
+            feedback_records = self._feedback_records(graph, feedback_events, episode_id=episode_id)
+            for record in feedback_records:
                 self._memory_store.add(record)
+                turn_token_estimate += int(record.token_estimate)
+            turn_token_cost = self._token_cost_from_estimate(turn_token_estimate)
+            turn_token_estimates.append(turn_token_estimate)
+            turn_token_costs.append(turn_token_cost)
             controller_state = self._controller.update(
                 controller_state,
                 turn_index=turn_index,
@@ -1119,6 +1131,8 @@ class Stage2Runtime:
                         "elapsed_s": time.perf_counter() - start,
                         "active_node_ids": sorted(active_node_ids),
                         "skipped_node_ids": skipped_node_ids,
+                        "turn_token_estimate": turn_token_estimate,
+                        "turn_token_cost": turn_token_cost,
                     },
                 )
             )
@@ -1148,6 +1162,8 @@ class Stage2Runtime:
                 "turn_count": len(turn_traces),
                 "finalizer_strategy": finalizer_strategy,
                 "approx_token_cost": self._memory_store.total_token_estimate() * self.evaluator.config.token_cost_per_word,
+                "turn_token_estimates": list(turn_token_estimates),
+                "turn_token_costs": list(turn_token_costs),
             },
         )
         if replay_dir:

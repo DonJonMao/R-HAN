@@ -12,7 +12,9 @@ from mas_treesearch.reward import risk_adjusted_score
 from mas_treesearch.types import EvalSummary, SearchResult
 
 from .config import Stage2RuntimeConfig
+from .config_v2 import Stage2V2Config
 from .runtime import Stage2Runtime
+from .runtime_v2 import Stage2RuntimeV2
 from .structure_io import PreparedStage1Artifact, prepared_stage1_from_search_result
 from .types import Stage2RunResult
 
@@ -23,6 +25,51 @@ def _clamp01(value: float) -> float:
 
 def _summary_target(summary: EvalSummary) -> float:
     return _clamp01(0.55 * float(summary.mean_success) + 0.45 * float(summary.mean_task_score))
+
+
+def _summary_quality_key(summary: EvalSummary) -> tuple[float, float, float]:
+    return (
+        float(summary.mean_success),
+        float(summary.mean_task_score),
+        -float(summary.mean_safety_penalty),
+    )
+
+
+def _selection_metadata(
+    *,
+    stage1_summary: EvalSummary,
+    stage2_summary: EvalSummary,
+    risk_std_penalty: float,
+) -> dict[str, float | str]:
+    stage1_reward = risk_adjusted_score(stage1_summary, risk_std_penalty)
+    stage2_reward = risk_adjusted_score(stage2_summary, risk_std_penalty)
+    stage1_quality = _summary_quality_key(stage1_summary)
+    stage2_quality = _summary_quality_key(stage2_summary)
+    if stage2_quality > stage1_quality:
+        decision = "use_stage2"
+        reason = "quality_better"
+    elif stage2_quality < stage1_quality:
+        decision = "fallback_stage1"
+        reason = "quality_worse"
+    else:
+        decision = "use_stage2"
+        reason = "quality_tie_prefer_stage2"
+    return {
+        "selection_decision": decision,
+        "selection_reason": reason,
+        "stage1_reward": float(stage1_reward),
+        "stage2_reward": float(stage2_reward),
+        "stage1_task_score": float(stage1_summary.mean_task_score),
+        "stage2_task_score": float(stage2_summary.mean_task_score),
+        "stage1_success": float(stage1_summary.mean_success),
+        "stage2_success": float(stage2_summary.mean_success),
+        "stage1_safety_penalty": float(stage1_summary.mean_safety_penalty),
+        "stage2_safety_penalty": float(stage2_summary.mean_safety_penalty),
+        "stage1_latency": float(stage1_summary.mean_latency),
+        "stage2_latency": float(stage2_summary.mean_latency),
+        "stage1_token_cost": float(stage1_summary.mean_token_cost),
+        "stage2_token_cost": float(stage2_summary.mean_token_cost),
+    }
 
 
 @dataclass
@@ -40,7 +87,7 @@ class Stage2MASPipeline:
     search_config: SearchConfig = field(default_factory=SearchConfig)
     runtime_config: TieredEvalConfig = field(default_factory=TieredEvalConfig)
     union_config: UnionRuntimeConfig = field(default_factory=UnionRuntimeConfig)
-    stage2_config: Stage2RuntimeConfig = field(default_factory=Stage2RuntimeConfig)
+    stage2_config: Stage2RuntimeConfig | Stage2V2Config = field(default_factory=Stage2RuntimeConfig)
     agent_pool: Optional[AgentPool] = None
 
     def __post_init__(self) -> None:
@@ -53,12 +100,20 @@ class Stage2MASPipeline:
         )
         self.agent_pool = self._stage1.agent_pool
         self.runtime_config = self._stage1.runtime_config
-        self._stage2 = Stage2Runtime(
-            self.stage2_config,
-            self._stage1._evaluator,
-            self._stage1.agent_pool,
-            self._stage1._embedder,
-        )
+        if isinstance(self.stage2_config, Stage2V2Config):
+            self._stage2 = Stage2RuntimeV2(
+                self.stage2_config,
+                self._stage1._evaluator,
+                self._stage1.agent_pool,
+                self._stage1._embedder,
+            )
+        else:
+            self._stage2 = Stage2Runtime(
+                self.stage2_config,
+                self._stage1._evaluator,
+                self._stage1.agent_pool,
+                self._stage1._embedder,
+            )
 
     @staticmethod
     def _resolve_dataset_name(dataset_name: Optional[str], metadata: Optional[dict]) -> Optional[str]:
@@ -124,14 +179,16 @@ class Stage2MASPipeline:
             raise ValueError("Prepared stage-1 artifact does not match the requested question text.")
         resolved_dataset = dataset_name or prepared_structure.dataset_name or self._resolve_dataset_name(dataset_name, metadata)
         profile = resolve_dataset_profile(resolved_dataset)
-        stage2_result = self._stage2.run(
-            prepared_structure.union_graph,
+        run_kwargs = dict(
             question_text=question_text,
             metadata=metadata,
             reference_answer=reference_answer,
             dataset_profile=profile,
             replay_dir=replay_dir,
         )
+        if isinstance(self._stage2, Stage2RuntimeV2):
+            run_kwargs["learn"] = learn
+        stage2_result = self._stage2.run(prepared_structure.union_graph, **run_kwargs)
         stage2_summary = self._stage1._evaluator.evaluate_output(
             question_text,
             stage2_result.final_answer,
@@ -151,11 +208,21 @@ class Stage2MASPipeline:
         final_signature = stage2_result.signature
         final_output = stage2_result.final_answer
         learning_target = _summary_target(stage2_summary)
+        stage2_result.metadata["stage2_reward"] = float(risk_adjusted_score(stage2_summary, self.search_config.risk_std_penalty))
+        stage2_result.metadata["stage2_task_score"] = float(stage2_summary.mean_task_score)
+        stage2_result.metadata["stage2_success"] = float(stage2_summary.mean_success)
+        stage2_result.metadata["stage2_safety_penalty"] = float(stage2_summary.mean_safety_penalty)
+        stage2_result.metadata["stage2_latency"] = float(stage2_summary.mean_latency)
+        stage2_result.metadata["stage2_token_cost"] = float(stage2_summary.mean_token_cost)
         baseline_summary = prepared_structure.stage1_summary
         if baseline_summary is not None:
-            baseline_reward = risk_adjusted_score(baseline_summary, self.search_config.risk_std_penalty)
-            stage2_reward = risk_adjusted_score(stage2_summary, self.search_config.risk_std_penalty)
-            if stage2_reward < baseline_reward:
+            selection_meta = _selection_metadata(
+                stage1_summary=baseline_summary,
+                stage2_summary=stage2_summary,
+                risk_std_penalty=self.search_config.risk_std_penalty,
+            )
+            stage2_result.metadata.update(selection_meta)
+            if selection_meta["selection_decision"] == "fallback_stage1":
                 final_summary = baseline_summary
                 final_signature = prepared_structure.stage1_signature
                 final_output = prepared_structure.stage1_output
@@ -163,15 +230,9 @@ class Stage2MASPipeline:
                     0.0,
                     learning_target - self.stage2_config.learning.fallback_penalty - max(0.0, _summary_target(baseline_summary) - learning_target),
                 )
-                stage2_result.metadata["selection_decision"] = "fallback_stage1"
-                stage2_result.metadata["stage2_reward"] = stage2_reward
-                stage2_result.metadata["stage1_reward"] = baseline_reward
-            else:
-                stage2_result.metadata["selection_decision"] = "use_stage2"
-                stage2_result.metadata["stage2_reward"] = stage2_reward
-                stage2_result.metadata["stage1_reward"] = baseline_reward
         else:
             stage2_result.metadata["selection_decision"] = "use_stage2_no_stage1_baseline"
+            stage2_result.metadata["selection_reason"] = "no_stage1_baseline"
         if learn:
             learning_stats = self._stage2.learn_from_run(
                 prepared_structure.union_graph,
@@ -241,8 +302,13 @@ class Stage2MASPipeline:
             self._stage2.load_state_dict(stage2_state)
 
     def save_checkpoint(self, path: str, *, metadata: Optional[dict] = None) -> None:
+        resolved_metadata = dict(metadata or {})
+        if hasattr(self._stage2, "save_binary_state"):
+            binary_path = f"{path}.stage2.pt"
+            self._stage2.save_binary_state(binary_path)
+            resolved_metadata["stage2_binary_state_path"] = binary_path
         payload = {
-            "metadata": metadata or {},
+            "metadata": resolved_metadata,
             "pipeline_state": self.state_dict(),
         }
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -254,4 +320,8 @@ class Stage2MASPipeline:
             payload = json.load(handle)
         self.load_state_dict(dict(payload.get("pipeline_state", {})))
         metadata = payload.get("metadata", {})
+        if hasattr(self._stage2, "load_binary_state"):
+            binary_path = str((metadata or {}).get("stage2_binary_state_path", ""))
+            if binary_path and os.path.exists(binary_path):
+                self._stage2.load_binary_state(binary_path)
         return dict(metadata) if isinstance(metadata, dict) else {}

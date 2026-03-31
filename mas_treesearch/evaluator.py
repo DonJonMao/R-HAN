@@ -583,9 +583,24 @@ class MultiFidelityEvaluator:
 
     @staticmethod
     def _extract_boxed_expression(text: str) -> str:
-        boxed = re.findall(r"\\boxed\{([^{}]+)\}", text)
-        if boxed:
-            return boxed[-1].strip()
+        marker = r"\boxed{"
+        idx = text.rfind(marker)
+        if idx != -1:
+            start = idx + len(marker)
+            depth = 1
+            out: List[str] = []
+            for ch in text[start:]:
+                if ch == "{":
+                    depth += 1
+                    out.append(ch)
+                    continue
+                if ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return "".join(out).strip()
+                    out.append(ch)
+                    continue
+                out.append(ch)
         cleaned = MultiFidelityEvaluator._strip_hidden_reasoning(text)
         lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
         if lines:
@@ -596,8 +611,11 @@ class MultiFidelityEvaluator:
     def _normalize_math_expression(text: str) -> str:
         expr = MultiFidelityEvaluator._extract_boxed_expression(text)
         expr = expr.replace("$", "").replace("\\left", "").replace("\\right", "")
+        expr = expr.replace("\\dfrac", "\\frac")
+        expr = expr.replace("\\text{ degrees}", "^\\circ").replace("\\text{degrees}", "^\\circ")
+        expr = expr.replace("\\!", "").replace(",", "")
         expr = re.sub(r"\s+", "", expr)
-        return expr
+        return expr.strip(".;")
 
     @staticmethod
     def _parse_nlgraph_edges(question_text: str) -> Dict[Tuple[int, int], int]:

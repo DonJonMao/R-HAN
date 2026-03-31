@@ -82,6 +82,150 @@ TreeSearch 的几个关键组件：
 - 训练脚本只覆盖最核心的一组参数；其余仍走 `SearchConfig` / `TieredEvalConfig` 默认值
 - dataset profile 会进一步覆盖 root templates、prompt 偏置和少量搜索约束，定义在 `mas_treesearch/profiles.py`
 
+### 1.5 TreeSearch 第二阶段设计与代码
+
+当前第二阶段已经单独落成代码，且与第一阶段解耦：
+
+- 第二阶段代码目录：`mas_stage2/`
+- 演示入口：`demo_stage2_runtime.py`
+- 第一阶段默认入口和训练脚本保持不变：
+  - `train_mas_treesearch_target_suite.py`
+  - `mas_treesearch/pipeline.py`
+
+第二阶段只依赖第一阶段已经产出的 `union graph`，不再改动树搜索拓扑生成逻辑。当前设计明确分为三层：
+
+1. 上层 `Global Controller Node`
+   - 学任务偏好、角色权重、探索/收缩模式
+   - 不存原始会话，只存全局控制状态
+2. 中层 `Union Graph`
+   - 复用第一阶段已有拓扑
+   - 每轮学习 edge keep score，维护 `active subgraph`
+   - 早期 soft prune，后期 hard prune
+3. 下层 `Per-Agent Episodic Memory`
+   - 每个 agent 只直接连接自己的题内私有记忆
+   - 原始记忆以结构化会话片段为主，不要求先手工抽经验
+   - 当前轮只允许聚合本地原始记忆；跨 agent 传播只能通过图上的导出消息完成
+
+当前第二阶段代码遵守以下硬约束：
+
+- 不允许跨 agent 直接读取原始记忆
+- 图是唯一合法的信息流通道
+- `global node` 负责高层偏好，不替代题内原始记忆
+- `latent memory` 体现在：
+  - 本地 selected memory 经 composer 压缩后的 `local latent memory`
+  - 允许沿图传播的 `exported memory message`
+  - 聚合邻居导出消息后的 graph-conditioned state
+
+当前实现的二阶段运行时包含这些模块：
+
+- `mas_stage2/controller.py`
+  - global controller，维护角色权重、focus 和 uncertainty
+- `mas_stage2/memory.py`
+  - 私有题内记忆存储
+  - role-aware selector
+  - local memory composer
+  - exported message builder
+  - memory brief verbalizer
+- `mas_stage2/runtime.py`
+  - 基于 `UnionGraph` 的多轮执行器
+  - active edge 计算与逐轮 pruning
+  - feedback event 生成
+  - replay bundle 写出
+
+第二阶段当前采用的单轮协议：
+
+1. global controller 根据当前轮状态给出高层控制信号
+2. 每个 agent 仅从自己的私有题内记忆中选少量关键片段
+3. local composer 将这些会话片段压成 `local latent memory`
+4. 仅将压缩后的 exported message 沿 active edges 向邻居传播
+5. graph policy 层通过 active subgraph 管控哪些边保留
+6. verbalizer 将 latent state 转成短 `memory brief` 注入 agent prompt
+7. agent 执行本轮任务
+8. 系统生成 `feedback events`，并写回本地题内记忆
+9. 下一轮继续在收缩后的 active graph 上执行
+
+关于反馈信号，第二阶段不要求每个拓扑都强制带 `verifier`。测试时没有 gold label，因此系统记录的是：
+
+- `pass`
+- `challenge`
+- `reject`
+- `conflict`
+- `revise`
+- `uncertain`
+- `preserve`
+
+也就是说，当前题内记忆依赖的是“被支持/被质疑/被修正/被保留”的可观测反馈，而不是必须依赖真值标签。
+
+训练策略方面，当前约定是：
+
+1. 先固定第一阶段已经产出的 `union graph`
+2. 先训练 lower memory 模块
+3. 再训练 graph edge weighting / pruning
+4. 最后只做轻量 joint refinement
+
+当前仓库只完成第二阶段代码实现，不启动第二阶段训练，以免干扰仍在进行的一阶段训练。
+
+当前也已补充二阶段数据与训练入口，但仍未启动实际训练：
+
+- 二阶段数据准备：`prepare_mas_stage2_data.py`
+  - 默认从一阶段 `test` 中抽取二阶段 `train`
+  - 抽样数量默认对齐一阶段 `train` 的样本数
+  - 二阶段 `validation` 默认复用一阶段 `validation`
+  - 二阶段 `test` 默认使用一阶段 `test` 的剩余样本
+- 二阶段训练入口：`train_mas_stage2_target_suite.py`
+  - 当前按一阶段脚本同风格提供 suite-level checkpoint、resume、report 和 rows 导出
+  - 设计上默认不更新一阶段参数；必要时可通过 `--stage1-checkpoint-root` 复用每个数据集的一阶段 checkpoint
+
+#### 二阶段当前效果差的主要原因（2026-03-27）
+
+当前判断是：二阶段设计主线本身没有根本性错误，主要问题在工程实现没有把“拓扑固定后再学权重/记忆/剪枝”真正落干净，导致运行时噪声远大于有效学习信号。主要体现在：
+
+- 二阶段过去默认每题重新跑一遍 stage1 结构生成，而不是稳定复用冻结的 `union graph`，等于把“结构波动”和“二阶段运行时波动”混在一起。
+- 过去 pruning 主要只作用在边上，节点仍然会继续执行，导致 token 没明显下降，噪声也没有真正收缩。
+- code 任务里 `critic / verifier / judge / router` 曾被放进和代码生成角色相近的输出路径，反馈通道容易被最终代码污染。
+- feedback 抽取过度依赖关键词启发式，面对 code / graph / mixed-format 任务时误判较多。
+- finalizer 以前倾向于重新综合改写，而不是优先保留已经出现的优质候选，导致 mcq / boolean / graph reasoning / numeric 这类离散输出任务很容易被“改坏”。
+- 当前 stage2 训练脚本虽然已经具备入口，但二阶段真正的可学习 selector / pruner / controller 还没有形成独立训练闭环，因此目前更多还是 heuristic runtime，而不是已经成熟的“二阶段训练系统”。
+
+#### 当前已完成的结构性止血
+
+围绕上面的工程问题，当前仓库已经补上的结构修正包括：
+
+- `stage1 -> stage2` 回退机制：若 stage2 最终 reward 不如 stage1 baseline，则保留 stage1 输出，避免二阶段把正确答案改坏。
+- 节点级执行收缩：不仅剪边，还会跳过一部分 task node 的执行，并把 `active_node_ids / skipped_node_ids` 写进 replay。
+- code 任务角色契约拆分：`critic / verifier / judge / router` 不再输出 Python 代码，而是输出结构化 review / route 信息。
+- 结构化反馈抽取：优先解析 `VERDICT:` 行，再回退到关键词启发式。
+- 候选保留优先：对 `code_generation / numeric / math_expression / mcq / boolean / graph_reasoning / structured_list` 优先尝试保留已有候选或共识候选，再使用通用 finalizer。
+- 冻结结构缓存：stage2 现在支持把一阶段结果序列化为 prepared artifact，并在训练/验证/测试中复用，尽量保证“同一题只生成一次结构”。
+- 结果可观测性增强：rows / report 中额外记录 `selection_decision`、`finalizer_strategy`、`structure_source` 等字段，便于排查是结构、剪枝还是 finalizer 在拖后腿。
+
+#### 后续结构优化顺序
+
+当前建议先继续做结构，不急着直接加数据量：
+
+1. 彻底固定 stage1 artifacts
+   - 默认把二阶段训练、周期验证和最终测试都建立在冻结的 `union graph` 上。
+   - 如果后续做 online 学习，也应把“结构更新”与“权重更新”拆成不同实验，不要混在一个 run 里。
+2. 把 lower-memory selector 变成真正可学习模块
+   - 当前只是 role-aware heuristic selector。
+   - 下一步应让 selector 对“选哪些历史片段最有用”形成显式训练目标。
+3. 把 graph pruning / edge weighting 从 heuristic 提升为可学习 policy
+   - 当前 active subgraph 仍以规则分数为主。
+   - 需要让 controller 和边权策略真正学习“何时扩散、何时收缩、该保留哪些边”。
+4. 强化 finalizer 的 candidate-preserving 路径
+   - 最终原则应是“优先选择已有好候选，只在必要时做极小幅改写”，而不是重新写一版答案。
+5. 继续增强 replay / trace 可观测性
+   - 要能直接看到某轮选了哪些 memory、为什么保留这条边、哪个 reviewer 触发了 challenge、最终为什么走了 fallback。
+
+#### 后续数据优化方向（暂缓）
+
+等结构稳定后，再处理数据问题。当前更值得补的是“轨迹质量”和“中间监督”，而不是简单把题目数加大：
+
+- 增加 multi-turn trajectory，而不是只增加独立题目数量。
+- 为 lower memory / pruning / controller 生成更丰富的正负样本与 replay supervision。
+- 对困难样本做 repeated rollout，保留成功轨迹、失败轨迹和修复轨迹。
+- 针对 code / math / graph 三类任务分别构造中间监督信号，避免一种反馈模板强行覆盖所有数据集。
+
 ### 2. GFlowOpt 当前架构
 
 代码主目录：

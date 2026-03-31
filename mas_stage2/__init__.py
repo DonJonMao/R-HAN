@@ -1,6 +1,8 @@
 from .config import Stage2LearningConfig, Stage2RuntimeConfig
+from .config_v2 import Stage2V2Config
 from .pipeline import Stage2MASPipeline, Stage2PipelineResult
 from .runtime import Stage2Runtime, build_default_stage2_runtime
+from .runtime_v2 import Stage2RuntimeV2
 from .structure_io import (
     PreparedStage1Artifact,
     load_prepared_stage1_artifact,
@@ -35,6 +37,8 @@ __all__ = [
     "Stage2Runtime",
     "Stage2LearningConfig",
     "Stage2RuntimeConfig",
+    "Stage2RuntimeV2",
+    "Stage2V2Config",
     "TurnTrace",
     "build_default_stage2_runtime",
     "load_prepared_stage1_artifact",

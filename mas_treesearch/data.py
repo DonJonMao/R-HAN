@@ -45,9 +45,24 @@ def _extract_python_code(text: str) -> str:
 
 
 def _extract_boxed_expression(text: str) -> str:
-    boxed = re.findall(r"\\boxed\{([^{}]+)\}", text)
-    if boxed:
-        return boxed[-1].strip()
+    marker = r"\boxed{"
+    idx = text.rfind(marker)
+    if idx != -1:
+        start = idx + len(marker)
+        depth = 1
+        out: List[str] = []
+        for ch in text[start:]:
+            if ch == "{":
+                depth += 1
+                out.append(ch)
+                continue
+            if ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return "".join(out).strip()
+                out.append(ch)
+                continue
+            out.append(ch)
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if lines:
         return lines[-1]

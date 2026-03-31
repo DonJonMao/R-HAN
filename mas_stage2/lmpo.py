@@ -1,128 +1,111 @@
-"""LMPO: Latent Memory Policy Optimization
+"""LMPO: Latent Memory Policy Optimization."""
 
-用 RL 训练 Memory Composer，LLM 保持冻结
-"""
+from __future__ import annotations
+
+from collections import deque
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Sequence
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from typing import List, Dict, Optional
-from dataclasses import dataclass
-from collections import deque
 
 
 @dataclass
 class LMPOConfig:
-    """LMPO 训练配置"""
+    """LMPO 训练配置。"""
+
     learning_rate: float = 3e-4
-    gamma: float = 0.99  # discount factor
+    gamma: float = 0.99
     baseline_momentum: float = 0.9
     clip_grad_norm: float = 1.0
     entropy_coef: float = 0.01
-    value_loss_coef: float = 0.5
-    enabled: bool = True  # 消融开关
+    enabled: bool = True
 
 
 class LMPOTrainer:
-    """LMPO 训练器"""
+    """针对黑盒 LLM 执行链路的轻量策略梯度训练器。
 
-    def __init__(
-        self,
-        composer: nn.Module,
-        config: LMPOConfig
-    ):
-        self.composer = composer
+    这里不试图穿过 LLM 反传，而是对“latent memory 如何选择/ verbalize 成 prompt”
+    的离散策略做 REINFORCE 更新。
+    """
+
+    def __init__(self, modules: nn.Module | Sequence[nn.Module], config: LMPOConfig):
+        self.modules = self._normalize_modules(modules)
         self.config = config
-
+        self.baseline = 0.0
+        self.reward_history = deque(maxlen=100)
+        self.loss_history = deque(maxlen=100)
         if config.enabled:
-            self.optimizer = optim.Adam(
-                composer.parameters(),
-                lr=config.learning_rate
-            )
+            params: List[nn.Parameter] = []
+            for module in self.modules:
+                params.extend(list(module.parameters()))
+            self.optimizer = optim.Adam(params, lr=config.learning_rate) if params else None
+        else:
+            self.optimizer = None
 
-            # Moving average baseline
-            self.baseline = 0.0
-
-            # Training history
-            self.reward_history = deque(maxlen=100)
+    @staticmethod
+    def _normalize_modules(modules: nn.Module | Sequence[nn.Module]) -> List[nn.Module]:
+        if isinstance(modules, nn.Module):
+            return [modules]
+        return [module for module in modules if isinstance(module, nn.Module)]
 
     def compute_loss(
         self,
-        trajectory: Dict,
+        log_probs: Sequence[torch.Tensor],
         reward: float,
-        latent_memories: List[torch.Tensor]
-    ) -> torch.Tensor:
-        """计算 policy gradient loss
-
-        Args:
-            trajectory: 轨迹信息
-            reward: 最终 reward
-            latent_memories: 各节点的 latent memory
-
-        Returns:
-            loss: scalar
-        """
-        if not self.config.enabled:
-            return torch.tensor(0.0)
-
-        # Update baseline
-        self.baseline = (
-            self.config.baseline_momentum * self.baseline +
-            (1 - self.config.baseline_momentum) * reward
-        )
-
-        # Compute advantage
-        advantage = reward - self.baseline
-
-        # Policy gradient loss
-        # 这里简化处理：假设 latent_memories 的生成概率可以通过重新 forward 得到
-        loss = -advantage * self._compute_log_prob(latent_memories)
-
+        *,
+        entropy_terms: Sequence[torch.Tensor] | None = None,
+        auxiliary_losses: Sequence[torch.Tensor] | None = None,
+    ) -> torch.Tensor | None:
+        if not self.config.enabled or not log_probs:
+            return None
+        self.baseline = self.config.baseline_momentum * self.baseline + (1 - self.config.baseline_momentum) * float(reward)
+        advantage = float(reward) - self.baseline
+        stacked_log_probs = torch.stack([term.reshape(()) for term in log_probs]).sum()
+        loss = -advantage * stacked_log_probs
+        if entropy_terms:
+            entropy = torch.stack([term.reshape(()) for term in entropy_terms]).sum()
+            loss = loss - self.config.entropy_coef * entropy
+        if auxiliary_losses:
+            aux = torch.stack([term.reshape(()) for term in auxiliary_losses]).sum()
+            loss = loss + aux
         return loss
 
-    def _compute_log_prob(self, latent_memories: List[torch.Tensor]) -> torch.Tensor:
-        """计算 log probability（简化版）"""
-        # 实际实现中需要记录 forward 时的分布参数
-        # 这里用 L2 norm 作为代理
-        log_prob = sum(
-            -0.5 * (mem ** 2).sum()
-            for mem in latent_memories
-        )
-        return log_prob / len(latent_memories)
-
-    def update(
+    def update_from_policy(
         self,
-        trajectory: Dict,
+        log_probs: Sequence[torch.Tensor],
         reward: float,
-        latent_memories: List[torch.Tensor]
-    ):
-        """更新 Memory Composer"""
+        *,
+        entropy_terms: Sequence[torch.Tensor] | None = None,
+        auxiliary_losses: Sequence[torch.Tensor] | None = None,
+    ) -> Dict[str, float]:
         if not self.config.enabled:
-            return
-
-        loss = self.compute_loss(trajectory, reward, latent_memories)
-
+            return {"enabled": 0.0, "policy_updates": 0.0}
+        loss = self.compute_loss(log_probs, reward, entropy_terms=entropy_terms, auxiliary_losses=auxiliary_losses)
+        if loss is None or self.optimizer is None:
+            return {"enabled": 1.0, "policy_updates": 0.0}
         self.optimizer.zero_grad()
         loss.backward()
-
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(
-            self.composer.parameters(),
-            self.config.clip_grad_norm
-        )
-
+        for module in self.modules:
+            torch.nn.utils.clip_grad_norm_(module.parameters(), self.config.clip_grad_norm)
         self.optimizer.step()
+        self.reward_history.append(float(reward))
+        self.loss_history.append(float(loss.detach().cpu().item()))
+        return {
+            "enabled": 1.0,
+            "policy_updates": 1.0,
+            "baseline": float(self.baseline),
+            "last_loss": float(self.loss_history[-1]),
+            "mean_reward": float(sum(self.reward_history) / len(self.reward_history)),
+        }
 
-        # Record
-        self.reward_history.append(reward)
-
-    def get_stats(self) -> Dict:
-        """获取训练统计"""
+    def get_stats(self) -> Dict[str, float]:
         if not self.reward_history:
             return {}
-
         return {
-            "mean_reward": sum(self.reward_history) / len(self.reward_history),
-            "baseline": self.baseline,
-            "num_updates": len(self.reward_history)
+            "mean_reward": float(sum(self.reward_history) / len(self.reward_history)),
+            "baseline": float(self.baseline),
+            "num_updates": float(len(self.reward_history)),
+            "mean_loss": float(sum(self.loss_history) / max(1, len(self.loss_history))),
         }

@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from mas_stage2 import (
     Stage2MASPipeline,
     Stage2RuntimeConfig,
+    Stage2V2Config,
     load_prepared_stage1_artifact,
     save_prepared_stage1_artifact,
 )
@@ -183,6 +184,8 @@ def _validate_resume_ids(current_items: List[Dict[str, Any]], saved_ids: List[st
 
 
 def _print_row(prefix: str, idx: int, total: int, row: Dict[str, Any], *, elapsed_s: float) -> None:
+    turn_token_costs = row.get("stage2_turn_token_costs", [])
+    turn_token_text = json.dumps(turn_token_costs, ensure_ascii=False, separators=(",", ":")) if isinstance(turn_token_costs, list) else "[]"
     parts = [
         f"{prefix} {idx}/{total}",
         f"id={row['id']}",
@@ -191,6 +194,9 @@ def _print_row(prefix: str, idx: int, total: int, row: Dict[str, Any], *, elapse
         f"success={row['success']:.4f}",
         f"latency={row['latency']:.2f}",
         f"token={row['token_cost']:.4f}",
+        f"s1_token={row.get('stage1_token_cost', 0.0):.4f}",
+        f"s2_token={row.get('stage2_token_cost', 0.0):.4f}",
+        f"s2_turn_token={turn_token_text}",
         f"s2_turns={row.get('stage2_turns', 0):.1f}",
         f"s2_mem={row.get('stage2_memory_records', 0):.1f}",
         f"select={row.get('selection_decision', '')}",
@@ -236,7 +242,7 @@ def _runtime_config_dict(runtime_config: TieredEvalConfig) -> Dict[str, Any]:
     return asdict(runtime_config)
 
 
-def _stage2_config_dict(stage2_config: Stage2RuntimeConfig) -> Dict[str, Any]:
+def _stage2_config_dict(stage2_config: Any) -> Dict[str, Any]:
     return asdict(stage2_config)
 
 
@@ -370,10 +376,23 @@ def _row_from_result(dataset_name: str, split: str, item: Dict[str, Any], result
         "stage1_signature": result.stage1_artifact.stage1_signature,
         "stage2_signature": result.stage2_result.signature,
         "selection_decision": str(result.stage2_result.metadata.get("selection_decision", "")),
+        "selection_reason": str(result.stage2_result.metadata.get("selection_reason", "")),
         "finalizer_strategy": str(result.stage2_result.metadata.get("finalizer_strategy", "")),
         "structure_source": str(result.stage2_result.metadata.get("structure_source", result.stage1_artifact.metadata.get("source", ""))),
         "stage2_turns": float(result.stage2_result.metadata.get("turn_count", 0)),
         "stage2_memory_records": float(sum(result.stage2_result.memory_record_counts.values())),
+        "stage1_reward": float(result.stage2_result.metadata.get("stage1_reward", 0.0)),
+        "stage2_reward": float(result.stage2_result.metadata.get("stage2_reward", 0.0)),
+        "stage1_task_score": float(result.stage2_result.metadata.get("stage1_task_score", 0.0)),
+        "stage2_task_score": float(result.stage2_result.metadata.get("stage2_task_score", 0.0)),
+        "stage1_success": float(result.stage2_result.metadata.get("stage1_success", 0.0)),
+        "stage2_success": float(result.stage2_result.metadata.get("stage2_success", 0.0)),
+        "stage1_latency": float(result.stage2_result.metadata.get("stage1_latency", 0.0)),
+        "stage2_latency": float(result.stage2_result.metadata.get("stage2_latency", 0.0)),
+        "stage1_token_cost": float(result.stage2_result.metadata.get("stage1_token_cost", 0.0)),
+        "stage2_token_cost": float(result.stage2_result.metadata.get("stage2_token_cost", 0.0)),
+        "stage2_turn_token_costs": list(result.stage2_result.metadata.get("turn_token_costs", [])),
+        "stage2_turn_token_estimates": list(result.stage2_result.metadata.get("turn_token_estimates", [])),
     }
     if structure is not None:
         row["structure_reward"] = float(structure.metrics.total_reward)
@@ -446,7 +465,7 @@ def _run_dataset(
     search_config: SearchConfig,
     runtime_config: TieredEvalConfig,
     union_config: UnionRuntimeConfig,
-    stage2_config: Stage2RuntimeConfig,
+    stage2_config: Any,
     plan: Dict[str, int],
     seed: int,
     resume: bool,
@@ -726,10 +745,15 @@ def main() -> None:
     parser.add_argument("--tier1-repeats", type=int, default=1)
     parser.add_argument("--tier2-repeats", type=int, default=1)
     parser.add_argument("--stage2-turn-count", type=int, default=5)
+    parser.add_argument("--stage2-version", choices=("v1", "v2"), default="v2")
     parser.add_argument("--memory-top-k", type=int, default=4)
     parser.add_argument("--soft-prune-top-k", type=int, default=3)
     parser.add_argument("--soft-prune-threshold", type=float, default=0.38)
     parser.add_argument("--hard-prune-after-turn", type=int, default=4)
+    parser.add_argument("--v2-latent-length", type=int, default=8)
+    parser.add_argument("--v2-gnn-layers", type=int, default=2)
+    parser.add_argument("--disable-v2-global-node", action="store_true")
+    parser.add_argument("--disable-v2-lmpo", action="store_true")
     parser.add_argument("--periodic-every", type=int, default=50)
     parser.add_argument("--periodic-size", type=int, default=20)
     parser.add_argument("--max-train", type=int, default=-1)
@@ -759,7 +783,14 @@ def main() -> None:
     runtime_config.tier1.repeats = args.tier1_repeats
     runtime_config.tier2.repeats = args.tier2_repeats
     union_config = UnionRuntimeConfig()
-    stage2_config = Stage2RuntimeConfig()
+    if args.stage2_version == "v2":
+        stage2_config = Stage2V2Config()
+        stage2_config.composer_latent_length = args.v2_latent_length
+        stage2_config.gnn_num_layers = args.v2_gnn_layers
+        stage2_config.global_node_enabled = not args.disable_v2_global_node
+        stage2_config.lmpo_enabled = not args.disable_v2_lmpo
+    else:
+        stage2_config = Stage2RuntimeConfig()
     stage2_config.graph.turn_count = args.stage2_turn_count
     stage2_config.memory.max_selected_records = args.memory_top_k
     stage2_config.graph.soft_prune_top_k = args.soft_prune_top_k

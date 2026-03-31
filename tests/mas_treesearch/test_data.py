@@ -8,7 +8,8 @@ from mas_treesearch.profiles import resolve_dataset_profile
 from mas_treesearch.result_utils import has_structure_output, resolve_structure_signature, resolve_structure_summary
 from mas_treesearch.topology_set import TopologySetScorer
 from mas_treesearch.union_runtime import GraphMerger
-from mas_treesearch.config import SearchConfig, UnionRuntimeConfig
+from mas_treesearch.config import SearchConfig, TieredEvalConfig, UnionRuntimeConfig
+from mas_treesearch import default_agent_pool
 from mas_treesearch.types import (
     ArchitectureState,
     EvalSummary,
@@ -52,6 +53,18 @@ def _make_node(template: WorkflowTemplate, role_to_agent: dict[str, str], reward
 
 
 class ProcessedDatasetTests(unittest.TestCase):
+    def test_math_answer_extracts_nested_boxed_expression(self) -> None:
+        record = {
+            "id": "math:1",
+            "source_dataset": "math",
+            "category": "Pre-algebra",
+            "question": "Return the final boxed expression.",
+            "answer": "We get \\boxed{\\dfrac{5x^2}{2}}.",
+            "metadata": {},
+        }
+        standardized = standardize_record(record, "test")
+        self.assertEqual(standardized["answer"], "\\dfrac{5x^2}{2}")
+
     def test_mmlu_pro_question_includes_metadata_options(self) -> None:
         record = {
             "id": "mmlu_pro:1",
@@ -171,6 +184,32 @@ class ProcessedDatasetTests(unittest.TestCase):
         profile = resolve_dataset_profile("mbpp")
         signal = MultiFidelityEvaluator.feedback_signal(summary, dataset_profile=profile)
         self.assertGreater(signal, 0.3)
+
+    def test_math_scoring_handles_nested_boxed_fraction_and_degree_variants(self) -> None:
+        evaluator = MultiFidelityEvaluator(TieredEvalConfig(), default_agent_pool())
+        task_score, success, safety_penalty, debug = evaluator._score_with_reference(
+            "Return only the final boxed answer content.",
+            "\\boxed{\\dfrac{5x^2}{2}}",
+            "Detailed derivation gives \\boxed{\\frac{5x^2}{2}}.",
+            {"mas_dataset_name": "math", "mas_answer_format": "math_expression"},
+        )
+        self.assertEqual(task_score, 1.0)
+        self.assertEqual(success, 1.0)
+        self.assertEqual(safety_penalty, 0.0)
+        self.assertEqual(debug["pred_expr"], "\\frac{5x^2}{2}")
+        self.assertEqual(debug["ref_expr"], "\\frac{5x^2}{2}")
+
+        task_score, success, safety_penalty, debug = evaluator._score_with_reference(
+            "Return only the final boxed answer content.",
+            "140^\\circ",
+            "Hence the angle is \\boxed{140\\text{ degrees}}.",
+            {"mas_dataset_name": "math", "mas_answer_format": "math_expression"},
+        )
+        self.assertEqual(task_score, 1.0)
+        self.assertEqual(success, 1.0)
+        self.assertEqual(safety_penalty, 0.0)
+        self.assertEqual(debug["pred_expr"], "140^\\circ")
+        self.assertEqual(debug["ref_expr"], "140^\\circ")
 
     def test_structure_summary_prefers_complementary_topologies(self) -> None:
         profile = resolve_dataset_profile("humaneval")

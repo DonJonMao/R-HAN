@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 import torch
 import torch.nn as nn
 from typing import List, Optional, Sequence
@@ -19,6 +21,38 @@ class MemoryComposerConfig:
     encoder_layers: int = 2  # Encoder 层数
     dropout: float = 0.1
     max_input_length: int = 2048  # 最大输入长度
+
+
+def _stable_token_id(token: str, vocab_size: int) -> int:
+    digest = hashlib.md5(token.encode("utf-8")).hexdigest()
+    return int(digest[:8], 16) % max(1, vocab_size - 1) + 1
+
+
+def tokenize_texts(
+    texts: Sequence[str],
+    *,
+    vocab_size: int,
+    max_length: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """将文本稳定地哈希成 token ids。
+
+    这里不依赖外部 tokenizer，便于在当前工程里快速验证 composer 闭环。
+    """
+
+    tokens: List[int] = []
+    for text in texts:
+        pieces = re.findall(r"\w+|[^\w\s]", str(text).lower())
+        tokens.extend(_stable_token_id(piece, vocab_size) for piece in pieces)
+        if len(tokens) >= max_length:
+            break
+    if not tokens:
+        tokens = [_stable_token_id("<empty>", vocab_size)]
+    tokens = tokens[:max_length]
+    input_ids = torch.zeros(1, max_length, dtype=torch.long)
+    attention_mask = torch.zeros(1, max_length, dtype=torch.bool)
+    input_ids[0, : len(tokens)] = torch.tensor(tokens, dtype=torch.long)
+    attention_mask[0, : len(tokens)] = True
+    return input_ids, attention_mask
 
 
 class MemoryComposer(nn.Module):
