@@ -125,7 +125,8 @@ class RoleAwareMemorySelector:
                     question_text,
                     f"role={node.role}",
                     f"turn={current_turn}",
-                    f"focus={controller_state.focus}",
+                    f"global_state={_truncate(controller_state.summary, 240)}",
+                    f"uncertainty={controller_state.uncertainty:.3f}",
                     controller_state.summary,
                 ]
             ),
@@ -221,7 +222,10 @@ class LocalMemoryComposer:
                 failure_signals.append(excerpt)
             elif record.feedback_type in {"pass", "preserve"}:
                 stable_signals.append(excerpt)
-        parts: List[str] = [f"Role={node.role}. Focus={controller_state.focus}."]
+        parts: List[str] = [
+            f"Role={node.role}.",
+            f"Global state: {_truncate(controller_state.summary, self.config.max_record_chars // 2)}",
+        ]
         if stable_signals:
             parts.append("Keep using:")
             parts.extend(f"- {signal}" for signal in stable_signals[:2])
@@ -285,7 +289,7 @@ class MemoryBriefVerbalizer:
         controller_state: ControllerState,
     ) -> str:
         parts: List[str] = [
-            "[Global Guidance]",
+            "[Global State]",
             _truncate(controller_state.summary, self.config.max_brief_chars // 3),
             "",
             "[Local Memory]",

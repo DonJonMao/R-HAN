@@ -1,61 +1,116 @@
-"""轻量 GNN: 用于聚合邻居的 latent memory"""
+"""轻量 GNN: 统一负责 edge gate、edge weight 和邻居聚合。"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import List, Sequence
 
 import torch
 import torch.nn as nn
-from typing import List, Dict, Tuple
-from dataclasses import dataclass
+import torch.nn.functional as F
 
 
 @dataclass
 class GNNConfig:
     """GNN 配置"""
+
     hidden_dim: int = 4096
     num_layers: int = 2
     dropout: float = 0.1
     use_edge_weights: bool = True
+    gate_dim: int = 256
+    edge_feature_dim: int = 6
 
 
 class LightweightGNN(nn.Module):
-    """轻量 GNN 用于邻居聚合
+    """轻量 GNN。
 
-    不冻结，动态适应不同图结构
+    当前不只负责聚合邻居 latent，也负责：
+    - 计算 edge gate
+    - 给出用于消息传播的 edge weight
+    - 为逐轮 pruning 提供统一打分
     """
 
     def __init__(self, config: GNNConfig):
         super().__init__()
         self.config = config
+        self.state_proj = nn.Linear(config.hidden_dim, config.gate_dim)
+        self.global_proj = nn.Linear(config.hidden_dim, config.gate_dim)
+        self.edge_gate_mlp = nn.Sequential(
+            nn.Linear(config.gate_dim * 5 + config.edge_feature_dim, config.gate_dim),
+            nn.ReLU(),
+            nn.Dropout(config.dropout),
+            nn.Linear(config.gate_dim, 1),
+        )
 
-        # Message passing layers
-        self.layers = nn.ModuleList([
-            GNNLayer(config.hidden_dim, config.dropout)
-            for _ in range(config.num_layers)
-        ])
+        self.layers = nn.ModuleList([GNNLayer(config.hidden_dim, config.dropout) for _ in range(config.num_layers)])
+
+    @staticmethod
+    def _pool_latent(latent: torch.Tensor) -> torch.Tensor:
+        if latent.dim() == 1:
+            return latent
+        if latent.dim() == 2:
+            return latent.mean(dim=0)
+        if latent.dim() == 3:
+            return latent.mean(dim=(0, 1))
+        raise ValueError(f"Unsupported latent rank: {latent.dim()}")
+
+    def edge_gate(
+        self,
+        src_latent: torch.Tensor,
+        dst_latent: torch.Tensor,
+        edge_features: Sequence[float],
+        global_state: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        src_state = self.state_proj(self._pool_latent(src_latent))
+        dst_state = self.state_proj(self._pool_latent(dst_latent))
+        if global_state is None:
+            global_repr = torch.zeros_like(src_state)
+        else:
+            global_repr = self.global_proj(self._pool_latent(global_state))
+        feature_tensor = torch.tensor(list(edge_features), dtype=src_state.dtype, device=src_state.device)
+        if feature_tensor.numel() < self.config.edge_feature_dim:
+            feature_tensor = F.pad(feature_tensor, (0, self.config.edge_feature_dim - feature_tensor.numel()))
+        elif feature_tensor.numel() > self.config.edge_feature_dim:
+            feature_tensor = feature_tensor[: self.config.edge_feature_dim]
+        gate_input = torch.cat(
+            [
+                src_state,
+                dst_state,
+                src_state * dst_state,
+                torch.abs(src_state - dst_state),
+                global_repr,
+                feature_tensor,
+            ],
+            dim=0,
+        )
+        return torch.sigmoid(self.edge_gate_mlp(gate_input)).reshape(())
+
+    @staticmethod
+    def normalize_edge_weights(edge_gates: Sequence[torch.Tensor | float]) -> List[float]:
+        if not edge_gates:
+            return []
+        tensor = torch.stack(
+            [gate.reshape(()) if isinstance(gate, torch.Tensor) else torch.tensor(float(gate), dtype=torch.float32) for gate in edge_gates]
+        )
+        weights = torch.softmax(tensor, dim=0)
+        return [float(weight.detach().cpu().item()) for weight in weights]
 
     def forward(
         self,
         self_latent: torch.Tensor,
         neighbor_latents: List[torch.Tensor],
-        edge_weights: List[float]
+        edge_weights: List[float],
     ) -> torch.Tensor:
-        """聚合邻居信息
-
-        Args:
-            self_latent: (L', D) 自己的 latent memory
-            neighbor_latents: List of (L', D) 邻居的 latent memory
-            edge_weights: List of float 边权重
-
-        Returns:
-            aggregated: (L', D) 聚合后的 latent memory
-        """
         if not neighbor_latents:
             return self_latent
 
-        x = self_latent.unsqueeze(0)  # (1, L', D)
+        x = self_latent.unsqueeze(0)
 
         for layer in self.layers:
             x = layer(x, neighbor_latents, edge_weights)
 
-        return x.squeeze(0)  # (L', D)
+        return x.squeeze(0)
 
 
 class GNNLayer(nn.Module):

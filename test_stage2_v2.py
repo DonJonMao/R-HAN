@@ -41,8 +41,15 @@ def test_gnn():
     neighbor_latents = [torch.randn(l_val, d_val) for _ in range(3)]
     edge_weights = [0.5, 0.3, 0.2]
     aggregated = gnn(self_latent, neighbor_latents, edge_weights)
+    gate = gnn.edge_gate(
+        self_latent,
+        neighbor_latents[0],
+        [0.9, 0.8, 0.7, 0.7, 0.25, 0.5],
+        global_state=torch.randn(d_val),
+    )
     print(f"  Output shape: {aggregated.shape}")
     assert aggregated.shape == (l_val, d_val)
+    assert 0.0 <= float(gate.detach().cpu().item()) <= 1.0
     print("  ✓ GNN test passed\n")
 
 
@@ -59,6 +66,8 @@ def test_global_node():
     ]
     new_state = global_node.update(updates, ["out1", "out2"])
     assert new_state.shape == (1, config.hidden_dim)
+    global_node.reset()
+    assert torch.allclose(global_node.get_context(1), torch.zeros(1, config.hidden_dim))
     print("  ✓ Global Node test passed\n")
 
 

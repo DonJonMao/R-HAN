@@ -112,7 +112,5 @@ class GlobalContextNode(nn.Module):
     def reset(self):
         """重置全局状态（用于新任务）"""
         if self.config.enabled:
-            if self.config.learnable:
-                nn.init.normal_(self.global_state, std=0.02)
-            else:
+            with torch.no_grad():
                 self.global_state.zero_()

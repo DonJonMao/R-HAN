@@ -26,7 +26,9 @@ from .memory import PrivateEpisodeMemoryStore
 from .runtime import Stage2Runtime, _truncate
 from .types import (
     ControllerState,
+    EdgeActivation,
     ExportedMemoryMessage,
+    FeedbackEvent,
     MemoryRecord,
     NodeTurnTrace,
     Stage2RunResult,
@@ -70,7 +72,12 @@ class Stage2RuntimeV2(Stage2Runtime):
         if not self.v2_config.latent_bridge_trainable:
             for param in self.latent_to_embed.parameters():
                 param.requires_grad = False
-        self.lmpo_trainer = LMPOTrainer([self.composer, self.latent_to_embed], self.v2_config.get_lmpo_config())
+        trainable_modules: List[nn.Module] = [self.composer, self.latent_to_embed]
+        if self.gnn is not None:
+            trainable_modules.append(self.gnn)
+        if self.global_node is not None:
+            trainable_modules.append(self.global_node)
+        self.lmpo_trainer = LMPOTrainer(trainable_modules, self.v2_config.get_lmpo_config())
         self._global_text_summary = ""
         self._pending_policy_log_probs: List[torch.Tensor] = []
         self._pending_policy_entropies: List[torch.Tensor] = []
@@ -144,8 +151,8 @@ class Stage2RuntimeV2(Stage2Runtime):
         texts = [
             f"role={node.role}",
             f"question={_truncate(question_text, 480)}",
-            f"controller_mode={controller_state.mode}",
-            f"controller_focus={_truncate(controller_state.focus, 220)}",
+            f"turn={controller_state.turn_index + 1}",
+            f"global_state={_truncate(controller_state.summary, 240)}",
         ]
         if records:
             for record in records:
@@ -195,16 +202,207 @@ class Stage2RuntimeV2(Stage2Runtime):
             edge_scores.append(float(activation.score))
         if not neighbor_latents:
             return self_latent
-        edge_weight_tensor = torch.tensor(edge_scores, dtype=torch.float32)
-        edge_weights = torch.softmax(edge_weight_tensor, dim=0).tolist()
+        edge_weight_tensor = [torch.tensor(score, dtype=torch.float32) for score in edge_scores]
+        edge_weights = self.gnn.normalize_edge_weights(edge_weight_tensor)
         return self.gnn(self_latent, neighbor_latents, edge_weights)
 
-    def _integrate_global_context(self, latent: torch.Tensor, controller_state: ControllerState) -> torch.Tensor:
+    def _integrate_global_context(self, latent: torch.Tensor) -> torch.Tensor:
         if self.global_node is None:
             return latent
         global_ctx = self.global_node.get_context(1).squeeze(0)
-        strength = 0.20 + 0.20 * (1.0 - float(controller_state.uncertainty))
-        return latent + strength * global_ctx.unsqueeze(0)
+        return latent + 0.25 * global_ctx.unsqueeze(0)
+
+    @staticmethod
+    def _feedback_counts(previous_feedback: Sequence[FeedbackEvent]) -> Tuple[int, int, int]:
+        support = sum(1 for event in previous_feedback if event.event_type in {"pass", "preserve"})
+        challenge = sum(1 for event in previous_feedback if event.event_type in {"challenge", "reject", "conflict", "revise"})
+        uncertain = sum(1 for event in previous_feedback if event.event_type == "uncertain")
+        return support, challenge, uncertain
+
+    def _build_turn_state(
+        self,
+        *,
+        turn_index: int,
+        total_turns: int,
+        previous_feedback: Sequence[FeedbackEvent],
+        active_edges: Sequence[EdgeActivation],
+    ) -> ControllerState:
+        support_count, challenge_count, uncertain_count = self._feedback_counts(previous_feedback)
+        total_feedback = max(1, len(previous_feedback))
+        uncertainty = 0.35 if not previous_feedback else min(1.0, (challenge_count + uncertain_count) / total_feedback)
+        total_edges = max(1, len(active_edges))
+        active_ratio = 1.0 if not active_edges else sum(1 for edge in active_edges if edge.active) / float(total_edges)
+        parts = [
+            f"TURN={turn_index + 1}/{total_turns}",
+            f"ACTIVE_EDGE_RATIO={active_ratio:.3f}",
+            f"SUPPORT={support_count}",
+            f"CHALLENGE={challenge_count}",
+            f"UNCERTAINTY={uncertainty:.3f}",
+        ]
+        if self._global_text_summary.strip():
+            parts.append(f"GLOBAL={_truncate(self._global_text_summary, 260)}")
+        else:
+            parts.append("GLOBAL=No aggregated global state yet.")
+        return ControllerState(
+            turn_index=turn_index,
+            mode="graph",
+            focus="",
+            uncertainty=uncertainty,
+            role_weights={},
+            summary="\n".join(parts),
+            metadata={
+                "support_count": support_count,
+                "challenge_count": challenge_count,
+                "uncertain_count": uncertain_count,
+                "active_edge_ratio": active_ratio,
+            },
+        )
+
+    def _prepare_turn_packages(
+        self,
+        task_nodes: Sequence[UnionNode],
+        *,
+        question_text: str,
+        turn_state: ControllerState,
+        current_turn: int,
+    ) -> Dict[str, Dict[str, object]]:
+        prepared: Dict[str, Dict[str, object]] = {}
+        for node in task_nodes:
+            local_records = self._memory_store.get(node.node_id)
+            records_by_id = {record.record_id: record for record in local_records}
+            selected_items = self._selector.select(
+                node,
+                question_text,
+                turn_state,
+                local_records,
+                current_turn=current_turn,
+            )
+            local_latent = self._compose_latent(node, question_text, turn_state, selected_items, records_by_id)
+            prepared[node.node_id] = {
+                "records_by_id": records_by_id,
+                "selected_items": selected_items,
+                "local_latent": local_latent,
+            }
+        return prepared
+
+    def _edge_feature_vector(self, edge, *, turn_index: int) -> List[float]:
+        progress = float(turn_index + 1) / max(1.0, float(self.config.graph.turn_count))
+        return [
+            float(edge.initial_keep_logit),
+            float(edge.support_ratio),
+            float(edge.avg_parent_score),
+            float(edge.best_parent_score),
+            min(1.0, max(0.0, float(edge.level_delta_mean) / 4.0)),
+            progress,
+        ]
+
+    def _turn_keep_k(self, incoming_count: int, *, turn_index: int) -> int:
+        soft_top_k = max(self.config.graph.min_incoming_edges, self.config.graph.soft_prune_top_k)
+        if incoming_count <= soft_top_k:
+            return incoming_count
+        progress = float(turn_index + 1) / max(1.0, float(self.config.graph.turn_count))
+        span = max(0, soft_top_k - self.config.graph.min_incoming_edges)
+        keep_k = soft_top_k - int(round(progress * span))
+        return max(self.config.graph.min_incoming_edges, min(incoming_count, keep_k))
+
+    def _activate_edges_v2(
+        self,
+        graph: UnionGraph,
+        prepared_states: Dict[str, Dict[str, object]],
+        *,
+        turn_index: int,
+    ) -> List[EdgeActivation]:
+        task_edges = self._task_edges(graph)
+        if not task_edges:
+            return []
+        global_state = self.global_node.get_context(1).squeeze(0) if self.global_node is not None else None
+        scored_by_dst: Dict[str, List[Tuple[torch.Tensor, object, List[float]]]] = {}
+        score_lookup: Dict[str, torch.Tensor] = {}
+        feature_lookup: Dict[str, List[float]] = {}
+        for edge in task_edges:
+            src_state = prepared_states.get(edge.src)
+            dst_state = prepared_states.get(edge.dst)
+            if src_state is None or dst_state is None:
+                continue
+            edge_features = self._edge_feature_vector(edge, turn_index=turn_index)
+            if self.gnn is not None:
+                gate = self.gnn.edge_gate(
+                    src_state["local_latent"],
+                    dst_state["local_latent"],
+                    edge_features,
+                    global_state=global_state,
+                )
+            else:
+                prior = 0.45 * edge.support_ratio + 0.35 * edge.avg_parent_score + 0.20 * edge.best_parent_score
+                gate = torch.tensor(max(0.0, min(1.0, prior)), dtype=torch.float32)
+            edge_id = self._edge_id(edge)
+            scored_by_dst.setdefault(edge.dst, []).append((gate, edge, edge_features))
+            score_lookup[edge_id] = gate
+            feature_lookup[edge_id] = edge_features
+
+        active_ids: set[str] = set()
+        threshold_scale = 0.85 if (turn_index + 1) < self.config.graph.hard_prune_after_turn else 1.0
+        dynamic_threshold = float(self.config.graph.soft_prune_threshold) * threshold_scale
+        for dst, items in scored_by_dst.items():
+            items.sort(key=lambda item: float(item[0].detach().cpu().item()), reverse=True)
+            keep_k = self._turn_keep_k(len(items), turn_index=turn_index)
+            score_tensor = torch.stack([item[0].reshape(()) for item in items])
+            if self._current_learn:
+                chosen_indices, log_prob, entropy = self._choose_indices(score_tensor, max_items=keep_k, sample=True)
+                if log_prob is not None:
+                    self._pending_policy_log_probs.append(log_prob)
+                if entropy is not None:
+                    self._pending_policy_entropies.append(entropy)
+            else:
+                chosen_indices, _, _ = self._choose_indices(score_tensor, max_items=keep_k, sample=False)
+            for rank, index in enumerate(chosen_indices):
+                gate_value, edge, _ = items[index]
+                score = float(gate_value.detach().cpu().item())
+                if rank < self.config.graph.min_incoming_edges or score >= dynamic_threshold:
+                    active_ids.add(self._edge_id(edge))
+
+        activations: List[EdgeActivation] = []
+        for edge in task_edges:
+            edge_id = self._edge_id(edge)
+            score = float(score_lookup.get(edge_id, torch.tensor(0.0)).detach().cpu().item())
+            activations.append(
+                EdgeActivation(
+                    edge_id=edge_id,
+                    src=edge.src,
+                    dst=edge.dst,
+                    score=score,
+                    active=edge_id in active_ids,
+                    reason=f"graph_gate={score:.3f},turn={turn_index + 1}",
+                    metadata={
+                        "edge_features": list(feature_lookup.get(edge_id, [])),
+                        "graph_gate": score,
+                        "turn_index": turn_index,
+                    },
+                )
+            )
+        return activations
+
+    def _active_task_nodes_v2(
+        self,
+        graph: UnionGraph,
+        task_nodes: Sequence[UnionNode],
+        active_edges: Sequence[EdgeActivation],
+    ) -> List[UnionNode]:
+        incident_ids = {
+            node_id
+            for activation in active_edges
+            if activation.active
+            for node_id in (activation.src, activation.dst)
+        }
+        protected_ids = {
+            node_id
+            for node_id in set(graph.root_node_ids) | set(graph.sink_node_ids)
+            if node_id in graph.nodes and graph.nodes[node_id].node_type == "task"
+        }
+        active_ids = incident_ids | protected_ids
+        if not active_ids:
+            return list(task_nodes)
+        return [node for node in task_nodes if node.node_id in active_ids]
 
     def _candidate_scores(self, query: torch.Tensor, vectors: Sequence[Sequence[float]]) -> torch.Tensor:
         matrix = torch.stack([self._vector_tensor(vector) for vector in vectors])
@@ -296,11 +494,8 @@ class Stage2RuntimeV2(Stage2Runtime):
         neighbour_lines = [neighbour_candidates[index]["text"] for index in neighbour_indices]
 
         parts: List[str] = [
-            "[Global Guidance]",
+            "[Global State]",
             _truncate(self._global_text_summary or "No accumulated global summary yet.", self.v2_config.memory.max_brief_chars // 4),
-            "",
-            "[Controller]",
-            _truncate(node.role + " | " + self._controller_summary(node.role), self.v2_config.memory.max_brief_chars // 4),
         ]
         if local_lines:
             parts.extend(["", "[Latent-Selected Private Memory]"])
@@ -324,13 +519,6 @@ class Stage2RuntimeV2(Stage2Runtime):
             "selected_local_ids": [local_candidates[index]["record_id"] for index in local_indices],
             "selected_neighbour_ids": [neighbour_candidates[index]["node_id"] for index in neighbour_indices],
         }
-
-    def _controller_summary(self, role: str) -> str:
-        weights = getattr(self, "_latest_controller_state", None)
-        if weights is None:
-            return "Controller not initialized."
-        role_weight = float(weights.role_weights.get(role, 1.0))
-        return f"mode={weights.mode}; focus={weights.focus}; role_weight={role_weight:.2f}; uncertainty={weights.uncertainty:.2f}"
 
     def _build_v2_export(
         self,
@@ -370,6 +558,47 @@ class Stage2RuntimeV2(Stage2Runtime):
             "\n".join(carried_lines) if carried_lines else "No carried private memory.",
         )
 
+    @staticmethod
+    def _role_instruction(
+        node: UnionNode,
+        *,
+        turn_index: int,
+        total_turns: int,
+        dataset_profile: DatasetProfile,
+        controller_state: ControllerState,
+        final_turn: bool,
+    ) -> str:
+        del controller_state
+        role_map = {
+            "solver": "Propose the strongest current candidate answer.",
+            "solver_a": "Propose one concrete candidate from your angle.",
+            "solver_b": "Propose a materially different candidate when possible.",
+            "generator": "Draft a concrete candidate that downstream agents can inspect.",
+            "critic": "Identify the most likely flaw, inconsistency, or missing condition.",
+            "reviser": "Repair the current candidate using the strongest feedback signals.",
+            "verifier": "Check correctness, edge cases, and output contract compliance.",
+            "aggregator": "Merge surviving candidates into one stronger answer.",
+            "judge": "Decide which candidate is more reliable and why.",
+            "router": "Identify the next subproblem and route attention accordingly.",
+        }
+        parts = [
+            f"Turn {turn_index + 1}/{total_turns}.",
+            role_map.get(node.role, "Execute your assigned role."),
+            "Use your private memory together with graph-mediated neighbour signals.",
+        ]
+        if dataset_profile.task_type == "code_generation":
+            if node.role in {"critic", "verifier", "judge"}:
+                parts.append("Do not output Python code. Return a compact review using VERDICT, ISSUES, and FIX lines.")
+            elif node.role == "router":
+                parts.append("Do not output Python code. Route the next repair focus in short text.")
+            else:
+                parts.append("If you propose a candidate, output executable Python that preserves the required function signature.")
+        elif dataset_profile.task_type in {"numeric", "math_expression"}:
+            parts.append("Prioritize mathematical correctness over stylistic variation.")
+        if final_turn:
+            parts.append("Be decisive and only keep the strongest surviving line of reasoning.")
+        return " ".join(parts)
+
     def _run_task_node(
         self,
         graph: UnionGraph,
@@ -384,19 +613,27 @@ class Stage2RuntimeV2(Stage2Runtime):
         previous_exports: Dict[str, ExportedMemoryMessage],
         episode_id: str,
         current_turn: int,
+        prepared_state: Optional[Dict[str, object]] = None,
     ) -> Tuple[NodeTurnTrace, MemoryRecord, ExportedMemoryMessage]:
         local_records = self._memory_store.get(node.node_id)
-        records_by_id = {record.record_id: record for record in local_records}
-        selected_items = self._selector.select(
-            node,
-            question_text,
-            controller_state,
-            local_records,
-            current_turn=current_turn,
-        )
-        local_latent = self._compose_latent(node, question_text, controller_state, selected_items, records_by_id)
+        if prepared_state is None:
+            records_by_id = {record.record_id: record for record in local_records}
+            selected_items = self._selector.select(
+                node,
+                question_text,
+                controller_state,
+                local_records,
+                current_turn=current_turn,
+            )
+            local_latent = self._compose_latent(node, question_text, controller_state, selected_items, records_by_id)
+        else:
+            records_by_id = dict(prepared_state.get("records_by_id", {}))
+            selected_items = list(prepared_state.get("selected_items", ()))
+            local_latent = prepared_state.get("local_latent")
+            if local_latent is None:
+                local_latent = self._compose_latent(node, question_text, controller_state, selected_items, records_by_id)
         aggregated_latent = self._aggregate_v2_neighbors(node, local_latent, active_edges, previous_exports)
-        enhanced_latent = self._integrate_global_context(aggregated_latent, controller_state)
+        enhanced_latent = self._integrate_global_context(aggregated_latent)
         neighbour_exports = self._neighbour_exports(node.node_id, active_edges, previous_exports)
         memory_brief, policy_log_prob, entropy_term, selection_debug = self._build_memory_brief(
             node,
@@ -556,35 +793,40 @@ class Stage2RuntimeV2(Stage2Runtime):
         episode_id = str((metadata or {}).get("question_id") or (metadata or {}).get("id") or abs(hash(question_text)))
         start = time.perf_counter()
         task_nodes = self._task_nodes(graph)
-        controller_state = self._controller.bootstrap(
-            graph,
-            dataset_profile,
-            role_adjustments=self._controller_role_adjustments(
-                dataset_profile,
-                None,
-                turn_index=0,
-                total_turns=self.config.graph.turn_count,
-                feedback_events=[],
-            ),
-        )
-        self._latest_controller_state = controller_state
         previous_feedback = []
         previous_exports: Dict[str, ExportedMemoryMessage] = {}
         turn_traces: List[TurnTrace] = []
         final_sink_outputs: Dict[str, str] = {}
         turn_token_estimates: List[int] = []
         turn_token_costs: List[float] = []
+        turn_state = self._build_turn_state(
+            turn_index=0,
+            total_turns=self.config.graph.turn_count,
+            previous_feedback=[],
+            active_edges=[],
+        )
 
         for turn_index in range(self.config.graph.turn_count):
-            active_edges = self._activate_edges(graph, controller_state, previous_feedback, turn_index=turn_index)
-            active_task_nodes = self._active_task_nodes(
-                graph,
-                task_nodes,
-                active_edges,
-                controller_state,
-                previous_feedback,
+            base_state = self._build_turn_state(
                 turn_index=turn_index,
+                total_turns=self.config.graph.turn_count,
+                previous_feedback=previous_feedback,
+                active_edges=[],
             )
+            prepared_states = self._prepare_turn_packages(
+                task_nodes,
+                question_text=question_text,
+                turn_state=base_state,
+                current_turn=turn_index,
+            )
+            active_edges = self._activate_edges_v2(graph, prepared_states, turn_index=turn_index)
+            turn_state = self._build_turn_state(
+                turn_index=turn_index,
+                total_turns=self.config.graph.turn_count,
+                previous_feedback=previous_feedback,
+                active_edges=active_edges,
+            )
+            active_task_nodes = self._active_task_nodes_v2(graph, task_nodes, active_edges)
             active_node_ids = {node.node_id for node in active_task_nodes}
             skipped_node_ids = [node.node_id for node in task_nodes if node.node_id not in active_node_ids]
             node_traces: List[NodeTurnTrace] = []
@@ -599,11 +841,12 @@ class Stage2RuntimeV2(Stage2Runtime):
                     metadata=metadata,
                     reference_answer=reference_answer,
                     dataset_profile=dataset_profile,
-                    controller_state=controller_state,
+                    controller_state=turn_state,
                     active_edges=active_edges,
                     previous_exports=previous_exports,
                     episode_id=episode_id,
                     current_turn=turn_index,
+                    prepared_state=prepared_states.get(node.node_id),
                 )
                 self._memory_store.add(output_record)
                 turn_token_estimate += int(output_record.token_estimate)
@@ -619,26 +862,17 @@ class Stage2RuntimeV2(Stage2Runtime):
             turn_token_cost = self._token_cost_from_estimate(turn_token_estimate)
             turn_token_estimates.append(turn_token_estimate)
             turn_token_costs.append(turn_token_cost)
-            self._update_global_state(node_traces, current_exports, controller_state)
-            controller_state = self._controller.update(
-                controller_state,
+            self._update_global_state(node_traces, current_exports, turn_state)
+            turn_state = self._build_turn_state(
                 turn_index=turn_index,
                 total_turns=self.config.graph.turn_count,
-                feedback_events=feedback_events,
-                sink_outputs=sink_outputs,
-                role_adjustments=self._controller_role_adjustments(
-                    dataset_profile,
-                    controller_state,
-                    turn_index=turn_index,
-                    total_turns=self.config.graph.turn_count,
-                    feedback_events=feedback_events,
-                ),
+                previous_feedback=feedback_events,
+                active_edges=active_edges,
             )
-            self._latest_controller_state = controller_state
             turn_traces.append(
                 TurnTrace(
                     turn_index=turn_index,
-                    controller_state=controller_state,
+                    controller_state=turn_state,
                     active_edges=active_edges,
                     node_traces=node_traces,
                     feedback_events=feedback_events,
@@ -660,7 +894,7 @@ class Stage2RuntimeV2(Stage2Runtime):
 
         final_answer, finalizer_strategy = self._finalize_answer(
             question_text=question_text,
-            controller_state=controller_state,
+            controller_state=turn_state,
             sink_outputs=final_sink_outputs,
             turn_traces=turn_traces,
             metadata=metadata,
@@ -669,7 +903,7 @@ class Stage2RuntimeV2(Stage2Runtime):
         )
         result = Stage2RunResult(
             final_answer=final_answer,
-            final_controller_state=controller_state,
+            final_controller_state=turn_state,
             turn_traces=turn_traces,
             memory_record_counts=self._memory_store.counts(),
             signature="stage2_v2|" + "||".join(graph.source_topology_signatures),
@@ -709,13 +943,6 @@ class Stage2RuntimeV2(Stage2Runtime):
         summary: Optional[EvalSummary] = None,
         reward_target: Optional[float] = None,
     ) -> Dict[str, float]:
-        base_stats = super().learn_from_run(
-            graph,
-            result,
-            dataset_profile=dataset_profile,
-            summary=summary,
-            reward_target=reward_target,
-        )
         target = self._summary_target(summary, reward_target)
         policy_stats = self.lmpo_trainer.update_from_policy(
             self._pending_policy_log_probs,
@@ -724,6 +951,4 @@ class Stage2RuntimeV2(Stage2Runtime):
         )
         self._pending_policy_log_probs = []
         self._pending_policy_entropies = []
-        merged = dict(base_stats)
-        merged.update({f"lmpo_{key}": float(value) for key, value in policy_stats.items()})
-        return merged
+        return {f"lmpo_{key}": float(value) for key, value in policy_stats.items()}
