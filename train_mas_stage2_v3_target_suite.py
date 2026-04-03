@@ -2,190 +2,44 @@ from __future__ import annotations
 
 import argparse
 import json
-import random
 import time
-from dataclasses import asdict, dataclass
-from datetime import datetime
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from mas_stage2 import (
-    Stage2MASPipeline,
-    Stage2RuntimeConfig,
-    Stage2V2Config,
-    load_prepared_stage1_artifact,
-    save_prepared_stage1_artifact,
-)
+from mas_stage2 import load_prepared_stage1_artifact, save_prepared_stage1_artifact
+from mas_stage2_v3 import Stage2V3Config, Stage2V3Pipeline
 from mas_treesearch import SearchConfig, TieredEvalConfig, UnionRuntimeConfig, list_processed_datasets, load_processed_split
-
-
-@dataclass
-class RunningStats:
-    count: int = 0
-    reward: float = 0.0
-    task_score: float = 0.0
-    success: float = 0.0
-    latency: float = 0.0
-    token_cost: float = 0.0
-    safety_penalty: float = 0.0
-    stage2_turns: float = 0.0
-    stage2_memory_records: float = 0.0
-    structure_reward: float = 0.0
-    coverage: float = 0.0
-    complementarity: float = 0.0
-    redundancy_quality: float = 0.0
-
-    def add(self, row: Dict[str, Any]) -> None:
-        self.count += 1
-        self.reward += float(row["reward"])
-        self.task_score += float(row["task_score"])
-        self.success += float(row["success"])
-        self.latency += float(row["latency"])
-        self.token_cost += float(row["token_cost"])
-        self.safety_penalty += float(row["safety_penalty"])
-        self.stage2_turns += float(row.get("stage2_turns", 0.0))
-        self.stage2_memory_records += float(row.get("stage2_memory_records", 0.0))
-        self.structure_reward += float(row.get("structure_reward", 0.0))
-        self.coverage += float(row.get("coverage", 0.0))
-        self.complementarity += float(row.get("complementarity", 0.0))
-        self.redundancy_quality += float(row.get("redundancy_quality", 0.0))
-
-    def mean_dict(self) -> Dict[str, float]:
-        if self.count == 0:
-            return {
-                "reward": 0.0,
-                "task_score": 0.0,
-                "success": 0.0,
-                "latency": 0.0,
-                "token_cost": 0.0,
-                "safety_penalty": 0.0,
-                "stage2_turns": 0.0,
-                "stage2_memory_records": 0.0,
-                "structure_reward": 0.0,
-                "coverage": 0.0,
-                "complementarity": 0.0,
-                "redundancy_quality": 0.0,
-            }
-        return {
-            "reward": self.reward / self.count,
-            "task_score": self.task_score / self.count,
-            "success": self.success / self.count,
-            "latency": self.latency / self.count,
-            "token_cost": self.token_cost / self.count,
-            "safety_penalty": self.safety_penalty / self.count,
-            "stage2_turns": self.stage2_turns / self.count,
-            "stage2_memory_records": self.stage2_memory_records / self.count,
-            "structure_reward": self.structure_reward / self.count,
-            "coverage": self.coverage / self.count,
-            "complementarity": self.complementarity / self.count,
-            "redundancy_quality": self.redundancy_quality / self.count,
-        }
-
-    def state_dict(self) -> Dict[str, float]:
-        return {
-            "count": float(self.count),
-            "reward": float(self.reward),
-            "task_score": float(self.task_score),
-            "success": float(self.success),
-            "latency": float(self.latency),
-            "token_cost": float(self.token_cost),
-            "safety_penalty": float(self.safety_penalty),
-            "stage2_turns": float(self.stage2_turns),
-            "stage2_memory_records": float(self.stage2_memory_records),
-            "structure_reward": float(self.structure_reward),
-            "coverage": float(self.coverage),
-            "complementarity": float(self.complementarity),
-            "redundancy_quality": float(self.redundancy_quality),
-        }
-
-    @classmethod
-    def from_state_dict(cls, payload: Dict[str, Any] | None) -> "RunningStats":
-        payload = payload or {}
-        return cls(
-            count=int(payload.get("count", 0)),
-            reward=float(payload.get("reward", 0.0)),
-            task_score=float(payload.get("task_score", 0.0)),
-            success=float(payload.get("success", 0.0)),
-            latency=float(payload.get("latency", 0.0)),
-            token_cost=float(payload.get("token_cost", 0.0)),
-            safety_penalty=float(payload.get("safety_penalty", 0.0)),
-            stage2_turns=float(payload.get("stage2_turns", 0.0)),
-            stage2_memory_records=float(payload.get("stage2_memory_records", 0.0)),
-            structure_reward=float(payload.get("structure_reward", 0.0)),
-            coverage=float(payload.get("coverage", 0.0)),
-            complementarity=float(payload.get("complementarity", 0.0)),
-            redundancy_quality=float(payload.get("redundancy_quality", 0.0)),
-        )
-
-
-def _utc_now() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-
-
-def _write_json(path: Path, payload: Dict[str, Any]) -> None:
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def _write_jsonl(path: Path, rows: Iterable[Dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-
-def _load_json_dict(path: Path) -> Dict[str, Any] | None:
-    if not path.exists():
-        return None
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _sample(items: List[Dict[str, Any]], limit: int, seed: int, shuffle: bool) -> List[Dict[str, Any]]:
-    picked = list(items)
-    if shuffle:
-        random.Random(seed).shuffle(picked)
-    if limit >= 0:
-        return picked[:limit]
-    return picked
-
-
-def _sampled_split_ids(items: List[Dict[str, Any]]) -> List[str]:
-    return [str(item.get("id", "")) for item in items]
-
-
-def _safe_item_key(value: Any) -> str:
-    text = str(value if value is not None else "sample")
-    return "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in text)
-
-
-def _item_dataset_name(dataset_name: str, item: Dict[str, Any]) -> str:
-    value = item.get("source_dataset")
-    return str(value or dataset_name)
-
-
-def _item_metadata(dataset_name: str, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    metadata = item.get("metadata")
-    resolved = dict(metadata) if isinstance(metadata, dict) else {}
-    resolved.setdefault("mas_dataset_name", _item_dataset_name(dataset_name, item))
-    if item.get("id") is not None:
-        resolved.setdefault("id", item.get("id"))
-    return resolved or None
+from train_mas_stage2_target_suite import (
+    RunningStats,
+    _checkpoint_metadata,
+    _item_dataset_name,
+    _item_metadata,
+    _load_json_dict,
+    _periodic_window,
+    _resolve_dataset_plan,
+    _runtime_config_dict,
+    _safe_item_key,
+    _sample,
+    _sampled_split_ids,
+    _stage2_config_dict,
+    _suite_progress_path,
+    _utc_now,
+    _validate_resume_ids,
+    _write_json,
+    _write_jsonl,
+)
 
 
 def _structure_artifact_path(root: Path, dataset_name: str, split: str, item: Dict[str, Any]) -> Path:
     return root / dataset_name / split / f"{_safe_item_key(item.get('id', 'sample'))}.json"
 
 
-def _validate_resume_ids(current_items: List[Dict[str, Any]], saved_ids: List[str], *, dataset_name: str, split: str) -> None:
-    current_ids = _sampled_split_ids(current_items)
-    if saved_ids and current_ids != list(saved_ids):
-        raise ValueError(
-            f"Resume split mismatch for dataset={dataset_name} split={split}: current sampled ids differ from checkpoint."
-        )
+def _selection_decision(row: Dict[str, Any]) -> str:
+    return "use_stage1_anchor" if bool(row.get("v3_stage1_anchor_used", False)) else "use_stage2_override"
 
 
 def _print_row(prefix: str, idx: int, total: int, row: Dict[str, Any], *, elapsed_s: float) -> None:
-    turn_token_costs = row.get("stage2_turn_token_costs", [])
-    turn_token_text = json.dumps(turn_token_costs, ensure_ascii=False, separators=(",", ":")) if isinstance(turn_token_costs, list) else "[]"
     parts = [
         f"{prefix} {idx}/{total}",
         f"id={row['id']}",
@@ -196,18 +50,31 @@ def _print_row(prefix: str, idx: int, total: int, row: Dict[str, Any], *, elapse
         f"token={row['token_cost']:.4f}",
         f"s1_token={row.get('stage1_token_cost', 0.0):.4f}",
         f"s2_token={row.get('stage2_token_cost', 0.0):.4f}",
-        f"s2_turn_token={turn_token_text}",
         f"s2_turns={row.get('stage2_turns', 0):.1f}",
         f"s2_mem={row.get('stage2_memory_records', 0):.1f}",
-        f"select={row.get('selection_decision', '')}",
+        f"decision={row.get('selection_decision', '')}",
+        f"reason={row.get('selection_reason', '')}",
+        f"anchor={int(bool(row.get('v3_stage1_anchor_used', False)))}",
+        f"cand={row.get('v3_candidate_count', 0)}",
+        f"sel_src={row.get('v3_selected_candidate_source', '')}",
+        f"sel_sup={row.get('v3_selected_support_score', 0.0):.2f}",
+        f"sel_unc={row.get('v3_selected_model_uncertainty', 0.0):.2f}",
+        f"ovr_p={row.get('v3_override_probability', 0.0):.2f}",
+        f"cand_u={row.get('v3_candidate_updates', 0.0):.0f}",
+        f"ovr_u={row.get('v3_override_updates', 0.0):.0f}",
+        f"rev_u={row.get('v3_reviewer_updates', 0.0):.0f}",
         f"elapsed_s={elapsed_s:.1f}",
         f"signature={row['signature']}",
     ]
     print(" ".join(parts), flush=True)
 
 
-def _print_summary(prefix: str, stats: RunningStats, *, elapsed_s: float) -> None:
+def _print_summary(prefix: str, stats: RunningStats, *, rows: Optional[Iterable[Dict[str, Any]]] = None, elapsed_s: float) -> None:
     metrics = stats.mean_dict()
+    rows_list = list(rows or [])
+    anchor_rate = 0.0
+    if rows_list:
+        anchor_rate = sum(1.0 for row in rows_list if row.get("v3_stage1_anchor_used", False)) / len(rows_list)
     parts = [
         prefix,
         f"count={stats.count}",
@@ -219,75 +86,35 @@ def _print_summary(prefix: str, stats: RunningStats, *, elapsed_s: float) -> Non
         f"avg_s2_turns={metrics['stage2_turns']:.2f}",
         f"avg_s2_mem={metrics['stage2_memory_records']:.2f}",
         f"avg_struct_reward={metrics['structure_reward']:.4f}",
-        f"avg_coverage={metrics['coverage']:.4f}",
-        f"avg_complementarity={metrics['complementarity']:.4f}",
-        f"avg_redundancy={metrics['redundancy_quality']:.4f}",
+        f"anchor_rate={anchor_rate:.4f}",
         f"elapsed_s={elapsed_s:.1f}",
     ]
     print(" ".join(parts), flush=True)
 
 
-def _periodic_window(items: List[Dict[str, Any]], *, round_idx: int, window: int) -> List[Dict[str, Any]]:
-    if not items:
-        return []
-    size = min(window, len(items))
-    start = (round_idx * size) % len(items)
-    if start + size <= len(items):
-        return items[start : start + size]
-    overflow = start + size - len(items)
-    return items[start:] + items[:overflow]
-
-
-def _runtime_config_dict(runtime_config: TieredEvalConfig) -> Dict[str, Any]:
-    return asdict(runtime_config)
-
-
-def _stage2_config_dict(stage2_config: Any) -> Dict[str, Any]:
-    return asdict(stage2_config)
-
-
-def _checkpoint_metadata(
-    *,
-    dataset_name: str,
-    seed: int,
-    plan: Dict[str, int],
-    effective_runtime: Dict[str, Any],
-    effective_stage2_config: Dict[str, Any],
-    train_items: List[Dict[str, Any]],
-    validation_items: List[Dict[str, Any]],
-    test_items: List[Dict[str, Any]],
-    train_rows: List[Dict[str, Any]],
-    periodic_validation_rows: List[Dict[str, Any]],
-    train_stats: RunningStats,
-    periodic_validation_stats: RunningStats,
-    train_index_completed: int,
-    validation_round: int,
-    train_phase_complete: bool,
-    phase: str,
-) -> Dict[str, Any]:
+def _selection_summary(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    rows_list = list(rows)
+    reason_counts: Dict[str, int] = {}
+    source_counts: Dict[str, int] = {}
+    anchor_used = 0
+    for row in rows_list:
+        reason = str(row.get("selection_reason", ""))
+        source = str(row.get("v3_selected_candidate_source", ""))
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        source_counts[source] = source_counts.get(source, 0) + 1
+        if row.get("v3_stage1_anchor_used", False):
+            anchor_used += 1
     return {
-        "dataset": dataset_name,
-        "saved_at": _utc_now(),
-        "seed": int(seed),
-        "plan": dict(plan),
-        "effective_runtime_config": effective_runtime,
-        "effective_stage2_config": effective_stage2_config,
-        "train_ids": _sampled_split_ids(train_items),
-        "validation_ids": _sampled_split_ids(validation_items),
-        "test_ids": _sampled_split_ids(test_items),
-        "train_rows": list(train_rows),
-        "periodic_validation_rows": list(periodic_validation_rows),
-        "train_stats": train_stats.state_dict(),
-        "periodic_validation_stats": periodic_validation_stats.state_dict(),
-        "train_index_completed": int(train_index_completed),
-        "validation_round": int(validation_round),
-        "train_phase_complete": bool(train_phase_complete),
-        "phase": phase,
+        "count": len(rows_list),
+        "anchor_used_count": anchor_used,
+        "anchor_used_rate": (anchor_used / len(rows_list)) if rows_list else 0.0,
+        "selection_reason_counts": dict(sorted(reason_counts.items())),
+        "selected_source_counts": dict(sorted(source_counts.items())),
     }
 
 
 def _run_stage2_search(
-    pipeline: Stage2MASPipeline,
+    pipeline: Stage2V3Pipeline,
     dataset_name: str,
     item: Dict[str, Any],
     *,
@@ -298,7 +125,6 @@ def _run_stage2_search(
 ) -> Any:
     resolved_dataset = _item_dataset_name(dataset_name, item)
     metadata = _item_metadata(dataset_name, item)
-    allow_stage1_fallback = bool(learn and split == "train")
     artifact_path = None
     if structure_cache_root is not None:
         artifact_path = _structure_artifact_path(structure_cache_root, resolved_dataset, split, item)
@@ -324,7 +150,6 @@ def _run_stage2_search(
                 dataset_name=resolved_dataset,
                 replay_dir=replay_dir,
                 learn=learn,
-                allow_stage1_fallback=allow_stage1_fallback,
             )
         else:
             prepared = pipeline.prepare_stage1_structure(
@@ -344,7 +169,6 @@ def _run_stage2_search(
                 dataset_name=resolved_dataset,
                 replay_dir=replay_dir,
                 learn=learn,
-                allow_stage1_fallback=allow_stage1_fallback,
             )
     else:
         result = pipeline.search(
@@ -354,7 +178,6 @@ def _run_stage2_search(
             dataset_name=resolved_dataset,
             learn=learn,
             replay_dir=replay_dir,
-            allow_stage1_fallback=allow_stage1_fallback,
         )
     if artifact_path is not None:
         result.stage2_result.metadata["structure_artifact_path"] = str(artifact_path)
@@ -364,6 +187,8 @@ def _run_stage2_search(
 def _row_from_result(dataset_name: str, split: str, item: Dict[str, Any], result: Any) -> Dict[str, Any]:
     summary = result.final_summary
     structure = result.stage1_result.structure_summary if result.stage1_result is not None else result.stage1_artifact.structure_summary
+    meta = result.stage2_result.metadata
+    learning_stats = meta.get("learning_stats", {}) if isinstance(meta.get("learning_stats"), dict) else {}
     row = {
         "id": item.get("id", ""),
         "split": split,
@@ -379,27 +204,56 @@ def _row_from_result(dataset_name: str, split: str, item: Dict[str, Any], result
         "output": result.final_output,
         "stage1_signature": result.stage1_artifact.stage1_signature,
         "stage2_signature": result.stage2_result.signature,
-        "selection_decision": str(result.stage2_result.metadata.get("selection_decision", "")),
-        "selection_reason": str(result.stage2_result.metadata.get("selection_reason", "")),
-        "final_selection_decision": str(result.stage2_result.metadata.get("final_selection_decision", "")),
-        "final_selection_reason": str(result.stage2_result.metadata.get("final_selection_reason", "")),
-        "fallback_applied": float(bool(result.stage2_result.metadata.get("fallback_applied", False))),
-        "finalizer_strategy": str(result.stage2_result.metadata.get("finalizer_strategy", "")),
-        "structure_source": str(result.stage2_result.metadata.get("structure_source", result.stage1_artifact.metadata.get("source", ""))),
-        "stage2_turns": float(result.stage2_result.metadata.get("turn_count", 0)),
+        "selection_decision": _selection_decision(meta),
+        "selection_reason": str(meta.get("v3_selection_reason", "")),
+        "final_selection_decision": _selection_decision(meta),
+        "final_selection_reason": str(meta.get("v3_selection_reason", "")),
+        "fallback_applied": float(bool(meta.get("v3_stage1_anchor_used", False))),
+        "finalizer_strategy": str(meta.get("finalizer_strategy", "")),
+        "structure_source": str(meta.get("structure_source", result.stage1_artifact.metadata.get("source", ""))),
+        "stage2_version": str(meta.get("stage2_version", "v3")),
+        "stage2_turns": float(meta.get("turn_count", 0)),
         "stage2_memory_records": float(sum(result.stage2_result.memory_record_counts.values())),
-        "stage1_reward": float(result.stage2_result.metadata.get("stage1_reward", 0.0)),
-        "stage2_reward": float(result.stage2_result.metadata.get("stage2_reward", 0.0)),
-        "stage1_task_score": float(result.stage2_result.metadata.get("stage1_task_score", 0.0)),
-        "stage2_task_score": float(result.stage2_result.metadata.get("stage2_task_score", 0.0)),
-        "stage1_success": float(result.stage2_result.metadata.get("stage1_success", 0.0)),
-        "stage2_success": float(result.stage2_result.metadata.get("stage2_success", 0.0)),
-        "stage1_latency": float(result.stage2_result.metadata.get("stage1_latency", 0.0)),
-        "stage2_latency": float(result.stage2_result.metadata.get("stage2_latency", 0.0)),
-        "stage1_token_cost": float(result.stage2_result.metadata.get("stage1_token_cost", 0.0)),
-        "stage2_token_cost": float(result.stage2_result.metadata.get("stage2_token_cost", 0.0)),
-        "stage2_turn_token_costs": list(result.stage2_result.metadata.get("turn_token_costs", [])),
-        "stage2_turn_token_estimates": list(result.stage2_result.metadata.get("turn_token_estimates", [])),
+        "stage1_reward": float(meta.get("stage1_reward", 0.0)),
+        "stage2_reward": float(meta.get("stage2_reward", 0.0)),
+        "stage1_task_score": float(meta.get("stage1_task_score", 0.0)),
+        "stage2_task_score": float(meta.get("stage2_task_score", 0.0)),
+        "stage1_success": float(meta.get("stage1_success", 0.0)),
+        "stage2_success": float(meta.get("stage2_success", 0.0)),
+        "stage1_latency": float(meta.get("stage1_latency", 0.0)),
+        "stage2_latency": float(meta.get("stage2_latency", 0.0)),
+        "stage1_token_cost": float(meta.get("stage1_token_cost", 0.0)),
+        "stage2_token_cost": float(meta.get("stage2_token_cost", 0.0)),
+        "stage2_turn_token_costs": list(meta.get("turn_token_costs", [])),
+        "stage2_turn_token_estimates": list(meta.get("turn_token_estimates", [])),
+        "v3_stage1_anchor_present": bool(meta.get("v3_stage1_anchor_present", False)),
+        "v3_stage1_anchor_used": bool(meta.get("v3_stage1_anchor_used", False)),
+        "v3_candidate_count": int(meta.get("v3_candidate_count", 0)),
+        "v3_selection_reason": str(meta.get("v3_selection_reason", "")),
+        "v3_selected_candidate_digest": str(meta.get("v3_selected_candidate_digest", "")),
+        "v3_selected_candidate_source": str(meta.get("v3_selected_candidate_source", "")),
+        "v3_selected_support_score": float(meta.get("v3_selected_support_score", 0.0)),
+        "v3_selected_model_uncertainty": float(meta.get("v3_selected_model_uncertainty", 0.0)),
+        "v3_selected_sink_support": int(meta.get("v3_selected_sink_support", 0)),
+        "v3_selected_review_advantage": float(meta.get("v3_selected_review_advantage", 0.0)),
+        "v3_stage1_anchor_digest": str(meta.get("v3_stage1_anchor_digest", "")),
+        "v3_stage1_support_score": float(meta.get("v3_stage1_support_score", 0.0)),
+        "v3_stage1_model_uncertainty": float(meta.get("v3_stage1_model_uncertainty", 0.0)),
+        "v3_stage1_sink_support": int(meta.get("v3_stage1_sink_support", 0)),
+        "v3_override_probability": float(meta.get("v3_override_probability", 0.0)),
+        "v3_override_uncertainty": float(meta.get("v3_override_uncertainty", 0.0)),
+        "v3_override_candidate_digest": str(meta.get("v3_override_candidate_digest", "")),
+        "v3_candidate_model_steps": float(meta.get("v3_candidate_model_steps", 0.0)),
+        "v3_override_model_steps": float(meta.get("v3_override_model_steps", 0.0)),
+        "v3_reviewer_model_steps": float(meta.get("v3_reviewer_model_steps", 0.0)),
+        "v3_learning_base_target": float(learning_stats.get("base_target", 0.0)),
+        "v3_candidate_updates": float(learning_stats.get("candidate_updates", 0.0)),
+        "v3_override_updates": float(learning_stats.get("override_updates", 0.0)),
+        "v3_reviewer_updates": float(learning_stats.get("reviewer_updates", 0.0)),
+        "v3_candidate_steps_after": float(learning_stats.get("candidate_steps", 0.0)),
+        "v3_override_steps_after": float(learning_stats.get("override_steps", 0.0)),
+        "v3_reviewer_steps_after": float(learning_stats.get("reviewer_steps", 0.0)),
+        "v3_top_candidates": list(meta.get("v3_top_candidates", [])),
     }
     if structure is not None:
         row["structure_reward"] = float(structure.metrics.total_reward)
@@ -410,7 +264,7 @@ def _row_from_result(dataset_name: str, split: str, item: Dict[str, Any], result
 
 
 def _run_eval_phase(
-    pipeline: Stage2MASPipeline,
+    pipeline: Stage2V3Pipeline,
     dataset_name: str,
     items: Iterable[Dict[str, Any]],
     *,
@@ -438,30 +292,8 @@ def _run_eval_phase(
         rows.append(row)
         stats.add(row)
         _print_row(f"[{split}][{dataset_name}]", idx, len(items_list), row, elapsed_s=time.time() - start_time)
-    _print_summary(f"[{split}-summary][{dataset_name}]", stats, elapsed_s=time.time() - start_time)
+    _print_summary(f"[{split}-summary][{dataset_name}]", stats, rows=rows, elapsed_s=time.time() - start_time)
     return rows, stats
-
-
-def _resolve_dataset_plan(
-    data_root: str,
-    dataset_name: str,
-    *,
-    periodic_every: int,
-    periodic_size: int,
-    max_train: int,
-    max_validation: int,
-    max_test: int,
-) -> Dict[str, int]:
-    train_count = len(load_processed_split(data_root, dataset_name, "train"))
-    validation_count = len(load_processed_split(data_root, dataset_name, "validation"))
-    test_count = len(load_processed_split(data_root, dataset_name, "test"))
-    return {
-        "max_train": train_count if max_train < 0 else min(max_train, train_count),
-        "max_validation": validation_count if max_validation < 0 else min(max_validation, validation_count),
-        "max_test": test_count if max_test < 0 else min(max_test, test_count),
-        "periodic_every": periodic_every,
-        "periodic_size": periodic_size,
-    }
 
 
 def _run_dataset(
@@ -472,7 +304,7 @@ def _run_dataset(
     search_config: SearchConfig,
     runtime_config: TieredEvalConfig,
     union_config: UnionRuntimeConfig,
-    stage2_config: Any,
+    stage2_config: Stage2V3Config,
     plan: Dict[str, int],
     seed: int,
     resume: bool,
@@ -493,7 +325,7 @@ def _run_dataset(
     checkpoint_path = dataset_output_root / "checkpoint.json"
     structure_cache_root = dataset_output_root / "stage1_structures" if structure_cache_enabled else None
 
-    pipeline = Stage2MASPipeline(
+    pipeline = Stage2V3Pipeline(
         search_config=search_config,
         runtime_config=runtime_config,
         union_config=union_config,
@@ -504,6 +336,7 @@ def _run_dataset(
         if stage1_checkpoint.exists():
             pipeline._stage1.load_checkpoint(str(stage1_checkpoint))
             print(f"[stage1-checkpoint][{dataset_name}] {stage1_checkpoint}", flush=True)
+
     effective_runtime = _runtime_config_dict(pipeline.runtime_config)
     effective_stage2_config = _stage2_config_dict(stage2_config)
 
@@ -534,7 +367,7 @@ def _run_dataset(
         )
 
     print(
-        f"\n=== STAGE2 DATASET {dataset_name} train={len(train_items)} validation={len(validation_items)} test={len(test_items)} ===",
+        f"\n=== STAGE2_V3 DATASET {dataset_name} train={len(train_items)} validation={len(validation_items)} test={len(test_items)} ===",
         flush=True,
     )
     print(f"[plan][{dataset_name}] {json.dumps(plan, ensure_ascii=False)}", flush=True)
@@ -612,6 +445,7 @@ def _run_dataset(
                 _print_summary(
                     f"[periodic-validation-summary][{dataset_name}]",
                     periodic_validation_stats,
+                    rows=periodic_validation_rows,
                     elapsed_s=time.time() - train_start,
                 )
 
@@ -639,7 +473,7 @@ def _run_dataset(
                 pipeline.save_checkpoint(str(checkpoint_path), metadata=metadata)
         train_phase_complete = True
 
-    _print_summary(f"[train-summary][{dataset_name}]", train_stats, elapsed_s=time.time() - train_start)
+    _print_summary(f"[train-summary][{dataset_name}]", train_stats, rows=train_rows, elapsed_s=time.time() - train_start)
 
     metadata = _checkpoint_metadata(
         dataset_name=dataset_name,
@@ -687,9 +521,13 @@ def _run_dataset(
         "effective_runtime_config": effective_runtime,
         "effective_stage2_config": effective_stage2_config,
         "train_summary": train_stats.mean_dict() | {"count": train_stats.count},
+        "train_selection_summary": _selection_summary(train_rows),
         "periodic_validation_summary": periodic_validation_stats.mean_dict() | {"count": periodic_validation_stats.count},
+        "periodic_validation_selection_summary": _selection_summary(periodic_validation_rows),
         "validation_summary": validation_stats.mean_dict() | {"count": validation_stats.count},
+        "validation_selection_summary": _selection_summary(validation_rows),
         "test_summary": test_stats.mean_dict() | {"count": test_stats.count},
+        "test_selection_summary": _selection_summary(test_rows),
         "checkpoint_path": str(checkpoint_path),
         "structure_cache_root": str(structure_cache_root) if structure_cache_root is not None else "",
         "train_examples": train_rows[: min(5, len(train_rows))],
@@ -727,20 +565,10 @@ def _run_dataset(
     return report
 
 
-def _suite_progress_path(output_root: Path) -> Path:
-    return output_root / "suite_progress.json"
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--data-root",
-        default="/mnt/nvme/projects/R-HAN/dataset/mas_stage2_target_suite_from_stage1_test",
-    )
-    parser.add_argument(
-        "--output-root",
-        default="/mnt/nvme/projects/R-HAN/outputs/mas_stage2_target_suite_train",
-    )
+    parser.add_argument("--data-root", default="/mnt/nvme/projects/R-HAN/dataset/mas_stage2_target_suite_from_stage1_test")
+    parser.add_argument("--output-root", default="/mnt/nvme/projects/R-HAN/outputs/mas_stage2_v3_target_suite_train")
     parser.add_argument("--dataset", action="append", default=[], help="Dataset to run. Repeatable.")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--search-iterations", type=int, default=6)
@@ -752,15 +580,16 @@ def main() -> None:
     parser.add_argument("--tier1-repeats", type=int, default=1)
     parser.add_argument("--tier2-repeats", type=int, default=1)
     parser.add_argument("--stage2-turn-count", type=int, default=5)
-    parser.add_argument("--stage2-version", choices=("v1", "v2"), default="v2")
     parser.add_argument("--memory-top-k", type=int, default=4)
     parser.add_argument("--soft-prune-top-k", type=int, default=3)
     parser.add_argument("--soft-prune-threshold", type=float, default=0.38)
     parser.add_argument("--hard-prune-after-turn", type=int, default=4)
-    parser.add_argument("--v2-latent-length", type=int, default=8)
-    parser.add_argument("--v2-gnn-layers", type=int, default=2)
-    parser.add_argument("--disable-v2-global-node", action="store_true")
-    parser.add_argument("--disable-v2-lmpo", action="store_true")
+    parser.add_argument("--v3-numeric-anchor-prior", type=float, default=2.0)
+    parser.add_argument("--v3-numeric-override-margin", type=float, default=1.5)
+    parser.add_argument("--v3-numeric-min-support", type=float, default=3.0)
+    parser.add_argument("--v3-code-anchor-prior", type=float, default=1.5)
+    parser.add_argument("--v3-code-support-margin", type=float, default=1.0)
+    parser.add_argument("--v3-code-min-review-advantage", type=int, default=1)
     parser.add_argument("--periodic-every", type=int, default=50)
     parser.add_argument("--periodic-size", type=int, default=20)
     parser.add_argument("--max-train", type=int, default=-1)
@@ -790,19 +619,19 @@ def main() -> None:
     runtime_config.tier1.repeats = args.tier1_repeats
     runtime_config.tier2.repeats = args.tier2_repeats
     union_config = UnionRuntimeConfig()
-    if args.stage2_version == "v2":
-        stage2_config = Stage2V2Config()
-        stage2_config.composer_latent_length = args.v2_latent_length
-        stage2_config.gnn_num_layers = args.v2_gnn_layers
-        stage2_config.global_node_enabled = not args.disable_v2_global_node
-        stage2_config.lmpo_enabled = not args.disable_v2_lmpo
-    else:
-        stage2_config = Stage2RuntimeConfig()
+
+    stage2_config = Stage2V3Config()
     stage2_config.graph.turn_count = args.stage2_turn_count
     stage2_config.memory.max_selected_records = args.memory_top_k
     stage2_config.graph.soft_prune_top_k = args.soft_prune_top_k
     stage2_config.graph.soft_prune_threshold = args.soft_prune_threshold
     stage2_config.graph.hard_prune_after_turn = args.hard_prune_after_turn
+    stage2_config.numeric_stage1_anchor_prior = args.v3_numeric_anchor_prior
+    stage2_config.numeric_override_margin = args.v3_numeric_override_margin
+    stage2_config.numeric_min_support_to_override = args.v3_numeric_min_support
+    stage2_config.code_stage1_anchor_prior = args.v3_code_anchor_prior
+    stage2_config.code_support_margin = args.v3_code_support_margin
+    stage2_config.code_min_review_advantage = args.v3_code_min_review_advantage
 
     suite_report = _load_json_dict(output_root / "suite_report.json") if args.resume else None
     if suite_report is None:
@@ -815,6 +644,7 @@ def main() -> None:
             "runtime_config": asdict(runtime_config),
             "union_config": asdict(union_config),
             "stage2_config": asdict(stage2_config),
+            "stage2_version": "v3",
         }
     else:
         suite_report.pop("finished_at", None)
@@ -826,6 +656,7 @@ def main() -> None:
             "data_root": args.data_root,
             "output_root": str(output_root),
             "datasets": {},
+            "stage2_version": "v3",
         }
     else:
         suite_progress.pop("finished_at", None)

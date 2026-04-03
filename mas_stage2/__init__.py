@@ -1,8 +1,6 @@
 from .config import Stage2LearningConfig, Stage2RuntimeConfig
 from .config_v2 import Stage2V2Config
-from .pipeline import Stage2MASPipeline, Stage2PipelineResult
 from .runtime import Stage2Runtime, build_default_stage2_runtime
-from .runtime_v2 import Stage2RuntimeV2
 from .structure_io import (
     PreparedStage1Artifact,
     load_prepared_stage1_artifact,
@@ -21,6 +19,17 @@ from .types import (
     Stage2RunResult,
     TurnTrace,
 )
+
+try:
+    from .pipeline import Stage2MASPipeline, Stage2PipelineResult
+except ModuleNotFoundError:
+    Stage2MASPipeline = None
+    Stage2PipelineResult = None
+
+try:
+    from .runtime_v2 import Stage2RuntimeV2
+except ModuleNotFoundError:
+    Stage2RuntimeV2 = None
 
 __all__ = [
     "ControllerState",
