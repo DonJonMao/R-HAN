@@ -653,6 +653,7 @@ class Stage2RuntimeV2(Stage2Runtime):
         current_turn: int,
         prepared_state: Optional[Dict[str, object]] = None,
     ) -> Tuple[NodeTurnTrace, MemoryRecord, ExportedMemoryMessage]:
+        node = self._annotate_runtime_node(graph, node)
         local_records = self._memory_store.get(node.node_id)
         if prepared_state is None:
             records_by_id = {record.record_id: record for record in local_records}
@@ -741,6 +742,7 @@ class Stage2RuntimeV2(Stage2Runtime):
                 "selected_record_ids": [item.record_id for item in selected_items],
                 "neighbour_sources": [message.node_id for message in neighbour_exports],
                 "stage2_version": "v2",
+                "runtime_node_type": str(node.metadata.get("runtime_node_type", "")),
             },
         )
         export_message, latent_summary = self._build_v2_export(
@@ -769,6 +771,9 @@ class Stage2RuntimeV2(Stage2Runtime):
                 "latent_norm": float(enhanced_latent.norm().detach().cpu().item()),
                 "selected_local_ids": selection_debug["selected_local_ids"],
                 "selected_neighbour_ids": selection_debug["selected_neighbour_ids"],
+                "runtime_node_type": str(node.metadata.get("runtime_node_type", "")),
+                "sink_distance": int(node.metadata.get("sink_distance", 10**9)),
+                "stage1_support": int(node.metadata.get("stage1_support", node.support_count)),
             },
         )
         return trace, output_record, export_message

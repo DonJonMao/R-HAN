@@ -6,7 +6,7 @@ from mas_stage2.types import ControllerState, EdgeActivation, TurnTrace, Stage2R
 from mas_stage2_v4_4.code_repair import CodeRepairEval
 from mas_stage2_v4_4.runtime import GraphConstraintEval, ReasoningEval, Stage2RuntimeV44
 from mas_treesearch.evaluator import MultiFidelityEvaluator
-from mas_treesearch.types import UnionGraph, UnionNode
+from mas_treesearch.types import UnionEdge, UnionGraph, UnionNode
 
 
 def _code_eval(
@@ -207,6 +207,32 @@ def test_sink_guards_and_protected_ids_are_explicit_sets():
     assert {"sink", "guard", "solver", "verifier_node"}.issubset(active_ids)
 
 
+def test_runtime_node_type_mapping_uses_sink_distance_and_support():
+    runtime = _runtime_stub()
+    nodes = {
+        "proposal": UnionNode("proposal", "solver", "solver", "task", [], 1, 1.0),
+        "aggregator": UnionNode("aggregator", "agg", "router", "task", [], 4, 1.0),
+        "checker": UnionNode("checker", "verifier", "verifier", "task", [], 2, 1.0),
+        "sink": UnionNode("sink", "sink_agent", "aggregator", "task", [], 5, 1.0),
+    }
+    graph = UnionGraph(
+        nodes=nodes,
+        edges=[
+            UnionEdge("proposal", "aggregator", "task", [], 1, 1.0, 1.0, 1.0, 0.5, 0.5),
+            UnionEdge("aggregator", "sink", "task", [], 1, 1.0, 1.0, 1.0, 0.5, 0.5),
+            UnionEdge("checker", "sink", "task", [], 1, 1.0, 1.0, 1.0, 0.5, 0.5),
+        ],
+        source_topology_signatures=[],
+        root_node_ids=[],
+        sink_node_ids=["sink"],
+    )
+
+    assert runtime._runtime_node_type(graph, nodes["sink"]) == "sink"
+    assert runtime._runtime_node_type(graph, nodes["checker"]) == "checker"
+    assert runtime._runtime_node_type(graph, nodes["aggregator"]) == "aggregator"
+    assert runtime._runtime_node_type(graph, nodes["proposal"]) == "proposal"
+
+
 def test_reasoning_ach_lexicographic_prefers_non_fatal_candidate():
     runtime = _runtime_stub()
     runtime._quality_score = lambda entry: float(entry.get("score", 0.0))  # type: ignore[attr-defined]
@@ -235,6 +261,29 @@ def test_reasoning_ach_lexicographic_prefers_non_fatal_candidate():
     assert reason == "v4_4_reasoning_override_ach_lexicographic"
     assert extra["v4_4_stage1_anchor_used"] is False
     assert extra["v4_4_selected_fatal_count"] == 0
+
+
+def test_reasoning_stabilization_preserves_nonfatal_anchor():
+    runtime = _runtime_stub()
+    runtime._quality_score = lambda entry: float(entry.get("score", 0.0))  # type: ignore[attr-defined]
+    runtime._candidate_source_label = lambda entry: str(entry.get("source", "stage2"))  # type: ignore[attr-defined]
+
+    anchor = {"digest": "anchor", "text": "42", "score": 0.2, "source": "anchor"}
+    challenger = {"digest": "challenger", "text": "42", "score": 0.9, "source": "stage2", "sink_support": 1}
+    profile = SimpleNamespace(task_type="numeric", name="gsm8k")
+
+    selected, reason, extra = runtime._select_reasoning_against_anchor_v44(
+        question_text="What is 40 + 2?",
+        metadata={},
+        dataset_profile=profile,
+        candidates=[anchor, challenger],
+        anchor=anchor,
+        budget_bucket="normal",
+    )
+
+    assert selected == anchor
+    assert reason == "v4_4_reasoning_stabilize_preserve_anchor"
+    assert extra["v4_4_stage1_anchor_used"] is True
 
 
 def test_collapse_reasoning_classes_does_not_use_occurrence_or_size_bias():

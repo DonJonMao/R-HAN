@@ -71,7 +71,7 @@ class _Embedder:
 
 def test_role_aware_selector_uses_typed_slot_plan():
     selector = RoleAwareMemorySelector(Stage2MemoryConfig(max_selected_records=4), _Embedder())
-    node = UnionNode("sink", "sink_agent", "aggregator", "task", [], 1, 1.0)
+    node = UnionNode("sink", "sink_agent", "aggregator", "task", [], 1, 1.0, metadata={"runtime_node_type": "sink"})
     records = [
         _record(record_id="class", owner_node_id="sink", record_type="class_summary"),
         _record(record_id="pass", owner_node_id="sink", record_type="feedback", feedback_type="pass"),
@@ -94,3 +94,25 @@ def test_role_aware_selector_uses_typed_slot_plan():
     assert "slot:recovery_summary" in rationales
     assert "sink::checker_verdict_summary" in record_ids
     assert "sink::recovery_summary" in record_ids
+
+
+def test_runtime_node_type_metadata_overrides_role_only_slot_plan():
+    selector = RoleAwareMemorySelector(Stage2MemoryConfig(max_selected_records=4), _Embedder())
+    node = UnionNode("solver", "solver_agent", "aggregator", "task", [], 1, 1.0, metadata={"runtime_node_type": "proposal"})
+    records = [
+        _record(record_id="self", owner_node_id="solver", record_type="self_output"),
+        _record(record_id="pass", owner_node_id="solver", record_type="feedback", feedback_type="pass"),
+    ]
+
+    selected = selector.select(
+        node,
+        "question",
+        SimpleNamespace(summary="global", uncertainty=0.1, mode="lean", role_weights={}),
+        records,
+        current_turn=1,
+    )
+
+    rationales = {item.rationale for item in selected}
+    assert "slot:self_output" in rationales
+    assert "slot:feedback" in rationales
+    assert "slot:checker_verdict_summary" not in rationales

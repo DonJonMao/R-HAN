@@ -192,7 +192,16 @@ class RoleAwareMemorySelector:
 
     @staticmethod
     def _node_slot_plan(node: UnionNode) -> List[Tuple[str, int]]:
+        runtime_node_type = str((node.metadata or {}).get("runtime_node_type", "")).strip().lower()
         role = str(node.role)
+        if runtime_node_type == "sink":
+            return RoleAwareMemorySelector._aggregator_slots()
+        if runtime_node_type == "checker":
+            return RoleAwareMemorySelector._checker_slots()
+        if runtime_node_type == "aggregator":
+            return RoleAwareMemorySelector._aggregator_slots()
+        if runtime_node_type == "proposal":
+            return RoleAwareMemorySelector._proposal_slots()
         if role in {"tester", "verifier", "critic", "judge", "checker"}:
             return RoleAwareMemorySelector._checker_slots()
         if role in {"aggregator"} or node.role == "router":

@@ -194,6 +194,19 @@ def test_candidate_bank_only_admits_sink_and_checker_positive_entries():
                 prompt_excerpt="",
             ),
             NodeTurnTrace(
+                node_id="agg_pass",
+                agent_id="agg",
+                role="aggregator",
+                active_incoming_edge_ids=[],
+                selected_records=[],
+                neighbour_sources=[],
+                memory_brief="",
+                output="agg-pass",
+                local_latent_summary="",
+                exported_summary="",
+                prompt_excerpt="",
+            ),
+            NodeTurnTrace(
                 node_id="sink",
                 agent_id="sink",
                 role="aggregator",
@@ -238,6 +251,16 @@ def test_candidate_bank_only_admits_sink_and_checker_positive_entries():
                 confidence=0.9,
                 detail="conflicting merge",
             ),
+            FeedbackEvent(
+                event_id="evt-agg-pass",
+                turn_index=0,
+                source_node_id="verifier",
+                target_node_id="agg_pass",
+                source_kind="verifier",
+                event_type="pass",
+                confidence=0.9,
+                detail="supported merge",
+            ),
         ],
         sink_outputs={"sink": "final-answer"},
     )
@@ -252,10 +275,11 @@ def test_candidate_bank_only_admits_sink_and_checker_positive_entries():
     candidate_texts = {item["text"] for item in bundle["candidates"]}
     occurrence_map = bundle["occurrences"]
 
-    assert candidate_texts == {"proposal-pass", "final-answer"}
+    assert candidate_texts == {"proposal-pass", "agg-pass", "final-answer"}
     assert occurrence_map[(0, "solver_pass")]["candidate_bank_source"] == "checker_approved_proposal"
     assert occurrence_map[(0, "solver_fail")]["admitted_to_candidate_bank"] is False
     assert occurrence_map[(0, "agg_conflict")]["admitted_to_candidate_bank"] is False
+    assert occurrence_map[(0, "agg_pass")]["candidate_bank_source"] == "checker_positive_aggregator"
     assert occurrence_map[(0, "sink")]["candidate_bank_source"] == "sink_output"
     solver_entry = next(item for item in bundle["candidates"] if item["text"] == "proposal-pass")
     assert solver_entry["origin_node_id"] == "solver_pass"

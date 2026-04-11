@@ -1561,7 +1561,11 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         calibration_rounds = 0
         calibration_probability = 0.0
         calibration_votes = 0
-        if anchor is not None and execution_mode == "bypass":
+        if anchor is not None and anchor_eval is not None and not anchor_eval.fatal_contradictions:
+            selected_entry = anchor
+            selected_eval = anchor_eval
+            strategy = "v4_4_reasoning_stabilize_preserve_anchor"
+        elif anchor is not None and execution_mode == "bypass":
             selected_entry = anchor
             selected_eval = anchor_eval
             strategy = "v4_4_reasoning_bypass_stable_anchor"

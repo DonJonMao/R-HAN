@@ -5,7 +5,7 @@ import os
 import time
 from collections import Counter
 from dataclasses import asdict
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from mas_treesearch.agents import AgentPool, default_agent_pool
 from mas_treesearch.cache import DictCache
@@ -72,6 +72,7 @@ class Stage2Runtime:
         self._exporter = ExportMessageBuilder(config.memory, embedder)
         self._verbalizer = MemoryBriefVerbalizer(config.memory)
         self._controller = GlobalController()
+        self._sink_distance_cache: Dict[Tuple[Any, ...], Dict[str, int]] = {}
 
     @staticmethod
     def _prompt_slots(node: UnionNode) -> PromptSlots:
@@ -327,6 +328,84 @@ class Stage2Runtime:
     @staticmethod
     def _code_feedback_roles() -> set[str]:
         return {"critic", "verifier", "judge"}
+
+    @staticmethod
+    def _runtime_checker_roles() -> set[str]:
+        return {"tester", "verifier", "critic", "judge", "checker"}
+
+    def _sink_distance_lookup(self, graph: UnionGraph) -> Dict[str, int]:
+        if not hasattr(self, "_sink_distance_cache"):
+            self._sink_distance_cache = {}
+        cache_key = (
+            tuple(sorted(graph.nodes)),
+            tuple(sorted((edge.src, edge.dst) for edge in graph.edges)),
+            tuple(sorted(graph.sink_node_ids)),
+        )
+        cached = self._sink_distance_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        reverse_adj: Dict[str, List[str]] = {}
+        for edge in graph.edges:
+            reverse_adj.setdefault(edge.dst, []).append(edge.src)
+        distances: Dict[str, int] = {node_id: 10**9 for node_id in graph.nodes}
+        frontier: List[str] = [node_id for node_id in graph.sink_node_ids if node_id in graph.nodes]
+        for node_id in frontier:
+            distances[node_id] = 0
+        index = 0
+        while index < len(frontier):
+            node_id = frontier[index]
+            index += 1
+            base_distance = distances[node_id]
+            for upstream in reverse_adj.get(node_id, ()):
+                if upstream not in distances:
+                    continue
+                if base_distance + 1 >= distances[upstream]:
+                    continue
+                distances[upstream] = base_distance + 1
+                frontier.append(upstream)
+        self._sink_distance_cache[cache_key] = distances
+        return distances
+
+    def _runtime_node_type(self, graph: UnionGraph, node: UnionNode) -> str:
+        if node.node_id in graph.sink_node_ids:
+            return "sink"
+        if str(node.role) in self._runtime_checker_roles():
+            return "checker"
+        distances = self._sink_distance_lookup(graph)
+        candidate_shell = [
+            graph_node
+            for graph_node in graph.nodes.values()
+            if graph_node.node_type == "task"
+            and graph_node.node_id not in graph.sink_node_ids
+            and str(graph_node.role) not in self._runtime_checker_roles()
+            and distances.get(graph_node.node_id, 10**9) < 10**9
+        ]
+        if not candidate_shell:
+            return "proposal"
+        nearest_shell = min(distances.get(graph_node.node_id, 10**9) for graph_node in candidate_shell)
+        shell_nodes = [
+            graph_node
+            for graph_node in candidate_shell
+            if distances.get(graph_node.node_id, 10**9) == nearest_shell
+        ]
+        shell_support_max = max((int(graph_node.support_count) for graph_node in shell_nodes), default=-1)
+        if distances.get(node.node_id, 10**9) == nearest_shell and int(node.support_count) >= shell_support_max:
+            return "aggregator"
+        return "proposal"
+
+    def _annotate_runtime_node(self, graph: UnionGraph, node: UnionNode) -> UnionNode:
+        metadata = dict(node.metadata or {})
+        distances = self._sink_distance_lookup(graph)
+        metadata.update(
+            {
+                "runtime_node_type": self._runtime_node_type(graph, node),
+                "sink_distance": int(distances.get(node.node_id, 10**9)),
+                "stage1_support": int(node.support_count),
+                "is_sink_runtime": bool(node.node_id in graph.sink_node_ids),
+            }
+        )
+        node.metadata = metadata
+        return node
 
     def _priority_node_ids(
         self,
@@ -629,6 +708,7 @@ class Stage2Runtime:
         episode_id: str,
         current_turn: int,
     ) -> Tuple[NodeTurnTrace, MemoryRecord, ExportedMemoryMessage]:
+        node = self._annotate_runtime_node(graph, node)
         local_records = self._memory_store.get(node.node_id)
         records_by_id = {record.record_id: record for record in local_records}
         selected_items = self._selector.select(
@@ -703,6 +783,7 @@ class Stage2Runtime:
             metadata={
                 "selected_record_ids": [item.record_id for item in selected_items],
                 "neighbour_sources": [message.node_id for message in neighbour_exports],
+                "runtime_node_type": str(node.metadata.get("runtime_node_type", "")),
             },
         )
         export_message = self._exporter.build(node, local_latent, output)
@@ -718,7 +799,12 @@ class Stage2Runtime:
             local_latent_summary=local_latent.summary,
             exported_summary=export_message.summary if self.config.replay.save_exports else "",
             prompt_excerpt=_truncate(user_prompt, self.config.replay.max_prompt_chars) if self.config.replay.save_prompts else "",
-            metadata={"selected_record_count": len(selected_items)},
+            metadata={
+                "selected_record_count": len(selected_items),
+                "runtime_node_type": str(node.metadata.get("runtime_node_type", "")),
+                "sink_distance": int(node.metadata.get("sink_distance", 10**9)),
+                "stage1_support": int(node.metadata.get("stage1_support", node.support_count)),
+            },
         )
         return trace, output_record, export_message
 
