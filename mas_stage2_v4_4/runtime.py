@@ -362,6 +362,71 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             return str(feedback.failure_kind)
         return "stable"
 
+    @staticmethod
+    def _candidate_provenance_node_ids(entry: Dict[str, Any]) -> set[str]:
+        node_ids = {
+            str(item.get("node_id", ""))
+            for item in entry.get("provenance", ())
+            if isinstance(item, dict) and str(item.get("node_id", ""))
+        }
+        if entry.get("origin_node_id"):
+            node_ids.add(str(entry.get("origin_node_id", "")))
+        return node_ids
+
+    def _build_code_recovery_context(
+        self,
+        *,
+        turn_traces: Sequence[TurnTrace],
+        target_entry: Dict[str, Any],
+        target_feedback: CodeRepairEval,
+    ) -> Dict[str, Any]:
+        provenance_node_ids = self._candidate_provenance_node_ids(target_entry)
+        node_ids = set(provenance_node_ids) | set(self._v4_4_focus_node_ids) | set(self._v4_4_sink_guard_ids)
+        edge_ids: List[str] = []
+        verifier_labels: List[str] = []
+        if turn_traces:
+            latest_turn = turn_traces[-1]
+            target_nodes = set(node_ids)
+            for activation in latest_turn.active_edges:
+                if not activation.active:
+                    continue
+                if activation.src in target_nodes or activation.dst in target_nodes:
+                    edge_ids.append(str(activation.edge_id))
+            for event in latest_turn.feedback_events:
+                if event.target_node_id in target_nodes:
+                    verifier_labels.append(str(event.event_type))
+        return {
+            "recovery_subgraph_node_ids": sorted(node_ids),
+            "recovery_subgraph_edge_ids": sorted(set(edge_ids)),
+            "trigger_verifier_snapshot": {
+                "labels": sorted(set(verifier_labels)),
+                "failure_kind": str(target_feedback.failure_kind),
+                "passed": int(target_feedback.passed),
+                "total": int(target_feedback.total),
+            },
+        }
+
+    @staticmethod
+    def _recovery_entry_has_required_fields(entry: Dict[str, Any]) -> bool:
+        return bool(
+            entry.get("origin_node_id")
+            and int(entry.get("origin_turn_index", -1)) >= 0
+            and entry.get("origin_role")
+            and entry.get("parent_candidate_digest")
+            and entry.get("repair_operator_type")
+            and list(entry.get("recovery_subgraph_node_ids", ()))
+            and list(entry.get("provenance", ()))
+            and dict(entry.get("trigger_verifier_snapshot", {}))
+        )
+
+    def _assert_recovery_entry_invariants(self, entry: Dict[str, Any]) -> None:
+        if not entry.get("repair_branch"):
+            return
+        if not bool(entry.get("recovery_reinserted", False)):
+            raise ValueError("Selected recovery output must be reinserted before final selection.")
+        if not self._recovery_entry_has_required_fields(entry):
+            raise ValueError("Selected recovery output is missing required provenance fields.")
+
     def _verify_code_pool(
         self,
         *,
@@ -435,7 +500,6 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         collapsed.sort(
             key=lambda item: (
                 item["feedback"].rank_key,
-                int(item["size"]),
                 self._quality_score(item["representative"]),
                 self._review_consensus(item["representative"]),
                 str(item["representative"].get("digest", "")),
@@ -558,7 +622,6 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 evaluation.lexicographic_key,
                 self._quality_score(entry),
                 self._review_consensus(entry),
-                int(entry.get("occurrence_count", 0)),
                 str(entry.get("digest", "")),
             )
             if payload is None:
@@ -583,7 +646,6 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 item["evaluation"].lexicographic_key,
                 self._quality_score(item["representative"]),
                 self._review_consensus(item["representative"]),
-                int(item["size"]),
                 str(item["representative"].get("digest", "")),
             ),
             reverse=True,
@@ -805,7 +867,6 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 item["evaluation"].rank_key,
                 self._quality_score(item["representative"]),
                 self._review_consensus(item["representative"]),
-                int(item["size"]),
                 str(item["representative"].get("digest", "")),
             ),
             reverse=True,
@@ -1076,6 +1137,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         candidates: Sequence[Dict[str, Any]],
         anchor: Optional[Dict[str, Any]],
         budget_bucket: str,
+        turn_traces: Sequence[TurnTrace] = (),
     ) -> Tuple[Optional[Dict[str, Any]], str, Dict[str, Any]]:
         full_pool, anchor_pair = self._verify_code_pool(anchor=anchor, candidates=candidates, metadata=metadata)
         if not full_pool:
@@ -1118,8 +1180,11 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             repair_improvement_count = 0
             restart_count = 0
             inspector_approval_count = 0
+            reinserted_recovery_count = 0
             recovery_target_source = "none"
             recovery_target_digest = ""
+            recovery_subgraph_node_count = 0
+            recovery_subgraph_edge_count = 0
             seed_index = 0
 
             while repair_rounds_run < repair_round_limit:
@@ -1140,6 +1205,13 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                     break
                 recovery_entry, recovery_feedback, recovery_target_source = recovery_target
                 recovery_target_digest = str(recovery_entry.get("digest", ""))
+                recovery_context = self._build_code_recovery_context(
+                    turn_traces=turn_traces,
+                    target_entry=recovery_entry,
+                    target_feedback=recovery_feedback,
+                )
+                recovery_subgraph_node_count = len(recovery_context["recovery_subgraph_node_ids"])
+                recovery_subgraph_edge_count = len(recovery_context["recovery_subgraph_edge_ids"])
                 repair_rounds_run += 1
                 branches = self._generate_repair_branches(
                     question_text=question_text,
@@ -1148,6 +1220,10 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                     current_entry=recovery_entry,
                     feedback=recovery_feedback,
                     repair_round=repair_rounds_run,
+                    recovery_subgraph_node_ids=recovery_context["recovery_subgraph_node_ids"],
+                    recovery_subgraph_edge_ids=recovery_context["recovery_subgraph_edge_ids"],
+                    trigger_verifier_snapshot=recovery_context["trigger_verifier_snapshot"],
+                    repair_operator_type="code_repair_patch",
                 )
                 repair_branch_count += len(branches)
                 approved: List[Tuple[Dict[str, Any], CodeRepairEval]] = []
@@ -1174,10 +1250,18 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                         inspector_approval_count += 1
                         approved.append((branch_entry, branch_feedback))
                 if approved:
-                    approved.sort(key=lambda item: self._verified_rank_key(item[0], item[1]), reverse=True)
-                    selected_entry, selected_feedback = approved[0]
-                    selected_reason = "v4_4_code_override_repair_improvement"
-                    repair_improvement_count += 1
+                    reinserted_recovery_count += len(approved)
+                    for branch_entry, _ in approved:
+                        branch_entry["recovery_reinserted"] = True
+                        branch_entry["candidate_bank_source"] = "recovery_output"
+                        self._assert_recovery_entry_invariants(branch_entry)
+                    full_pool.extend(list(approved))
+                    classes = self._collapse_code_classes(full_pool, anchor_digest=anchor_digest)
+                    selected_entry = classes[0]["representative"]
+                    selected_feedback = classes[0]["feedback"]
+                    selected_reason = "v4_4_code_reinsert_recollapse"
+                    if selected_feedback.dominates(recovery_feedback):
+                        repair_improvement_count += 1
                     continue
                 if execution_mode == "full" and seed_index + 1 < len(seed_pool):
                     seed_index += 1
@@ -1212,8 +1296,11 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "v4_4_repair_improvement_count": int(repair_improvement_count),
                 "v4_4_restart_count": int(restart_count),
                 "v4_4_inspector_approval_count": int(inspector_approval_count),
+                "v4_4_reinserted_recovery_count": int(reinserted_recovery_count),
                 "v4_4_recovery_target_source": recovery_target_source,
                 "v4_4_recovery_target_digest": recovery_target_digest,
+                "v4_4_recovery_subgraph_node_count": int(recovery_subgraph_node_count),
+                "v4_4_recovery_subgraph_edge_count": int(recovery_subgraph_edge_count),
                 "v4_4_stage1_anchor_digest": str(anchor_pair[0].get("digest", "")),
                 "v4_4_stage1_anchor_visible_tests_passed": int(anchor_pair[1].passed),
                 "v4_4_stage1_anchor_visible_tests_total": int(anchor_pair[1].total),
@@ -1255,8 +1342,11 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             "v4_4_repair_improvement_count": 0,
             "v4_4_restart_count": 0,
             "v4_4_inspector_approval_count": 0,
+            "v4_4_reinserted_recovery_count": 0,
             "v4_4_recovery_target_source": "none",
             "v4_4_recovery_target_digest": "",
+            "v4_4_recovery_subgraph_node_count": 0,
+            "v4_4_recovery_subgraph_edge_count": 0,
             "v4_4_top_classes": [
                 {
                     "class_key": self._public_class_key(tuple(item["key"])),
@@ -1632,6 +1722,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 candidates=candidates,
                 anchor=anchor,
                 budget_bucket=budget_bucket,
+                turn_traces=turn_traces,
             )
         elif route_family == "graph_constrained":
             selected, strategy, extra = self._select_graph_against_anchor_v44(
@@ -1661,6 +1752,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             if selected_serialized is None:
                 selected_serialized = self._serialize_candidate_entry(selected)
                 candidates_serialized.append(dict(selected_serialized))
+            self._assert_recovery_entry_invariants(selected)
 
         final_answer = str((selected or {}).get("text", "")) if selected is not None else ""
         self._record_selection_metadata(
@@ -1672,6 +1764,35 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             selection_extra=extra,
         )
         return final_answer, strategy
+
+    def _graph_faithfulness_metrics(self, result: Stage2RunResult) -> Dict[str, Any]:
+        edge_ratios: List[float] = []
+        node_ratios: List[float] = []
+        for turn_trace in result.turn_traces:
+            total_edges = len(turn_trace.active_edges)
+            active_edges = sum(1 for edge in turn_trace.active_edges if edge.active)
+            edge_ratios.append(float(active_edges) / float(total_edges) if total_edges else 0.0)
+            active_node_ids = set(turn_trace.metadata.get("active_node_ids", ()))
+            skipped_node_ids = set(turn_trace.metadata.get("skipped_node_ids", ()))
+            total_nodes = len(active_node_ids | skipped_node_ids)
+            node_ratios.append(float(len(active_node_ids)) / float(total_nodes) if total_nodes else 0.0)
+        candidates = list(self._last_candidate_bundle.get("candidates_serialized", ()))
+        provenance_count = sum(1 for item in candidates if item.get("provenance"))
+        selected_digest = str(self._last_v4_4_selection.get("v4_4_selected_candidate_digest", ""))
+        selected_entry = next((item for item in candidates if str(item.get("digest", "")) == selected_digest), {})
+        return {
+            "graph_faithfulness_active_edge_ratio_by_turn": edge_ratios,
+            "graph_faithfulness_active_node_ratio_by_turn": node_ratios,
+            "graph_faithfulness_candidate_provenance_coverage": (
+                float(provenance_count) / float(len(candidates)) if candidates else 0.0
+            ),
+            "graph_faithfulness_sink_path_provenance_length": int(len(selected_entry.get("provenance", ()))),
+            "graph_faithfulness_recovery_subgraph_size": int(len(selected_entry.get("recovery_subgraph_node_ids", ()))),
+            "graph_faithfulness_final_answer_source_type": str(
+                selected_entry.get("candidate_bank_source")
+                or self._last_v4_4_selection.get("v4_4_selected_candidate_source", "")
+            ),
+        }
 
     def run(
         self,
@@ -1702,6 +1823,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         if result.signature.startswith("stage2_v2|"):
             result.signature = "stage2_v4_4|" + result.signature[len("stage2_v2|") :]
         result.metadata.update(self._last_v4_4_selection)
+        result.metadata.update(self._graph_faithfulness_metrics(result))
         result.metadata["stage2_version"] = "v4.4"
         result.metadata["v4_4_all_task_nodes_each_turn"] = False
         result.metadata["v4_4_route_family"] = self._v4_4_route_family

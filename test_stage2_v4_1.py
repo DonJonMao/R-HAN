@@ -257,3 +257,17 @@ def test_candidate_bank_only_admits_sink_and_checker_positive_entries():
     assert occurrence_map[(0, "solver_fail")]["admitted_to_candidate_bank"] is False
     assert occurrence_map[(0, "agg_conflict")]["admitted_to_candidate_bank"] is False
     assert occurrence_map[(0, "sink")]["candidate_bank_source"] == "sink_output"
+    solver_entry = next(item for item in bundle["candidates"] if item["text"] == "proposal-pass")
+    assert solver_entry["origin_node_id"] == "solver_pass"
+    assert solver_entry["origin_turn_index"] == 0
+    assert solver_entry["origin_role"] == "solver"
+    assert solver_entry["candidate_bank_source"] == "checker_approved_proposal"
+    assert solver_entry["verifier_snapshot"]["positive"] is True
+    assert solver_entry["provenance"] == [
+        {
+            "node_id": "solver_pass",
+            "turn_index": 0,
+            "role": "solver",
+            "candidate_bank_source": "checker_approved_proposal",
+        }
+    ]

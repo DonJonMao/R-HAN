@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from mas_stage2.config import Stage2MemoryConfig
-from mas_stage2.memory import PrivateEpisodeMemoryStore
+from mas_stage2.memory import PrivateEpisodeMemoryStore, RoleAwareMemorySelector
 from mas_stage2.types import MemoryRecord
+from mas_treesearch.types import UnionNode
 
 
 def _record(
@@ -39,8 +42,13 @@ def test_private_memory_store_exposes_bucket_and_view_helpers():
     assert [item.record_id for item in store.get_bucket("node-1", "self_output")] == ["self"]
     assert [item.record_id for item in store.get_feedback_view("node-1", "stable_view")] == ["pass"]
     assert [item.record_id for item in store.get_feedback_view("node-1", "failure_view")] == ["reject"]
-    assert [item.record_id for item in store.get_view("node-1", "checker_verdict_summary")] == ["pass", "reject"]
-    assert [item.record_id for item in store.get_view("node-1", "recovery_summary")] == ["repair"]
+    checker_summary = store.get_view("node-1", "checker_verdict_summary")
+    recovery_summary = store.get_view("node-1", "recovery_summary")
+
+    assert [item.record_id for item in checker_summary] == ["node-1::checker_verdict_summary"]
+    assert checker_summary[0].metadata["summary_view"] is True
+    assert [item.record_id for item in recovery_summary] == ["node-1::recovery_summary"]
+    assert recovery_summary[0].metadata["summary_view"] is True
 
 
 def test_private_memory_store_rejects_unknown_physical_bucket():
@@ -48,3 +56,41 @@ def test_private_memory_store_rejects_unknown_physical_bucket():
 
     with pytest.raises(ValueError):
         store.add(_record(record_id="bad", record_type="ad_hoc_bucket"))
+
+
+class _Embedder:
+    def embed(self, text: str) -> list[float]:
+        if "slot=class_summary" in text:
+            return [1.0, 0.0]
+        if "slot=checker_verdict_summary" in text:
+            return [0.0, 1.0]
+        if "slot=recovery_summary" in text:
+            return [1.0, 1.0]
+        return [1.0, 0.0]
+
+
+def test_role_aware_selector_uses_typed_slot_plan():
+    selector = RoleAwareMemorySelector(Stage2MemoryConfig(max_selected_records=4), _Embedder())
+    node = UnionNode("sink", "sink_agent", "aggregator", "task", [], 1, 1.0)
+    records = [
+        _record(record_id="class", owner_node_id="sink", record_type="class_summary"),
+        _record(record_id="pass", owner_node_id="sink", record_type="feedback", feedback_type="pass"),
+        _record(record_id="repair", owner_node_id="sink", record_type="repair_trace"),
+    ]
+
+    selected = selector.select(
+        node,
+        "question",
+        SimpleNamespace(summary="global", uncertainty=0.1, mode="lean", role_weights={}),
+        records,
+        current_turn=1,
+    )
+
+    rationales = {item.rationale for item in selected}
+    record_ids = {item.record_id for item in selected}
+
+    assert "slot:class_summary" in rationales
+    assert "slot:checker_verdict_summary" in rationales
+    assert "slot:recovery_summary" in rationales
+    assert "sink::checker_verdict_summary" in record_ids
+    assert "sink::recovery_summary" in record_ids

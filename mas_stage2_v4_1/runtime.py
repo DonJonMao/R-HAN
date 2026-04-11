@@ -49,6 +49,18 @@ class Stage2RuntimeV41(Stage2RuntimeV31):
         entry.setdefault("challenger_rationale", "")
         entry.setdefault("inspector_decision", "")
         entry.setdefault("inspector_rationale", "")
+        entry.setdefault("origin_node_id", "")
+        entry.setdefault("origin_turn_index", -1)
+        entry.setdefault("origin_role", "")
+        entry.setdefault("verifier_snapshot", {})
+        entry.setdefault("candidate_bank_source", "")
+        entry.setdefault("provenance", [])
+        entry.setdefault("parent_candidate_digest", "")
+        entry.setdefault("repair_operator_type", "")
+        entry.setdefault("recovery_subgraph_node_ids", [])
+        entry.setdefault("recovery_subgraph_edge_ids", [])
+        entry.setdefault("trigger_verifier_snapshot", {})
+        entry.setdefault("recovery_reinserted", False)
 
     @staticmethod
     def _normalize_vector(values: Sequence[float]) -> List[float]:
@@ -138,6 +150,18 @@ class Stage2RuntimeV41(Stage2RuntimeV31):
                 "challenger_rationale": str(entry.get("challenger_rationale", "")),
                 "inspector_decision": str(entry.get("inspector_decision", "")),
                 "inspector_rationale": str(entry.get("inspector_rationale", "")),
+                "origin_node_id": str(entry.get("origin_node_id", "")),
+                "origin_turn_index": int(entry.get("origin_turn_index", -1)),
+                "origin_role": str(entry.get("origin_role", "")),
+                "verifier_snapshot": dict(entry.get("verifier_snapshot", {})),
+                "candidate_bank_source": str(entry.get("candidate_bank_source", "")),
+                "provenance": list(entry.get("provenance", ())),
+                "parent_candidate_digest": str(entry.get("parent_candidate_digest", "")),
+                "repair_operator_type": str(entry.get("repair_operator_type", "")),
+                "recovery_subgraph_node_ids": list(entry.get("recovery_subgraph_node_ids", ())),
+                "recovery_subgraph_edge_ids": list(entry.get("recovery_subgraph_edge_ids", ())),
+                "trigger_verifier_snapshot": dict(entry.get("trigger_verifier_snapshot", {})),
+                "recovery_reinserted": bool(entry.get("recovery_reinserted", False)),
             }
         )
         return payload
@@ -304,6 +328,48 @@ class Stage2RuntimeV41(Stage2RuntimeV31):
             existing["challenger_agent_id"] = str(incoming.get("challenger_agent_id", ""))
         if not existing.get("challenger_rationale"):
             existing["challenger_rationale"] = str(incoming.get("challenger_rationale", ""))
+        if not existing.get("origin_node_id"):
+            existing["origin_node_id"] = str(incoming.get("origin_node_id", ""))
+            existing["origin_turn_index"] = int(incoming.get("origin_turn_index", -1))
+            existing["origin_role"] = str(incoming.get("origin_role", ""))
+        if not existing.get("candidate_bank_source"):
+            existing["candidate_bank_source"] = str(incoming.get("candidate_bank_source", ""))
+        if not existing.get("parent_candidate_digest"):
+            existing["parent_candidate_digest"] = str(incoming.get("parent_candidate_digest", ""))
+        if not existing.get("repair_operator_type"):
+            existing["repair_operator_type"] = str(incoming.get("repair_operator_type", ""))
+        if not existing.get("verifier_snapshot"):
+            existing["verifier_snapshot"] = dict(incoming.get("verifier_snapshot", {}))
+        if not existing.get("trigger_verifier_snapshot"):
+            existing["trigger_verifier_snapshot"] = dict(incoming.get("trigger_verifier_snapshot", {}))
+        if not existing.get("recovery_subgraph_node_ids"):
+            existing["recovery_subgraph_node_ids"] = list(incoming.get("recovery_subgraph_node_ids", ()))
+        if not existing.get("recovery_subgraph_edge_ids"):
+            existing["recovery_subgraph_edge_ids"] = list(incoming.get("recovery_subgraph_edge_ids", ()))
+        existing["recovery_reinserted"] = bool(existing.get("recovery_reinserted", False) or incoming.get("recovery_reinserted", False))
+        provenance = list(existing.get("provenance", ()))
+        seen = {
+            (
+                str(item.get("node_id", "")),
+                int(item.get("turn_index", -1)),
+                str(item.get("role", "")),
+            )
+            for item in provenance
+            if isinstance(item, dict)
+        }
+        for item in incoming.get("provenance", ()):
+            if not isinstance(item, dict):
+                continue
+            key = (
+                str(item.get("node_id", "")),
+                int(item.get("turn_index", -1)),
+                str(item.get("role", "")),
+            )
+            if key in seen:
+                continue
+            provenance.append(dict(item))
+            seen.add(key)
+        existing["provenance"] = provenance
 
     @classmethod
     def _checker_positive_labels(cls) -> set[str]:
@@ -352,6 +418,53 @@ class Stage2RuntimeV41(Stage2RuntimeV31):
         if role in self._proposal_candidate_roles() and checker_snapshot.get("positive_without_veto", False):
             return True, "checker_approved_proposal"
         return False, "filtered"
+
+    def _attach_candidate_provenance(
+        self,
+        entry: Dict[str, Any],
+        *,
+        turn_index: int,
+        node_trace,
+        checker_snapshot: Dict[str, Any],
+        admission_source: str,
+    ) -> None:
+        self._ensure_v4_entry_fields(entry)
+        metadata = dict(getattr(node_trace, "metadata", {}) or {})
+        if not entry.get("origin_node_id"):
+            entry["origin_node_id"] = str(node_trace.node_id)
+            entry["origin_turn_index"] = int(turn_index)
+            entry["origin_role"] = str(node_trace.role)
+        entry["candidate_bank_source"] = admission_source
+        entry["verifier_snapshot"] = {
+            "labels": list(checker_snapshot.get("labels", ())),
+            "positive": bool(checker_snapshot.get("positive", False)),
+            "hard_veto": bool(checker_snapshot.get("hard_veto", False)),
+            "event_count": int(checker_snapshot.get("event_count", 0)),
+        }
+        provenance = list(entry.get("provenance", ()))
+        candidate_trace = {
+            "node_id": str(node_trace.node_id),
+            "turn_index": int(turn_index),
+            "role": str(node_trace.role),
+            "candidate_bank_source": admission_source,
+        }
+        if candidate_trace not in provenance:
+            provenance.append(candidate_trace)
+        entry["provenance"] = provenance
+        if metadata.get("repair_branch") or metadata.get("recovery_output"):
+            entry["parent_candidate_digest"] = str(
+                metadata.get("parent_candidate_digest")
+                or metadata.get("repair_parent_digest")
+                or entry.get("parent_candidate_digest", "")
+            )
+            entry["repair_operator_type"] = str(
+                metadata.get("repair_operator_type")
+                or metadata.get("recovery_operator_type")
+                or "recovery_output"
+            )
+            entry["recovery_subgraph_node_ids"] = list(metadata.get("recovery_subgraph_node_ids", ()))
+            entry["recovery_subgraph_edge_ids"] = list(metadata.get("recovery_subgraph_edge_ids", ()))
+            entry["trigger_verifier_snapshot"] = dict(metadata.get("trigger_verifier_snapshot", {}))
 
     def _candidate_bank_bundle(
         self,
@@ -418,6 +531,13 @@ class Stage2RuntimeV41(Stage2RuntimeV31):
                 if dataset_profile.task_type == "code_generation":
                     entry["parse_ok"] = parse_ok
                     entry["entry_point_ok"] = entry_point_ok
+                self._attach_candidate_provenance(
+                    entry,
+                    turn_index=turn_trace.turn_index,
+                    node_trace=node_trace,
+                    checker_snapshot=checker_snapshot,
+                    admission_source=admission_source,
+                )
                 feedback_stats = self._aggregate_occurrence_feedback(
                     feedback_by_occurrence.get(occurrence_key, ()),
                     dataset_profile=dataset_profile,
