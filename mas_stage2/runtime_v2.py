@@ -7,21 +7,13 @@ import time
 from dataclasses import asdict
 from typing import Dict, List, Optional, Sequence, Tuple
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
 from mas_treesearch.agents import AgentPool
 from mas_treesearch.evaluator import MultiFidelityEvaluator
 from mas_treesearch.profiles import DEFAULT_PROFILE, DatasetProfile
 from mas_treesearch.prompting import build_system_prompt, render_question_text
 from mas_treesearch.types import EvalSummary, UnionGraph, UnionNode
 
-from .composer import SimpleMemoryComposer, tokenize_texts
 from .config_v2 import Stage2V2Config
-from .global_node import GlobalContextNode
-from .gnn import LightweightGNN
-from .lmpo import LMPOTrainer
 from .memory import PrivateEpisodeMemoryStore
 from .runtime import Stage2Runtime, _truncate
 from .types import (
@@ -34,6 +26,50 @@ from .types import (
     Stage2RunResult,
     TurnTrace,
 )
+
+try:
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    from .composer import SimpleMemoryComposer, tokenize_texts
+    from .global_node import GlobalContextNode
+    from .gnn import LightweightGNN
+    from .lmpo import LMPOTrainer
+    _TORCH_IMPORT_ERROR: ModuleNotFoundError | None = None
+except ModuleNotFoundError as exc:  # pragma: no cover - environment-specific fallback
+    _TORCH_IMPORT_ERROR = exc
+
+    class _TorchUnavailableObject:
+        def __init__(self, *args, **kwargs):
+            raise ModuleNotFoundError("torch is required for Stage2RuntimeV2") from _TORCH_IMPORT_ERROR
+
+    class _TorchUnavailableModule:
+        Module = object
+        Linear = _TorchUnavailableObject
+
+    class _TorchUnavailableFunctional:
+        @staticmethod
+        def normalize(*args, **kwargs):
+            raise ModuleNotFoundError("torch is required for Stage2RuntimeV2") from _TORCH_IMPORT_ERROR
+
+    def _tokenize_texts_unavailable(*args, **kwargs):
+        raise ModuleNotFoundError("torch is required for Stage2RuntimeV2") from _TORCH_IMPORT_ERROR
+
+    class _TorchUnavailableNamespace:
+        Tensor = object
+
+        def __getattr__(self, name: str):
+            raise ModuleNotFoundError("torch is required for Stage2RuntimeV2") from _TORCH_IMPORT_ERROR
+
+    torch = _TorchUnavailableNamespace()
+    nn = _TorchUnavailableModule()
+    F = _TorchUnavailableFunctional()
+    SimpleMemoryComposer = _TorchUnavailableObject
+    tokenize_texts = _tokenize_texts_unavailable
+    GlobalContextNode = _TorchUnavailableObject
+    LightweightGNN = _TorchUnavailableObject
+    LMPOTrainer = _TorchUnavailableObject
 
 
 class Stage2RuntimeV2(Stage2Runtime):
@@ -54,6 +90,8 @@ class Stage2RuntimeV2(Stage2Runtime):
         agent_pool: AgentPool,
         embedder,
     ):
+        if _TORCH_IMPORT_ERROR is not None:
+            raise ModuleNotFoundError("torch is required for Stage2RuntimeV2") from _TORCH_IMPORT_ERROR
         self.v2_config = config
         self.embed_dim = int(getattr(embedder.config, "dim", 4096))
         super().__init__(config.to_runtime_config(), evaluator, agent_pool, embedder)

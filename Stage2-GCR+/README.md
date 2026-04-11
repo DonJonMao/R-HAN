@@ -323,6 +323,13 @@ candidate bank
 - `revise`
 - 其它等价的失败或不稳定信号
 
+此外明确约定两个逻辑摘要视图：
+
+- `checker verdict summary := view(feedback)`
+- `recovery summary := view(repair_trace)`
+
+它们只是从现有物理桶上取的聚合视图，不新增任何物理桶。
+
 ### 7.3 每轮写回规则
 
 每轮结束后：
@@ -369,6 +376,12 @@ candidate bank
 - `class_summary`
 - `checker verdict summary`
 - `recovery summary`
+
+这里再次强调：
+
+- `checker verdict summary` 来自 `feedback` 的聚合视图
+- `recovery summary` 来自 `repair_trace` 的聚合视图
+- schema 仍然只有 4 个物理桶
 
 ### 8.2 slot 内选择函数
 
@@ -498,6 +511,11 @@ active set 由以下几类并集组成：
 - `protected nodes`
 - `recovery_ids`
 
+其中两个实现时必须写死的集合定义为：
+
+- `sink_guards = sink node ids ∪ nearest upstream aggregators`
+- `protected_ids = sink node ids ∪ current champion provenance nodes ∪ checker nodes involved in current verifier state`
+
 其中 `recovery_ids` 来自最近一轮被：
 
 - `challenge`
@@ -554,6 +572,11 @@ raw candidate bank 只允许以下四类入口：
 - `checker-approved proposals`
 - `checker-positive aggregators`
 - `recovery outputs`
+
+其中两个 checker 相关入口都使用离散谓词，不允许退化回阈值打分：
+
+- `checker-approved proposals`：至少一个 checker 给出 `pass / preserve / keep / approve`，且没有 checker 给出 `reject / conflict`
+- `checker-positive aggregators`：至少一个 checker 给出 `pass / preserve / keep / approve`，且没有 checker 给出 `reject / conflict`
 
 ### 13.1 为什么加入 `checker-positive aggregators`
 
@@ -723,6 +746,12 @@ verifier 只提供 typed evidence。
 - `anchor` recoverable
 
 这样可以避免“当前 best seed 还不够强，所以明知 anchor 可修也被直接 preserve”的过保守问题。
+
+进入 recovery 时，`best_of(c_star, anchor)` 的选择规则必须固定为：
+
+- 若 `c_star` 可恢复，则优先修 `c_star`
+- 否则若 `anchor` 可恢复，则修 `anchor`
+- 否则不进入 recovery
 
 ### 18.2 recovery subgraph
 

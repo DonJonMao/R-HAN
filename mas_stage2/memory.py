@@ -17,12 +17,32 @@ from .types import (
     SelectedMemoryItem,
 )
 
+PHYSICAL_MEMORY_BUCKETS = ("self_output", "feedback", "class_summary", "repair_trace")
+FEEDBACK_STABLE_TYPES = frozenset({"pass", "preserve", "keep", "approve"})
+FEEDBACK_FAILURE_TYPES = frozenset({"challenge", "reject", "conflict", "revise"})
+
 
 def _truncate(text: str, limit: int) -> str:
     cleaned = " ".join((text or "").split()).strip()
     if len(cleaned) <= limit:
         return cleaned
     return cleaned[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _physical_bucket_name(record: MemoryRecord) -> str:
+    bucket_name = str(record.record_type or "").strip()
+    if bucket_name not in PHYSICAL_MEMORY_BUCKETS:
+        raise ValueError(f"Unsupported memory bucket: {bucket_name}")
+    return bucket_name
+
+
+def _feedback_view_labels(view_name: str) -> frozenset[str]:
+    normalized = str(view_name or "").strip()
+    if normalized == "stable_view":
+        return FEEDBACK_STABLE_TYPES
+    if normalized == "failure_view":
+        return FEEDBACK_FAILURE_TYPES
+    raise ValueError(f"Unsupported feedback view: {view_name}")
 
 
 @dataclass
@@ -33,6 +53,7 @@ class PrivateEpisodeMemoryStore:
         self._records: Dict[str, List[MemoryRecord]] = {}
 
     def add(self, record: MemoryRecord) -> None:
+        _physical_bucket_name(record)
         bucket = self._records.setdefault(record.owner_node_id, [])
         bucket.append(record)
         if len(bucket) > self.config.max_private_records_per_agent:
@@ -46,6 +67,30 @@ class PrivateEpisodeMemoryStore:
 
     def total_token_estimate(self) -> int:
         return sum(record.token_estimate for records in self._records.values() for record in records)
+
+    def get_bucket(self, owner_node_id: str, bucket_name: str) -> List[MemoryRecord]:
+        normalized = str(bucket_name or "").strip()
+        if normalized not in PHYSICAL_MEMORY_BUCKETS:
+            raise ValueError(f"Unsupported memory bucket: {bucket_name}")
+        return [record for record in self.get(owner_node_id) if _physical_bucket_name(record) == normalized]
+
+    def get_feedback_view(self, owner_node_id: str, view_name: str) -> List[MemoryRecord]:
+        labels = _feedback_view_labels(view_name)
+        return [
+            record
+            for record in self.get_bucket(owner_node_id, "feedback")
+            if str(record.feedback_type or "").strip() in labels
+        ]
+
+    def get_view(self, owner_node_id: str, view_name: str) -> List[MemoryRecord]:
+        normalized = str(view_name or "").strip()
+        if normalized in {"stable_view", "failure_view"}:
+            return self.get_feedback_view(owner_node_id, normalized)
+        if normalized == "checker_verdict_summary":
+            return self.get_bucket(owner_node_id, "feedback")
+        if normalized == "recovery_summary":
+            return self.get_bucket(owner_node_id, "repair_trace")
+        raise ValueError(f"Unsupported memory view: {view_name}")
 
 
 class RoleAwareMemorySelector:
@@ -179,14 +224,12 @@ class RoleAwareMemorySelector:
         ]
         scored.sort(key=lambda item: (item[0], item[1].turn_index, item[1].record_id), reverse=True)
 
-        failure_types = {"challenge", "reject", "conflict", "revise"}
-        success_types = {"pass", "preserve"}
         if self.config.include_failure_memory:
-            failure_pick = next((item for item in scored if item[1].feedback_type in failure_types), None)
+            failure_pick = next((item for item in scored if item[1].feedback_type in FEEDBACK_FAILURE_TYPES), None)
             if failure_pick is not None:
                 add_record(failure_pick[1], "failure_signal", failure_pick[0])
         if self.config.include_success_memory:
-            success_pick = next((item for item in scored if item[1].feedback_type in success_types), None)
+            success_pick = next((item for item in scored if item[1].feedback_type in FEEDBACK_STABLE_TYPES), None)
             if success_pick is not None:
                 add_record(success_pick[1], "stable_signal", success_pick[0])
         for score, record in scored:
@@ -218,9 +261,9 @@ class LocalMemoryComposer:
             record = records_by_id[item.record_id]
             excerpt = _truncate(record.text, self.config.max_record_chars)
             excerpts.append(f"[{record.record_type}|{record.feedback_type}] {excerpt}")
-            if record.feedback_type in {"challenge", "reject", "conflict", "revise"}:
+            if record.feedback_type in FEEDBACK_FAILURE_TYPES:
                 failure_signals.append(excerpt)
-            elif record.feedback_type in {"pass", "preserve"}:
+            elif record.feedback_type in FEEDBACK_STABLE_TYPES:
                 stable_signals.append(excerpt)
         parts: List[str] = [
             f"Role={node.role}.",
