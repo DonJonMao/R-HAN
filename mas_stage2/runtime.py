@@ -369,9 +369,13 @@ class Stage2Runtime:
     def _runtime_node_type(self, graph: UnionGraph, node: UnionNode) -> str:
         if node.node_id in graph.sink_node_ids:
             return "sink"
-        if str(node.role) in self._runtime_checker_roles():
+        role = str(node.role)
+        if role in self._runtime_checker_roles():
             return "checker"
         distances = self._sink_distance_lookup(graph)
+        node_distance = distances.get(node.node_id, 10**9)
+        if node_distance >= 10**9:
+            return "proposal"
         candidate_shell = [
             graph_node
             for graph_node in graph.nodes.values()
@@ -389,7 +393,17 @@ class Stage2Runtime:
             if distances.get(graph_node.node_id, 10**9) == nearest_shell
         ]
         shell_support_max = max((int(graph_node.support_count) for graph_node in shell_nodes), default=-1)
-        if distances.get(node.node_id, 10**9) == nearest_shell and int(node.support_count) >= shell_support_max:
+        node_support = int(node.support_count)
+        if node_distance == nearest_shell and node_support >= shell_support_max:
+            return "aggregator"
+        # Allow explicit aggregation/router roles one shell farther from sink when
+        # they remain well supported by Stage1. This keeps routing topology-aware
+        # without collapsing back to role-only typing.
+        if role in {"aggregator", "router"} and node_distance <= nearest_shell + 1:
+            support_floor = shell_support_max if node_distance == nearest_shell else max(0, shell_support_max - 1)
+            if node_support >= support_floor:
+                return "aggregator"
+        if role == "reviser" and node_distance == nearest_shell and node_support >= max(0, shell_support_max - 1):
             return "aggregator"
         return "proposal"
 

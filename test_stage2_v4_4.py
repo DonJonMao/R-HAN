@@ -115,6 +115,18 @@ def test_collapse_code_classes_does_not_prefer_larger_duplicate_class():
     assert classes[0]["representative"]["digest"] == "b1"
 
 
+def test_verified_rank_key_ignores_quality_and_review_scores():
+    runtime = _runtime_stub()
+    runtime._quality_score = lambda entry: float(entry.get("score", 0.0))  # type: ignore[attr-defined]
+    runtime._review_consensus = lambda entry: float(entry.get("review", 0.0))  # type: ignore[attr-defined]
+
+    shorter = {"digest": "short", "text": "A", "score": 0.1, "review": 0.1, "line_count": 4}
+    longer = {"digest": "long", "text": "B", "score": 0.9, "review": 0.9, "line_count": 20}
+    feedback = _code_eval(passed=1, total=2, failure_kind="visible_test_failure")
+
+    assert runtime._verified_rank_key(shorter, feedback) > runtime._verified_rank_key(longer, feedback)
+
+
 def test_code_route_mode_is_discrete_and_becomes_full_under_two_survivors():
     runtime = _runtime_stub()
     anchor_pair = ({"digest": "anchor"}, _code_eval(passed=1, total=3, failure_kind="visible_test_failure"))
@@ -233,6 +245,31 @@ def test_runtime_node_type_mapping_uses_sink_distance_and_support():
     assert runtime._runtime_node_type(graph, nodes["proposal"]) == "proposal"
 
 
+def test_runtime_node_type_promotes_near_sink_router_with_support():
+    runtime = _runtime_stub()
+    nodes = {
+        "proposal": UnionNode("proposal", "solver", "solver", "task", [], 2, 1.0),
+        "router": UnionNode("router", "router_agent", "router", "task", [], 4, 1.0),
+        "relay": UnionNode("relay", "relay_agent", "solver", "task", [], 5, 1.0),
+        "sink": UnionNode("sink", "sink_agent", "aggregator", "task", [], 5, 1.0),
+    }
+    graph = UnionGraph(
+        nodes=nodes,
+        edges=[
+            UnionEdge("proposal", "router", "task", [], 1, 1.0, 1.0, 1.0, 0.5, 0.5),
+            UnionEdge("router", "relay", "task", [], 1, 1.0, 1.0, 1.0, 0.5, 0.5),
+            UnionEdge("relay", "sink", "task", [], 1, 1.0, 1.0, 1.0, 0.5, 0.5),
+        ],
+        source_topology_signatures=[],
+        root_node_ids=[],
+        sink_node_ids=["sink"],
+    )
+
+    assert runtime._runtime_node_type(graph, nodes["relay"]) == "aggregator"
+    assert runtime._runtime_node_type(graph, nodes["router"]) == "aggregator"
+    assert runtime._runtime_node_type(graph, nodes["proposal"]) == "proposal"
+
+
 def test_reasoning_ach_lexicographic_prefers_non_fatal_candidate():
     runtime = _runtime_stub()
     runtime._quality_score = lambda entry: float(entry.get("score", 0.0))  # type: ignore[attr-defined]
@@ -313,6 +350,33 @@ def test_collapse_reasoning_classes_does_not_use_occurrence_or_size_bias():
     assert classes[0]["representative"]["digest"] == "minority_b"
 
 
+def test_collapse_reasoning_classes_prefers_anchor_on_typed_tie():
+    runtime = _runtime_stub()
+    runtime._quality_score = lambda entry: float(entry.get("score", 0.0))  # type: ignore[attr-defined]
+    runtime._review_consensus = lambda entry: float(entry.get("review", 0.0))  # type: ignore[attr-defined]
+    runtime._evaluate_reasoning_candidate = lambda **kwargs: ReasoningEval(  # type: ignore[attr-defined]
+        normalized_answer=str(kwargs["entry"]["digest"]),
+        fatal_contradictions=(),
+        major_contradictions=(),
+        critical_support=1,
+        contradiction_cluster="stable",
+    )
+
+    classes = runtime._collapse_reasoning_classes(
+        question_text="q",
+        candidates=[
+            {"digest": "anchor", "text": "A", "score": 0.1, "review": 0.1, "stage1_anchor": True},
+            {"digest": "challenger", "text": "B", "score": 0.9, "review": 0.9},
+        ],
+        anchor_digest="anchor",
+        metadata={},
+        dataset_profile=SimpleNamespace(task_type="numeric"),
+    )
+
+    assert classes[0]["representative"]["digest"] == "anchor"
+    assert classes[0]["contains_anchor"] is True
+
+
 def test_collapse_graph_classes_does_not_prefer_larger_duplicate_class():
     runtime = _runtime_stub()
     runtime._quality_score = lambda entry: float(entry.get("score", 0.0))  # type: ignore[attr-defined]
@@ -338,6 +402,33 @@ def test_collapse_graph_classes_does_not_prefer_larger_duplicate_class():
     )
 
     assert classes[0]["representative"]["digest"] == "minority_b"
+
+
+def test_collapse_graph_classes_prefers_anchor_on_typed_tie():
+    runtime = _runtime_stub()
+    runtime._quality_score = lambda entry: float(entry.get("score", 0.0))  # type: ignore[attr-defined]
+    runtime._review_consensus = lambda entry: float(entry.get("review", 0.0))  # type: ignore[attr-defined]
+    runtime._evaluate_graph_candidate = lambda **kwargs: GraphConstraintEval(  # type: ignore[attr-defined]
+        normalized_structure=str(kwargs["entry"]["digest"]),
+        broken_blocks=(),
+        fatal_blocks=(),
+        repair_locus="stable",
+        verified_blocks=1,
+    )
+
+    classes = runtime._collapse_graph_classes(
+        question_text="q",
+        candidates=[
+            {"digest": "anchor", "text": "A", "score": 0.1, "review": 0.1, "stage1_anchor": True},
+            {"digest": "challenger", "text": "B", "score": 0.9, "review": 0.9},
+        ],
+        anchor_digest="anchor",
+        metadata={},
+        dataset_profile=SimpleNamespace(task_type="graph_reasoning"),
+    )
+
+    assert classes[0]["representative"]["digest"] == "anchor"
+    assert classes[0]["contains_anchor"] is True
 
 
 def test_best_code_recovery_target_prefers_recoverable_champion():

@@ -101,8 +101,7 @@ class Stage2RuntimeV43(Stage2RuntimeV42):
     def _verified_rank_key(self, entry: Dict[str, Any], feedback: CodeRepairEval) -> Tuple[Any, ...]:
         return (
             feedback.rank_key,
-            self._quality_score(entry),
-            self._review_consensus(entry),
+            int(bool(entry.get("stage1_anchor", False))),
             -int(entry.get("line_count", 0)),
             str(entry.get("digest", "")),
         )

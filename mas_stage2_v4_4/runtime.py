@@ -109,6 +109,13 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry.setdefault("promotion_inspector_decision", "")
         entry.setdefault("promotion_inspector_rationale", "")
 
+    @staticmethod
+    def _stable_entry_tiebreak(entry: Dict[str, Any]) -> Tuple[int, str]:
+        return (
+            int(bool(entry.get("stage1_anchor", False))),
+            str(entry.get("digest", "")),
+        )
+
     def _serialize_candidate_entry(self, entry: Dict[str, Any]) -> Dict[str, Any]:
         payload = super()._serialize_candidate_entry(entry)
         payload.update(
@@ -475,8 +482,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             payload = grouped.get(key)
             rank_key = (
                 self._verified_rank_key(entry, feedback),
-                int(bool(entry.get("stage1_anchor", False))),
-                str(entry.get("digest", "")),
+                *self._stable_entry_tiebreak(entry),
             )
             if payload is None:
                 payload = {
@@ -499,10 +505,8 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         collapsed = list(grouped.values())
         collapsed.sort(
             key=lambda item: (
-                item["feedback"].rank_key,
-                self._quality_score(item["representative"]),
-                self._review_consensus(item["representative"]),
-                str(item["representative"].get("digest", "")),
+                self._verified_rank_key(item["representative"], item["feedback"]),
+                *self._stable_entry_tiebreak(item["representative"]),
             ),
             reverse=True,
         )
@@ -620,9 +624,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             payload = grouped.get(key)
             rank_key = (
                 evaluation.lexicographic_key,
-                self._quality_score(entry),
-                self._review_consensus(entry),
-                str(entry.get("digest", "")),
+                *self._stable_entry_tiebreak(entry),
             )
             if payload is None:
                 payload = {
@@ -644,9 +646,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         collapsed.sort(
             key=lambda item: (
                 item["evaluation"].lexicographic_key,
-                self._quality_score(item["representative"]),
-                self._review_consensus(item["representative"]),
-                str(item["representative"].get("digest", "")),
+                *self._stable_entry_tiebreak(item["representative"]),
             ),
             reverse=True,
         )
@@ -841,9 +841,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             payload = grouped.get(key)
             rank_key = (
                 evaluation.rank_key,
-                self._quality_score(entry),
-                self._review_consensus(entry),
-                str(entry.get("digest", "")),
+                *self._stable_entry_tiebreak(entry),
             )
             if payload is None:
                 payload = {
@@ -865,9 +863,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         collapsed.sort(
             key=lambda item: (
                 item["evaluation"].rank_key,
-                self._quality_score(item["representative"]),
-                self._review_consensus(item["representative"]),
-                str(item["representative"].get("digest", "")),
+                *self._stable_entry_tiebreak(item["representative"]),
             ),
             reverse=True,
         )
@@ -985,9 +981,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         branches.sort(
             key=lambda item: (
                 item[1].rank_key,
-                self._quality_score(item[0]),
-                self._review_consensus(item[0]),
-                str(item[0].get("digest", "")),
+                *self._stable_entry_tiebreak(item[0]),
             ),
             reverse=True,
         )
@@ -1455,9 +1449,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                         improved.sort(
                             key=lambda item: (
                                 item[1].rank_key,
-                                self._quality_score(item[0]),
-                                self._review_consensus(item[0]),
-                                str(item[0].get("digest", "")),
+                                *self._stable_entry_tiebreak(item[0]),
                             ),
                             reverse=True,
                         )

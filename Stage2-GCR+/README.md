@@ -995,7 +995,77 @@ enter candidate bank
 - “GNN 只是 surviving-neighbor aggregator，而 pruning 靠外部 heuristics 主导”的过渡态
 - 把 repair 当成脱离图的第二系统
 
-## 24. 仓库中的实现落点
+## 24. 当前三类任务完整度
+
+### 24.1 `Code`
+
+当前完整度：高。
+
+这一条线已经是当前最完整、最适合继续做主线实验的 route。当前代码里已经落地的闭环包括：
+
+- `best_of(c_star, anchor)` 的离散恢复目标选择
+- `origin_node_id / origin_turn_index / parent_candidate_digest / recovery_subgraph_node_ids / trigger_verifier_snapshot` 等 recovery provenance
+- `reinsert -> re-collapse -> re-select -> re-verify` 的 runtime invariant
+- `protected_ids / sink_guards` 的显式构造
+- `inspector` 控制的 partial promotion
+- `graph-faithfulness` 的运行时日志
+
+当前判断：
+
+- `Code` route 已经不再只是“图给上下文，外部 prompt 自由修代码”
+- 它已经形成了 verifier-triggered、provenance-bound、reinserted 的 recovery 主链
+- 因此 `MBPP / HumanEval` 这类任务可以把这一条线视为当前 `Stage2-GCR+` 的主实现路径
+
+仍未完成的部分：
+
+- 还没有基于大规模 successful recovery traces 做更强 recovery operator 训练
+- 图上 pruning / routing 的学习信号还需要继续与正式实验闭环
+
+### 24.2 `Reasoning`
+
+当前完整度：中等，但定位是 `stabilization-first`，不是当前提分主线。
+
+这一条线当前已经落地的部分包括：
+
+- reasoning route 的 class collapse
+- preserve-first 的 final compare
+- 当 `anchor` 没有 fatal contradiction 时优先保留 `anchor`
+- `reasoning recovery` 仍只保留接口，不进入 final override 主链
+
+当前判断：
+
+- 这条线的主要作用是先压住 harmful override，避免高基线数据集上的高置信错翻
+- 它现在更像“止损和稳定化路径”，而不是“主动扩大收益的搜索路径”
+- 因此 `GSM8K / MATH` 这类任务当前不应被表述成已经完成的 gain route
+
+仍未完成的部分：
+
+- reasoning recovery 还没有进入可信的图内闭环
+- 更强的 trajectory labels、reasoning-specific verifier 信号仍是后续阶段
+
+### 24.3 `Graph`
+
+当前完整度：中低，属于部分完成。
+
+这一条线当前已经具备：
+
+- `UnionGraph` substrate 约束
+- graph route 的 class collapse 和 route-specific compare
+- graph-faithfulness logging
+- local graph repair branch 的接口与局部排序逻辑
+
+当前判断：
+
+- `Graph` route 已经不是空白壳，但也还没有达到 `Code` route 那种闭环成熟度
+- 它目前仍保留较强的 dataset/task-specific verification 语义
+- repair agent 语义、graph-specific verifier 闭环、以及更稳定的 graph recovery 主链还没有完全钉死
+
+因此当前不应把它当成最成熟的主实验路径；更准确的表述是：
+
+- `Graph` route 已经进入可运行、可记录、可做消融的阶段
+- 但还没有进入“可稳健主打结果”的阶段
+
+## 25. 仓库中的实现落点
 
 ### `mas_stage2/memory.py`
 
@@ -1039,7 +1109,7 @@ enter candidate bank
 - hard final guard
 - graph-faithfulness logging
 
-## 25. 最终伪代码
+## 26. 最终伪代码
 
 ```text
 Input: PreparedStage1Artifact A = (UnionGraph, anchor, priors), sample x
@@ -1088,7 +1158,7 @@ LogGraphFaithfulnessMetrics()
 return final_answer
 ```
 
-## 26. 一句话总结
+## 27. 一句话总结
 
 `Stage2-GCR+ (Revised)` 的核心不是把 `Stage2` 变成更复杂的 repair 系统，而是把它收敛成一套不会偏离方法主线的 graph-native 执行系统：
 
