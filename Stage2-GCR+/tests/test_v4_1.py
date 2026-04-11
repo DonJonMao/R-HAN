@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from mas_stage2.types import ControllerState, ExportedMemoryMessage, FeedbackEvent, NodeTurnTrace, TurnTrace
-from mas_stage2_v4_1.runtime import Stage2RuntimeV41
+from stage2_gcr_plus.runtime_v41 import Stage2RuntimeV41
 
 
 def _message(node_id: str, vector: list[float], confidence: float) -> ExportedMemoryMessage:

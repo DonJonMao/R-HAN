@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from mas_stage2.config import Stage2MemoryConfig
-from mas_stage2.memory import PrivateEpisodeMemoryStore, RoleAwareMemorySelector
+from stage2_gcr_plus.memory import PrivateEpisodeMemoryStore, RoleAwareMemorySelector
 from mas_stage2.types import MemoryRecord
 from mas_treesearch.types import UnionNode
 

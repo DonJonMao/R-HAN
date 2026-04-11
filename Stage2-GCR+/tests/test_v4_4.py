@@ -3,8 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from mas_stage2.types import ControllerState, EdgeActivation, TurnTrace, Stage2RunResult
-from mas_stage2_v4_4.code_repair import CodeRepairEval
-from mas_stage2_v4_4.runtime import GraphConstraintEval, ReasoningEval, Stage2RuntimeV44
+from stage2_gcr_plus.code_repair import CodeRepairEval
+from stage2_gcr_plus.runtime_v44 import GraphConstraintEval, ReasoningEval, Stage2RuntimeV44
 from mas_treesearch.evaluator import MultiFidelityEvaluator
 from mas_treesearch.types import UnionEdge, UnionGraph, UnionNode
 

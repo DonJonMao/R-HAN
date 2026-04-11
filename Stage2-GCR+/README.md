@@ -1065,49 +1065,106 @@ enter candidate bank
 - `Graph` route 已经进入可运行、可记录、可做消融的阶段
 - 但还没有进入“可稳健主打结果”的阶段
 
-## 25. 仓库中的实现落点
+## 25. 目录内实现落点
 
-### `mas_stage2/memory.py`
+当前 `Stage2-GCR+` 的实现已经集中到本目录下，不再继续把 GCR+ 逻辑分散写回历史版本目录。
 
-保留：
+### `Stage2-GCR+/stage2_gcr_plus/memory.py`
 
-- 私有记忆存储
-- local composer
-- export message builder
-- verbalizer
+承载：
 
-修改方向：
+- 4 个物理 memory 桶
+- `stable/failure` typed views
+- `checker_verdict_summary / recovery_summary`
+- typed slot retrieval
+- `runtime_node_type` 优先、compat fallback 次之的 slot routing
 
-- 物理桶收缩为 4 个
-- `feedback` 提供 `stable/failure` typed view
-- 用 typed slot retrieval 替换 heuristic 加权选择
+### `Stage2-GCR+/stage2_gcr_plus/runtime.py`
 
-### `mas_stage2/gnn.py`
+承载：
 
-保留：
+- runtime node typing
+- `sink_distance / stage1_support` annotation
+- base rerun shell 上的 typed memory read/write 对接
 
-- `LightweightGNN` 骨架
+### `Stage2-GCR+/stage2_gcr_plus/runtime_v2.py`
 
-修改方向：
+承载：
 
-- 真正输出 edge-only sparse gate
-- `per-destination top-k pruning` 进入 runtime 主路径
-- 不再依赖 controller 逻辑决定 focus / mode
+- graph-native rerun 主壳
+- latent memory / global node / edge gating 的执行入口
+- 与 runtime annotation 的集成
 
-### `mas_stage2/runtime.py` 或后续 `Stage2-GCR+` 专用 runtime
+### `Stage2-GCR+/stage2_gcr_plus/runtime_v31.py`
 
-至少需要承载以下职责：
+承载：
 
-- node type mapping
-- typed memory read / write
-- graph-native rerun
-- candidate bank construction
-- route-specific class collapse
-- champion selection
-- recovery subgraph construction
-- code recovery round
-- hard final guard
+- v3.1 的 candidate / pairwise / reviewer 基础比较逻辑
+- 作为后续 v4.x GCR+ route 的上游基类
+
+### `Stage2-GCR+/stage2_gcr_plus/runtime_v41.py`
+
+承载：
+
+- candidate bank admission
+- checker snapshot
+- provenance 绑定
+- `sink outputs / checker-approved proposals / checker-positive aggregators / recovery outputs` 的离散入口
+
+### `Stage2-GCR+/stage2_gcr_plus/runtime_v42.py`
+
+承载：
+
+- provisional challenger / auditor / adjudication 的过渡逻辑
+- 作为 code / reasoning / graph route 收口前的上游层
+
+### `Stage2-GCR+/stage2_gcr_plus/runtime_v43.py`
+
+承载：
+
+- code verifier rank
+- code repair branch 生成
+- code repair feedback 绑定
+
+### `Stage2-GCR+/stage2_gcr_plus/runtime_v44.py`
+
+承载：
+
+- `best_of(c_star, anchor)`
+- `protected_ids / sink_guards`
+- code / reasoning / graph 三条 route 的 class collapse
+- recovery invariant
 - graph-faithfulness logging
+- 当前 `Stage2-GCR+` 的主 selection / recovery / guard 链
+
+### `Stage2-GCR+/stage2_gcr_plus/code_repair.py`
+
+承载：
+
+- code candidate execution check
+- `CodeRepairEval`
+- failure summary 与 repair evaluation helper
+
+### `Stage2-GCR+/tests/`
+
+承载当前目录内的 GCR+ 测试入口：
+
+- `test_memory.py`
+- `test_v4_1.py`
+- `test_v4_4.py`
+
+推荐回归命令：
+
+```bash
+pytest -q Stage2-GCR+/tests
+```
+
+这套测试现在只依赖：
+
+- `Stage2-GCR+` 目录内的新实现
+- 仓库里原有的通用基础模块
+
+历史版本目录不再承担 GCR+ 特有测试职责。
 
 ## 26. 最终伪代码
 

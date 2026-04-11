@@ -6,9 +6,9 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from mas_stage2.runtime_v2 import Stage2RuntimeV2
+from .runtime_v2 import Stage2RuntimeV2
 from mas_stage2.types import ControllerState, EdgeActivation, FeedbackEvent, Stage2RunResult, TurnTrace
-from mas_stage2_v4_3.runtime import Stage2RuntimeV43
+from .runtime_v43 import Stage2RuntimeV43
 from mas_treesearch.evaluator import MultiFidelityEvaluator
 from mas_treesearch.prompting import build_system_prompt, render_question_text
 from mas_treesearch.profiles import DEFAULT_PROFILE, DatasetProfile

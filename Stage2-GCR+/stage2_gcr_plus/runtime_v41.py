@@ -6,9 +6,9 @@ import os
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from mas_stage2.runtime_v2 import Stage2RuntimeV2
+from .runtime_v2 import Stage2RuntimeV2
 from mas_stage2.types import ExportedMemoryMessage, Stage2RunResult, TurnTrace
-from mas_stage2_v3_1.runtime import Stage2RuntimeV31
+from .runtime_v31 import Stage2RuntimeV31
 from mas_treesearch.prompting import build_system_prompt, render_question_text
 from mas_treesearch.profiles import DEFAULT_PROFILE, DatasetProfile
 from mas_treesearch.types import PromptSlots, UnionGraph

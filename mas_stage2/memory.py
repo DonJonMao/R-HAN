@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence
 
 from mas_treesearch.clients import CachedEmbedder
 from mas_treesearch.gating import cosine
@@ -17,88 +17,12 @@ from .types import (
     SelectedMemoryItem,
 )
 
-PHYSICAL_MEMORY_BUCKETS = ("self_output", "feedback", "class_summary", "repair_trace")
-FEEDBACK_STABLE_TYPES = frozenset({"pass", "preserve", "keep", "approve"})
-FEEDBACK_FAILURE_TYPES = frozenset({"challenge", "reject", "conflict", "revise"})
-
 
 def _truncate(text: str, limit: int) -> str:
     cleaned = " ".join((text or "").split()).strip()
     if len(cleaned) <= limit:
         return cleaned
     return cleaned[: max(0, limit - 3)].rstrip() + "..."
-
-
-def _physical_bucket_name(record: MemoryRecord) -> str:
-    bucket_name = str(record.record_type or "").strip()
-    if bucket_name not in PHYSICAL_MEMORY_BUCKETS:
-        raise ValueError(f"Unsupported memory bucket: {bucket_name}")
-    return bucket_name
-
-
-def _feedback_view_labels(view_name: str) -> frozenset[str]:
-    normalized = str(view_name or "").strip()
-    if normalized == "stable_view":
-        return FEEDBACK_STABLE_TYPES
-    if normalized == "failure_view":
-        return FEEDBACK_FAILURE_TYPES
-    raise ValueError(f"Unsupported feedback view: {view_name}")
-
-
-def _average_embedding(records: Sequence[MemoryRecord]) -> List[float]:
-    if not records:
-        return []
-    vectors = [list(record.embedding or []) for record in records if record.embedding]
-    if not vectors:
-        return []
-    width = len(vectors[0])
-    if any(len(vector) != width for vector in vectors):
-        return list(vectors[0])
-    return [sum(vector[index] for vector in vectors) / float(len(vectors)) for index in range(width)]
-
-
-def _summary_view_record(records: Sequence[MemoryRecord], view_name: str) -> Optional[MemoryRecord]:
-    if not records:
-        return None
-    ordered = sorted(records, key=lambda item: (item.turn_index, item.record_id), reverse=True)
-    if view_name == "checker_verdict_summary":
-        stable = sum(1 for record in ordered if record.feedback_type in FEEDBACK_STABLE_TYPES)
-        failure = sum(1 for record in ordered if record.feedback_type in FEEDBACK_FAILURE_TYPES)
-        head = f"checker verdict summary: stable={stable}, failure={failure}"
-        excerpts = [
-            _truncate(f"{record.feedback_type}: {record.text}", 120)
-            for record in ordered[:2]
-        ]
-        summary_text = "\n".join([head] + excerpts)
-        source_bucket = "feedback"
-    elif view_name == "recovery_summary":
-        head = f"recovery summary: branches={len(ordered)}"
-        excerpts = [_truncate(record.text, 120) for record in ordered[:2]]
-        summary_text = "\n".join([head] + excerpts)
-        source_bucket = "repair_trace"
-    else:
-        raise ValueError(f"Unsupported summary view: {view_name}")
-    owner = ordered[0].owner_node_id
-    return MemoryRecord(
-        record_id=f"{owner}::{view_name}",
-        episode_id=ordered[0].episode_id,
-        turn_index=max(record.turn_index for record in ordered),
-        owner_node_id=owner,
-        agent_id=ordered[0].agent_id,
-        role=ordered[0].role,
-        record_type=source_bucket,
-        text=summary_text,
-        embedding=_average_embedding(ordered),
-        token_estimate=max(1, len(summary_text.split())),
-        feedback_type=view_name,
-        confidence=max(float(record.confidence) for record in ordered),
-        source_node_id=ordered[0].source_node_id,
-        metadata={
-            "view_name": view_name,
-            "source_record_ids": [record.record_id for record in ordered[:4]],
-            "summary_view": True,
-        },
-    )
 
 
 @dataclass
@@ -109,7 +33,6 @@ class PrivateEpisodeMemoryStore:
         self._records: Dict[str, List[MemoryRecord]] = {}
 
     def add(self, record: MemoryRecord) -> None:
-        _physical_bucket_name(record)
         bucket = self._records.setdefault(record.owner_node_id, [])
         bucket.append(record)
         if len(bucket) > self.config.max_private_records_per_agent:
@@ -123,32 +46,6 @@ class PrivateEpisodeMemoryStore:
 
     def total_token_estimate(self) -> int:
         return sum(record.token_estimate for records in self._records.values() for record in records)
-
-    def get_bucket(self, owner_node_id: str, bucket_name: str) -> List[MemoryRecord]:
-        normalized = str(bucket_name or "").strip()
-        if normalized not in PHYSICAL_MEMORY_BUCKETS:
-            raise ValueError(f"Unsupported memory bucket: {bucket_name}")
-        return [record for record in self.get(owner_node_id) if _physical_bucket_name(record) == normalized]
-
-    def get_feedback_view(self, owner_node_id: str, view_name: str) -> List[MemoryRecord]:
-        labels = _feedback_view_labels(view_name)
-        return [
-            record
-            for record in self.get_bucket(owner_node_id, "feedback")
-            if str(record.feedback_type or "").strip() in labels
-        ]
-
-    def get_view(self, owner_node_id: str, view_name: str) -> List[MemoryRecord]:
-        normalized = str(view_name or "").strip()
-        if normalized in {"stable_view", "failure_view"}:
-            return self.get_feedback_view(owner_node_id, normalized)
-        if normalized == "checker_verdict_summary":
-            summary = _summary_view_record(self.get_bucket(owner_node_id, "feedback"), normalized)
-            return [summary] if summary is not None else []
-        if normalized == "recovery_summary":
-            summary = _summary_view_record(self.get_bucket(owner_node_id, "repair_trace"), normalized)
-            return [summary] if summary is not None else []
-        raise ValueError(f"Unsupported memory view: {view_name}")
 
 
 class RoleAwareMemorySelector:
@@ -166,112 +63,18 @@ class RoleAwareMemorySelector:
         self.learned_weight = learned_weight
 
     @staticmethod
-    def _proposal_slots() -> List[Tuple[str, int]]:
-        return [
-            ("self_output", 1),
-            ("feedback", 1),
-            ("failure_view", 1),
-            ("stable_view", 1),
-        ]
-
-    @staticmethod
-    def _checker_slots() -> List[Tuple[str, int]]:
-        return [
-            ("class_summary", 2),
-            ("feedback", 1),
-            ("failure_view", 1),
-        ]
-
-    @staticmethod
-    def _aggregator_slots() -> List[Tuple[str, int]]:
-        return [
-            ("class_summary", 1),
-            ("checker_verdict_summary", 1),
-            ("recovery_summary", 1),
-        ]
-
-    @staticmethod
-    def _role_compat_runtime_node_type(node: UnionNode) -> str:
-        role = str(node.role)
-        if role in {"tester", "verifier", "critic", "judge", "checker"}:
-            return "checker"
-        if role in {"aggregator", "router"}:
-            return "aggregator"
-        return "proposal"
-
-    @classmethod
-    def _resolved_runtime_node_type(cls, node: UnionNode) -> str:
-        metadata = dict(node.metadata or {})
-        runtime_node_type = str(metadata.get("runtime_node_type", "")).strip().lower()
-        if runtime_node_type in {"sink", "checker", "aggregator", "proposal"}:
-            metadata["runtime_node_type_source"] = "runtime_annotation"
-            node.metadata = metadata
-            return runtime_node_type
-        if bool(metadata.get("is_sink_runtime", False)):
-            fallback = "sink"
-        else:
-            fallback = cls._role_compat_runtime_node_type(node)
-        metadata["runtime_node_type"] = fallback
-        metadata["runtime_node_type_source"] = "compat_fallback"
-        metadata["runtime_node_type_fallback_role"] = str(node.role)
-        node.metadata = metadata
-        return fallback
-
-    @classmethod
-    def _node_slot_plan(cls, node: UnionNode) -> List[Tuple[str, int]]:
-        runtime_node_type = cls._resolved_runtime_node_type(node)
-        if runtime_node_type == "sink":
-            return cls._aggregator_slots()
-        if runtime_node_type == "checker":
-            return cls._checker_slots()
-        if runtime_node_type == "aggregator":
-            return cls._aggregator_slots()
-        return cls._proposal_slots()
-
-    @staticmethod
-    def _records_for_slot(records: Sequence[MemoryRecord], slot_name: str) -> List[MemoryRecord]:
-        if slot_name in PHYSICAL_MEMORY_BUCKETS:
-            return [record for record in records if record.record_type == slot_name]
-        if slot_name in {"stable_view", "failure_view"}:
-            labels = _feedback_view_labels(slot_name)
-            return [record for record in records if record.record_type == "feedback" and record.feedback_type in labels]
-        if slot_name == "checker_verdict_summary":
-            summary = _summary_view_record(
-                [record for record in records if record.record_type == "feedback"],
-                slot_name,
-            )
-            return [summary] if summary is not None else []
-        if slot_name == "recovery_summary":
-            summary = _summary_view_record(
-                [record for record in records if record.record_type == "repair_trace"],
-                slot_name,
-            )
-            return [summary] if summary is not None else []
-        raise ValueError(f"Unsupported memory slot: {slot_name}")
-
-    def _slot_query_vector(
-        self,
-        node: UnionNode,
-        question_text: str,
-        controller_state: ControllerState,
-        *,
-        current_turn: int,
-        slot_name: str,
-    ) -> List[float]:
-        query_text = _truncate(
-            "\n".join(
-                [
-                    question_text,
-                    f"role={node.role}",
-                    f"turn={current_turn}",
-                    f"slot={slot_name}",
-                    f"global_state={_truncate(controller_state.summary, 240)}",
-                    f"uncertainty={controller_state.uncertainty:.3f}",
-                ]
-            ),
-            self.config.query_max_chars,
-        )
-        return self.embedder.embed(query_text)
+    def _feedback_bias(record: MemoryRecord) -> float:
+        mapping = {
+            "pass": 0.12,
+            "preserve": 0.10,
+            "challenge": 0.14,
+            "reject": 0.16,
+            "conflict": 0.12,
+            "revise": 0.10,
+            "uncertain": 0.04,
+            "unresolved": 0.02,
+        }
+        return mapping.get(record.feedback_type, 0.0)
 
     def _score_record(
         self,
@@ -281,8 +84,17 @@ class RoleAwareMemorySelector:
         record: MemoryRecord,
         *,
         current_turn: int,
-    ) -> tuple[float, Dict[str, float], float]:
+    ) -> tuple[float, Dict[str, float], float, float]:
         query_similarity = cosine(query_vec, record.embedding)
+        recency = 1.0 / max(1.0, 1.0 + (current_turn - record.turn_index))
+        role_bonus = 0.08 if record.role == node.role else 0.0
+        heuristic_score = (
+            0.62 * query_similarity
+            + 0.14 * recency
+            + 0.12 * self._feedback_bias(record)
+            + role_bonus
+            - 0.02 * min(1.0, record.token_estimate / 120.0)
+        )
         features = selector_features(
             node,
             record,
@@ -290,7 +102,11 @@ class RoleAwareMemorySelector:
             current_turn=current_turn,
             query_similarity=query_similarity,
         )
-        return query_similarity, features, query_similarity
+        learned_score = 0.5
+        if self.learned_model is not None:
+            learned_score, _ = self.learned_model.predict(features)
+        final_score = heuristic_score + self.learned_weight * (learned_score - 0.5)
+        return final_score, features, heuristic_score, learned_score
 
     def select(
         self,
@@ -303,15 +119,29 @@ class RoleAwareMemorySelector:
     ) -> List[SelectedMemoryItem]:
         if not records:
             return []
+        query_text = _truncate(
+            "\n".join(
+                [
+                    question_text,
+                    f"role={node.role}",
+                    f"turn={current_turn}",
+                    f"global_state={_truncate(controller_state.summary, 240)}",
+                    f"uncertainty={controller_state.uncertainty:.3f}",
+                    controller_state.summary,
+                ]
+            ),
+            self.config.query_max_chars,
+        )
+        query_vec = self.embedder.embed(query_text)
         selected_ids: List[str] = []
         selected: List[SelectedMemoryItem] = []
-        scored_lookup: Dict[str, tuple[Dict[str, float], float]] = {}
+        scored_lookup: Dict[str, tuple[Dict[str, float], float, float]] = {}
 
         def add_record(record: MemoryRecord, rationale: str, score: float) -> None:
             if record.record_id in selected_ids or len(selected) >= self.config.max_selected_records:
                 return
             selected_ids.append(record.record_id)
-            features, similarity_score = scored_lookup.get(record.record_id, ({}, score))
+            features, heuristic_score, learned_score = scored_lookup.get(record.record_id, ({}, score, 0.5))
             selected.append(
                 SelectedMemoryItem(
                     record_id=record.record_id,
@@ -319,40 +149,50 @@ class RoleAwareMemorySelector:
                     rationale=rationale,
                     metadata={
                         "features": dict(features),
-                        "slot_similarity": float(similarity_score),
+                        "heuristic_score": float(heuristic_score),
+                        "learned_score": float(learned_score),
                     },
                 )
             )
 
-        for slot_name, slot_cap in self._node_slot_plan(node):
+        ordered = sorted(records, key=lambda item: (item.turn_index, item.record_id), reverse=True)
+        score_bundles = [
+            self._score_record(query_vec, node, controller_state, record, current_turn=current_turn)
+            for record in records
+        ]
+        for (_, features, heuristic_score, learned_score), record in zip(score_bundles, records):
+            scored_lookup[record.record_id] = (features, heuristic_score, learned_score)
+
+        if self.config.keep_latest_self_output:
+            latest_output = next((item for item in ordered if item.record_type == "self_output"), None)
+            if latest_output is not None:
+                add_record(latest_output, "latest_self_output", 1.0)
+        if self.config.keep_latest_feedback:
+            latest_feedback = next((item for item in ordered if item.record_type == "feedback"), None)
+            if latest_feedback is not None:
+                add_record(latest_feedback, "latest_feedback", 1.0)
+
+        scored = [
+            (bundle[0], record)
+            for bundle, record in zip(score_bundles, records)
+            if record.record_id not in selected_ids
+        ]
+        scored.sort(key=lambda item: (item[0], item[1].turn_index, item[1].record_id), reverse=True)
+
+        failure_types = {"challenge", "reject", "conflict", "revise"}
+        success_types = {"pass", "preserve"}
+        if self.config.include_failure_memory:
+            failure_pick = next((item for item in scored if item[1].feedback_type in failure_types), None)
+            if failure_pick is not None:
+                add_record(failure_pick[1], "failure_signal", failure_pick[0])
+        if self.config.include_success_memory:
+            success_pick = next((item for item in scored if item[1].feedback_type in success_types), None)
+            if success_pick is not None:
+                add_record(success_pick[1], "stable_signal", success_pick[0])
+        for score, record in scored:
             if len(selected) >= self.config.max_selected_records:
                 break
-            slot_records = self._records_for_slot(records, slot_name)
-            if not slot_records:
-                continue
-            query_vec = self._slot_query_vector(
-                node,
-                question_text,
-                controller_state,
-                current_turn=current_turn,
-                slot_name=slot_name,
-            )
-            scored: List[Tuple[float, MemoryRecord]] = []
-            for record in slot_records:
-                score, features, similarity_score = self._score_record(
-                    query_vec,
-                    node,
-                    controller_state,
-                    record,
-                    current_turn=current_turn,
-                )
-                scored_lookup[record.record_id] = (features, similarity_score)
-                scored.append((score, record))
-            scored.sort(key=lambda item: (item[0], item[1].turn_index, item[1].record_id), reverse=True)
-            for score, record in scored[: max(1, slot_cap)]:
-                if len(selected) >= self.config.max_selected_records:
-                    break
-                add_record(record, f"slot:{slot_name}", score)
+            add_record(record, "top_scored", score)
         return selected
 
 
@@ -378,9 +218,9 @@ class LocalMemoryComposer:
             record = records_by_id[item.record_id]
             excerpt = _truncate(record.text, self.config.max_record_chars)
             excerpts.append(f"[{record.record_type}|{record.feedback_type}] {excerpt}")
-            if record.feedback_type in FEEDBACK_FAILURE_TYPES:
+            if record.feedback_type in {"challenge", "reject", "conflict", "revise"}:
                 failure_signals.append(excerpt)
-            elif record.feedback_type in FEEDBACK_STABLE_TYPES:
+            elif record.feedback_type in {"pass", "preserve"}:
                 stable_signals.append(excerpt)
         parts: List[str] = [
             f"Role={node.role}.",
