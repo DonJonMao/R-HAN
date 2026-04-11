@@ -191,22 +191,42 @@ class RoleAwareMemorySelector:
         ]
 
     @staticmethod
-    def _node_slot_plan(node: UnionNode) -> List[Tuple[str, int]]:
-        runtime_node_type = str((node.metadata or {}).get("runtime_node_type", "")).strip().lower()
+    def _role_compat_runtime_node_type(node: UnionNode) -> str:
         role = str(node.role)
-        if runtime_node_type == "sink":
-            return RoleAwareMemorySelector._aggregator_slots()
-        if runtime_node_type == "checker":
-            return RoleAwareMemorySelector._checker_slots()
-        if runtime_node_type == "aggregator":
-            return RoleAwareMemorySelector._aggregator_slots()
-        if runtime_node_type == "proposal":
-            return RoleAwareMemorySelector._proposal_slots()
         if role in {"tester", "verifier", "critic", "judge", "checker"}:
-            return RoleAwareMemorySelector._checker_slots()
-        if role in {"aggregator"} or node.role == "router":
-            return RoleAwareMemorySelector._aggregator_slots()
-        return RoleAwareMemorySelector._proposal_slots()
+            return "checker"
+        if role in {"aggregator", "router"}:
+            return "aggregator"
+        return "proposal"
+
+    @classmethod
+    def _resolved_runtime_node_type(cls, node: UnionNode) -> str:
+        metadata = dict(node.metadata or {})
+        runtime_node_type = str(metadata.get("runtime_node_type", "")).strip().lower()
+        if runtime_node_type in {"sink", "checker", "aggregator", "proposal"}:
+            metadata["runtime_node_type_source"] = "runtime_annotation"
+            node.metadata = metadata
+            return runtime_node_type
+        if bool(metadata.get("is_sink_runtime", False)):
+            fallback = "sink"
+        else:
+            fallback = cls._role_compat_runtime_node_type(node)
+        metadata["runtime_node_type"] = fallback
+        metadata["runtime_node_type_source"] = "compat_fallback"
+        metadata["runtime_node_type_fallback_role"] = str(node.role)
+        node.metadata = metadata
+        return fallback
+
+    @classmethod
+    def _node_slot_plan(cls, node: UnionNode) -> List[Tuple[str, int]]:
+        runtime_node_type = cls._resolved_runtime_node_type(node)
+        if runtime_node_type == "sink":
+            return cls._aggregator_slots()
+        if runtime_node_type == "checker":
+            return cls._checker_slots()
+        if runtime_node_type == "aggregator":
+            return cls._aggregator_slots()
+        return cls._proposal_slots()
 
     @staticmethod
     def _records_for_slot(records: Sequence[MemoryRecord], slot_name: str) -> List[MemoryRecord]:

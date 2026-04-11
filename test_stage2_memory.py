@@ -116,3 +116,30 @@ def test_runtime_node_type_metadata_overrides_role_only_slot_plan():
     assert "slot:self_output" in rationales
     assert "slot:feedback" in rationales
     assert "slot:checker_verdict_summary" not in rationales
+    assert node.metadata["runtime_node_type_source"] == "runtime_annotation"
+
+
+def test_role_aware_selector_marks_compat_fallback_when_runtime_type_missing():
+    selector = RoleAwareMemorySelector(Stage2MemoryConfig(max_selected_records=4), _Embedder())
+    node = UnionNode("router", "router_agent", "router", "task", [], 1, 1.0, metadata={})
+    records = [
+        _record(record_id="class", owner_node_id="router", record_type="class_summary"),
+        _record(record_id="pass", owner_node_id="router", record_type="feedback", feedback_type="pass"),
+        _record(record_id="repair", owner_node_id="router", record_type="repair_trace"),
+    ]
+
+    selected = selector.select(
+        node,
+        "question",
+        SimpleNamespace(summary="global", uncertainty=0.1, mode="lean", role_weights={}),
+        records,
+        current_turn=1,
+    )
+
+    rationales = {item.rationale for item in selected}
+    assert "slot:class_summary" in rationales
+    assert "slot:checker_verdict_summary" in rationales
+    assert "slot:recovery_summary" in rationales
+    assert node.metadata["runtime_node_type"] == "aggregator"
+    assert node.metadata["runtime_node_type_source"] == "compat_fallback"
+    assert node.metadata["runtime_node_type_fallback_role"] == "router"

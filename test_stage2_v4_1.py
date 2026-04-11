@@ -139,6 +139,34 @@ def test_override_succeeds_with_explicit_challenger_and_inspector():
     assert extra["v4_1_inspector_decision"] == "challenger"
 
 
+def test_candidate_bank_admission_accepts_checker_positive_aggregator_without_veto():
+    runtime = _runtime_stub()
+
+    admitted, source = runtime._candidate_bank_admission(
+        role="aggregator",
+        is_sink=False,
+        checker_snapshot={"positive_without_veto": True},
+        is_recovery_output=False,
+    )
+
+    assert admitted is True
+    assert source == "checker_positive_aggregator"
+
+
+def test_candidate_bank_admission_rejects_vetoed_aggregator_even_with_positive_signal():
+    runtime = _runtime_stub()
+
+    admitted, source = runtime._candidate_bank_admission(
+        role="aggregator",
+        is_sink=False,
+        checker_snapshot={"positive_without_veto": False, "positive": True, "hard_veto": True},
+        is_recovery_output=False,
+    )
+
+    assert admitted is False
+    assert source == "filtered"
+
+
 def test_candidate_bank_only_admits_sink_and_checker_positive_entries():
     runtime = _runtime_stub()
     controller_state = ControllerState(
