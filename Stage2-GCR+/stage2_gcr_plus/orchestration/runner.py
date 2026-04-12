@@ -18,11 +18,11 @@ from .sharding import ShardSpec, build_sample_shards
 
 def resolve_execution_mode(requested_mode: str, *, mbpp_ready: bool) -> str:
     mode = str(requested_mode or "auto").strip().lower()
-    if mode in {"tp4", "4x"}:
+    if mode in {"tp4", "3x"}:
         return mode
     if mode != "auto":
         raise ValueError(f"unsupported mode: {requested_mode}")
-    return "4x" if mbpp_ready else "tp4"
+    return "3x" if mbpp_ready else "tp4"
 
 
 def _list_datasets(data_root: Path) -> list[str]:
@@ -166,10 +166,10 @@ def run_sample_parallel(args: argparse.Namespace) -> dict[str, Any]:
 
     proxy: RouterProxyServer | None = None
     base_url = str(args.tp4_backend).rstrip("/")
-    if mode == "4x":
-        backend_specs = parse_backend_specs(args.x4_backend)
-        if len(backend_specs) < 4:
-            raise ValueError("4x mode requires at least 4 backends via --x4-backend")
+    if mode == "3x":
+        backend_specs = parse_backend_specs(args.x3_backend)
+        if len(backend_specs) != 3:
+            raise ValueError("3x mode requires exactly 3 backends via --x3-backend")
         proxy = RouterProxyServer(
             backends=backend_specs,
             host=args.router_host,
@@ -244,14 +244,14 @@ def run_sample_parallel(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Stage2-GCR+ sample-parallel runner with MBPP-gated TP4->4x switch")
+    parser = argparse.ArgumentParser(description="Stage2-GCR+ sample-parallel runner with MBPP-gated TP4->3x switch")
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--dataset", action="append", default=[], help="Repeatable dataset selection. Default: all datasets under data-root")
-    parser.add_argument("--workers", type=int, default=4, help="Sample shard count / worker count")
+    parser.add_argument("--workers", type=int, default=3, help="Sample shard count / worker count")
     parser.add_argument("--seed", type=int, default=7)
 
-    parser.add_argument("--mode", choices=("auto", "tp4", "4x"), default="auto")
+    parser.add_argument("--mode", choices=("auto", "tp4", "3x"), default="auto")
     parser.add_argument("--mbpp-progress-path", default="")
     parser.add_argument("--mbpp-dataset", default="mbpp")
     parser.add_argument("--mbpp-complete-status", action="append", default=["completed"])
@@ -261,10 +261,10 @@ def _parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--tp4-backend", default="http://127.0.0.1:8039")
     parser.add_argument(
-        "--x4-backend",
+        "--x3-backend",
         action="append",
         default=[],
-        help="Repeatable backend spec for 4x mode. Format: name=http://host:port@weight",
+        help="Repeatable backend spec for 3x mode. Format: name=http://host:port@weight",
     )
     parser.add_argument("--router-host", default="127.0.0.1")
     parser.add_argument("--router-port", type=int, default=8039)

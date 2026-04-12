@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from stage2_gcr_plus.orchestration.gate import check_mbpp_completion
 from stage2_gcr_plus.orchestration.routing import BackendRouter, BackendTarget, parse_backend_specs
 from stage2_gcr_plus.orchestration.runner import resolve_execution_mode
@@ -72,9 +74,14 @@ def test_mbpp_completion_gate_reads_suite_progress(tmp_path: Path):
     assert status.status == "completed"
 
 
-def test_resolve_execution_mode_auto_switches_to_4x_when_ready():
-    assert resolve_execution_mode("auto", mbpp_ready=True) == "4x"
+def test_resolve_execution_mode_auto_switches_to_3x_when_ready():
+    assert resolve_execution_mode("auto", mbpp_ready=True) == "3x"
     assert resolve_execution_mode("auto", mbpp_ready=False) == "tp4"
+
+
+def test_resolve_execution_mode_rejects_unknown_mode():
+    with pytest.raises(ValueError):
+        resolve_execution_mode("4x", mbpp_ready=True)
 
 
 def test_build_sample_shards_preserves_ids_and_balances(tmp_path: Path):

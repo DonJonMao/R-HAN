@@ -19,7 +19,7 @@ from stage2_gcr_plus.orchestration.routing import parse_backend_specs
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Stage2-GCR+ 4x router/load-balancer")
+    parser = argparse.ArgumentParser(description="Stage2-GCR+ 3x router/load-balancer")
     parser.add_argument("--backend", action="append", required=True, help="name=http://host:port@weight")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8039)
