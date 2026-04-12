@@ -1232,3 +1232,75 @@ return final_answer
 - 方法边界不漂
 - 实现路径不震荡
 - 失败归因可诊断
+
+## 28. 4x + Router/LB + 样本级并行训练测试入口
+
+为满足“当前保留 TP4、MBPP(v4.4) 完成后切 4x、并以样本级并行训练/测试”的执行方式，本目录新增了独立 orchestration 入口，且不再依赖历史版本目录改动。
+
+### 28.1 新增实现位置
+
+- `Stage2-GCR+/stage2_gcr_plus/orchestration/gate.py`
+  - MBPP 完成门控：读取 `suite_progress.json`，支持 `auto` 模式下 TP4 -> 4x 切换。
+- `Stage2-GCR+/stage2_gcr_plus/orchestration/routing.py`
+  - 后端池、权重解析、least-active 路由选择与健康状态维护。
+- `Stage2-GCR+/stage2_gcr_plus/orchestration/proxy.py`
+  - OpenAI-compatible HTTP proxy，转发 `/v1/chat/completions` / `/v1/models`，支持后端失败回退与健康探测。
+- `Stage2-GCR+/stage2_gcr_plus/orchestration/sharding.py`
+  - 样本级 shard 切分，按 split 生成并行 worker 数据视图。
+- `Stage2-GCR+/stage2_gcr_plus/orchestration/runner.py`
+  - 一体化并行 runner：`auto|tp4|4x` 模式、MBPP 门控、router 启停、worker 并行执行与汇总。
+- `Stage2-GCR+/run_stage2_gcr_plus_router.py`
+  - 单独启动 router/LB。
+- `Stage2-GCR+/run_stage2_gcr_plus_parallel.py`
+  - 一体化并行运行入口。
+
+### 28.2 使用方式
+
+1) 仅启动 4x Router/LB：
+
+```bash
+python Stage2-GCR+/run_stage2_gcr_plus_router.py \
+  --backend b1=http://127.0.0.1:8041@1 \
+  --backend b2=http://127.0.0.1:8042@1 \
+  --backend b3=http://127.0.0.1:8043@1 \
+  --backend b4=http://127.0.0.1:8044@1 \
+  --host 127.0.0.1 \
+  --port 8039
+```
+
+2) 一体化样本并行训练/测试（自动门控切换）：
+
+```bash
+python Stage2-GCR+/run_stage2_gcr_plus_parallel.py \
+  --data-root /mnt/nvme/projects/R-HAN/dataset/mas_treesearch_aflow_four_20260318 \
+  --output-root /mnt/nvme/projects/R-HAN/outputs/stage2_gcr_plus_parallel_run \
+  --dataset mbpp \
+  --workers 4 \
+  --mode auto \
+  --mbpp-progress-path /mnt/nvme/projects/R-HAN/outputs/mas_stage2_v4_4_selected_runs_20260410_manual1/mbpp/suite_progress.json \
+  --x4-backend b1=http://127.0.0.1:8041@1 \
+  --x4-backend b2=http://127.0.0.1:8042@1 \
+  --x4-backend b3=http://127.0.0.1:8043@1 \
+  --x4-backend b4=http://127.0.0.1:8044@1 \
+  --train-script train_mas_stage2_v4_4_target_suite.py \
+  --train-arg "--tier1-max-tokens 256" \
+  --train-arg "--tier2-max-tokens 896"
+```
+
+### 28.3 模式语义
+
+- `mode=tp4`：固定 TP4 backend。
+- `mode=4x`：强制 4x backend 池 + router/LB。
+- `mode=auto`：若 MBPP 进度达到完成状态（默认 `completed`），则切到 `4x`，否则保持 `tp4`。
+
+可选 `--wait-for-mbpp` 让 runner 阻塞等待 MBPP 状态完成后再切换启动。
+
+### 28.4 输出产物
+
+- `output_root/sample_shards/shard_manifest.json`
+  - 样本切分结果与每 shard 的 split 计数。
+- `output_root/logs/worker_*.log`
+  - 每个 worker 的执行日志。
+- `output_root/parallel_runner_summary.json`
+  - 本次执行的模式决议、MBPP gate 状态、worker 返回码与命令摘要。
+
