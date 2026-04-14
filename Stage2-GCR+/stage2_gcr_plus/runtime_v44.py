@@ -1976,8 +1976,11 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         self._v4_4_route_family = route_family
 
         if route_family == "code_repair":
+            current_graph = getattr(self, "_v4_4_current_graph", None)
+            if current_graph is None:
+                raise ValueError("Stage2RuntimeV44 code repair finalizer requires the active union graph context.")
             selected, strategy, extra = self._select_code_repair_against_anchor_v44(
-                graph=graph,
+                graph=current_graph,
                 question_text=question_text,
                 metadata=metadata,
                 dataset_profile=dataset_profile,
@@ -2077,16 +2080,20 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         self._v4_4_route_family = self._route_family(dataset_profile, metadata)
         self._v4_4_execution_mode_hint = self._initial_mode_hint(self._budget_bucket(metadata))
         self._v4_4_focus_node_ids = set()
-        result = Stage2RuntimeV2.run(
-            self,
-            graph,
-            question_text=question_text,
-            metadata=metadata,
-            reference_answer=reference_answer,
-            dataset_profile=dataset_profile,
-            replay_dir=replay_dir,
-            learn=learn,
-        )
+        self._v4_4_current_graph = graph
+        try:
+            result = Stage2RuntimeV2.run(
+                self,
+                graph,
+                question_text=question_text,
+                metadata=metadata,
+                reference_answer=reference_answer,
+                dataset_profile=dataset_profile,
+                replay_dir=replay_dir,
+                learn=learn,
+            )
+        finally:
+            self._v4_4_current_graph = None
         if result.signature.startswith("stage2_v2|"):
             result.signature = "stage2_v4_4|" + result.signature[len("stage2_v2|") :]
         result.metadata.update(self._last_v4_4_selection)

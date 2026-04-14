@@ -787,3 +787,43 @@ def test_graph_faithfulness_metrics_are_logged():
     assert metrics["graph_faithfulness_candidate_provenance_coverage"] == 1.0
     assert metrics["graph_faithfulness_final_answer_source_type"] == "recovery_output"
     assert metrics["graph_faithfulness_recovery_subgraph_size"] == 2
+
+
+def test_finalize_answer_code_route_uses_graph_from_run_context():
+    runtime = _runtime_stub()
+    graph = _code_recovery_graph()
+    runtime._candidate_bank_bundle = lambda **kwargs: {  # type: ignore[attr-defined]
+        "candidates": [],
+        "candidates_serialized": [],
+        "anchor": {"digest": "anchor"},
+        "anchor_serialized": {"digest": "anchor"},
+    }
+    runtime._route_family = lambda dataset_profile, metadata: "code_repair"  # type: ignore[attr-defined]
+    runtime._budget_bucket = lambda metadata: "normal"  # type: ignore[attr-defined]
+    runtime._select_code_repair_against_anchor_v44 = lambda **kwargs: (  # type: ignore[attr-defined]
+        {"digest": "anchor", "text": "patched"},
+        "v4_4_code_anchor_guard_preserve",
+        {"v4_4_selected_candidate_digest": "anchor"},
+    )
+    runtime._record_selection_metadata = lambda **kwargs: None  # type: ignore[attr-defined]
+    runtime._assert_recovery_entry_invariants = lambda entry: None  # type: ignore[attr-defined]
+    runtime._serialize_candidate_entry = lambda entry: dict(entry)  # type: ignore[attr-defined]
+    runtime._candidate_source_label = lambda entry: str(entry.get("source", ""))  # type: ignore[attr-defined]
+    runtime._quality_score = lambda entry: float(entry.get("score", 0.0))  # type: ignore[attr-defined]
+
+    runtime._v4_4_current_graph = graph
+    try:
+        final_answer, strategy = runtime._finalize_answer(
+            question_text="q",
+            controller_state=SimpleNamespace(),
+            sink_outputs={},
+            turn_traces=[],
+            metadata={},
+            reference_answer=None,
+            dataset_profile=SimpleNamespace(task_type="code_generation", name="mbpp"),
+        )
+    finally:
+        runtime._v4_4_current_graph = None
+
+    assert final_answer == "patched"
+    assert strategy == "v4_4_code_anchor_guard_preserve"
