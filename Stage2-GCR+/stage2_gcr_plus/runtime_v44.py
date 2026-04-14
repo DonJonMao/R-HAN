@@ -108,6 +108,11 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry.setdefault("v4_4_execution_mode", "")
         entry.setdefault("promotion_inspector_decision", "")
         entry.setdefault("promotion_inspector_rationale", "")
+        entry.setdefault("stage1_anchor_binding_legalized", False)
+        entry.setdefault("stage1_anchor_binding_kind", "")
+        entry.setdefault("stage1_anchor_binding_source_graph_id", "")
+        entry.setdefault("anchor_bound_node_ids", [])
+        entry.setdefault("anchor_bound_edge_ids", [])
 
     @staticmethod
     def _stable_entry_tiebreak(entry: Dict[str, Any]) -> Tuple[int, str]:
@@ -126,6 +131,22 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "v4_4_execution_mode": str(entry.get("v4_4_execution_mode", "")),
                 "promotion_inspector_decision": str(entry.get("promotion_inspector_decision", "")),
                 "promotion_inspector_rationale": str(entry.get("promotion_inspector_rationale", "")),
+                "candidate_bank_source": str(entry.get("candidate_bank_source", "")),
+                "origin_node_id": str(entry.get("origin_node_id", "")),
+                "origin_turn_index": int(entry.get("origin_turn_index", -1)),
+                "origin_role": str(entry.get("origin_role", "")),
+                "parent_candidate_digest": str(entry.get("parent_candidate_digest", "")),
+                "repair_operator_type": str(entry.get("repair_operator_type", "")),
+                "recovery_subgraph_node_ids": list(entry.get("recovery_subgraph_node_ids", ())),
+                "recovery_subgraph_edge_ids": list(entry.get("recovery_subgraph_edge_ids", ())),
+                "trigger_verifier_snapshot": dict(entry.get("trigger_verifier_snapshot", {})),
+                "provenance": [dict(item) for item in entry.get("provenance", ()) if isinstance(item, dict)],
+                "recovery_reinserted": bool(entry.get("recovery_reinserted", False)),
+                "stage1_anchor_binding_legalized": bool(entry.get("stage1_anchor_binding_legalized", False)),
+                "stage1_anchor_binding_kind": str(entry.get("stage1_anchor_binding_kind", "")),
+                "stage1_anchor_binding_source_graph_id": str(entry.get("stage1_anchor_binding_source_graph_id", "")),
+                "anchor_bound_node_ids": list(entry.get("anchor_bound_node_ids", ())),
+                "anchor_bound_edge_ids": list(entry.get("anchor_bound_edge_ids", ())),
             }
         )
         return payload
@@ -378,27 +399,217 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         }
         if entry.get("origin_node_id"):
             node_ids.add(str(entry.get("origin_node_id", "")))
+        node_ids.update(
+            str(node_id)
+            for node_id in entry.get("anchor_bound_node_ids", ())
+            if str(node_id)
+        )
         return node_ids
+
+    @staticmethod
+    def _stage1_topology_priors(metadata: Optional[dict], graph: UnionGraph) -> List[Tuple[str, float]]:
+        payload = dict(metadata or {})
+        signatures = list(payload.get("stage1_selected_topology_signatures", ()))
+        scores = list(payload.get("stage1_selected_topology_scores", ()))
+        pairs: List[Tuple[str, float]] = []
+        if signatures and len(signatures) == len(scores):
+            for signature, score in zip(signatures, scores):
+                text = str(signature).strip()
+                if not text:
+                    continue
+                pairs.append((text, float(score)))
+        if pairs:
+            return pairs
+        fallback = list(payload.get("stage1_source_topology_signatures", ())) or list(graph.source_topology_signatures)
+        return [(str(signature), float(len(fallback) - idx)) for idx, signature in enumerate(fallback) if str(signature).strip()]
+
+    @staticmethod
+    def _induced_task_edge_ids(graph: UnionGraph, node_ids: Sequence[str]) -> List[str]:
+        allowed = {str(node_id) for node_id in node_ids if str(node_id)}
+        edge_ids = [
+            Stage2RuntimeV44._edge_id(edge)
+            for edge in Stage2RuntimeV44._task_edges(graph)
+            if edge.src in allowed and edge.dst in allowed
+        ]
+        return sorted(set(edge_ids))
+
+    def _checker_neighbor_node_ids(self, graph: UnionGraph, seed_node_ids: Sequence[str]) -> set[str]:
+        seeds = {str(node_id) for node_id in seed_node_ids if str(node_id)}
+        if not seeds:
+            return set()
+        checker_ids = self._checker_node_ids(self._task_nodes(graph))
+        if not checker_ids:
+            return set()
+        neighbors: set[str] = set()
+        for edge in self._task_edges(graph):
+            if edge.src in seeds and edge.dst in checker_ids:
+                neighbors.add(edge.dst)
+            if edge.dst in seeds and edge.src in checker_ids:
+                neighbors.add(edge.src)
+        return neighbors
+
+    def _shortest_task_path_nodes(
+        self,
+        graph: UnionGraph,
+        *,
+        start_ids: Sequence[str],
+        target_ids: Sequence[str],
+    ) -> List[str]:
+        starts = [str(node_id) for node_id in start_ids if str(node_id) in graph.nodes]
+        targets = {str(node_id) for node_id in target_ids if str(node_id) in graph.nodes}
+        if not starts or not targets:
+            return []
+        if any(node_id in targets for node_id in starts):
+            return []
+
+        adjacency: Dict[str, List[str]] = {}
+        for edge in self._task_edges(graph):
+            adjacency.setdefault(edge.src, []).append(edge.dst)
+
+        frontier: List[str] = []
+        parent: Dict[str, Optional[str]] = {}
+        for node_id in starts:
+            if node_id in parent:
+                continue
+            parent[node_id] = None
+            frontier.append(node_id)
+
+        found: Optional[str] = None
+        index = 0
+        while index < len(frontier):
+            node_id = frontier[index]
+            index += 1
+            for next_id in adjacency.get(node_id, ()):
+                if next_id in parent:
+                    continue
+                parent[next_id] = node_id
+                if next_id in targets:
+                    found = next_id
+                    index = len(frontier)
+                    break
+                frontier.append(next_id)
+        if found is None:
+            return []
+
+        path: List[str] = []
+        cursor: Optional[str] = found
+        while cursor is not None:
+            path.append(cursor)
+            cursor = parent.get(cursor)
+        path.reverse()
+        return path
+
+    def _legalize_stage1_anchor_recovery_seed(
+        self,
+        *,
+        graph: UnionGraph,
+        anchor_entry: Dict[str, Any],
+        metadata: Optional[dict],
+    ) -> bool:
+        if not bool(anchor_entry.get("stage1_anchor", False)):
+            return False
+        if self._entry_has_recovery_seed_provenance(anchor_entry):
+            return True
+
+        priors = self._stage1_topology_priors(metadata, graph)
+        if not priors:
+            return False
+        best_source_graph_id = max(priors, key=lambda item: (float(item[1]), item[0]))[0]
+        if not best_source_graph_id:
+            return False
+
+        prior_node_ids = {
+            node.node_id
+            for node in graph.nodes.values()
+            if node.node_type == "task" and best_source_graph_id in node.source_graph_ids
+        }
+        if not prior_node_ids:
+            return False
+
+        checker_neighbors = self._checker_neighbor_node_ids(graph, prior_node_ids)
+        sink_targets = {
+            node_id
+            for node_id in set(self._v4_4_sink_guard_ids) | set(graph.sink_node_ids)
+            if node_id in graph.nodes and graph.nodes[node_id].node_type == "task"
+        }
+        bound_node_ids = set(prior_node_ids) | checker_neighbors | set(self._v4_4_sink_guard_ids) | set(self._v4_4_focus_node_ids)
+        if sink_targets and not (bound_node_ids & sink_targets):
+            bound_node_ids.update(
+                self._shortest_task_path_nodes(
+                    graph,
+                    start_ids=sorted(bound_node_ids),
+                    target_ids=sorted(sink_targets),
+                )
+            )
+
+        if not bound_node_ids:
+            return False
+
+        edge_ids = self._induced_task_edge_ids(graph, sorted(bound_node_ids))
+        distances = self._sink_distance_lookup(graph)
+        origin_type_priority = {
+            "proposal": 0,
+            "checker": 1,
+            "aggregator": 2,
+            "sink": 3,
+        }
+        origin_node_id = min(
+            prior_node_ids,
+            key=lambda node_id: (
+                int(origin_type_priority.get(self._runtime_node_type(graph, graph.nodes[node_id]), 9)),
+                int(distances.get(node_id, 10**9)),
+                -int(graph.nodes[node_id].support_count),
+                node_id,
+            ),
+        )
+        anchor_entry["origin_node_id"] = str(origin_node_id)
+        anchor_entry["origin_turn_index"] = 0
+        anchor_entry["origin_role"] = str(graph.nodes[origin_node_id].role)
+        anchor_entry["candidate_bank_source"] = str(anchor_entry.get("candidate_bank_source") or "stage1_anchor")
+        anchor_entry["provenance"] = [
+            {
+                "node_id": str(node_id),
+                "turn_index": 0,
+                "role": str(graph.nodes[node_id].role),
+                "binding_kind": "best_original_graph_prior",
+                "source_graph_id": best_source_graph_id,
+            }
+            for node_id in sorted(prior_node_ids)
+        ]
+        anchor_entry["stage1_anchor_binding_legalized"] = True
+        anchor_entry["stage1_anchor_binding_kind"] = "best_original_graph_prior"
+        anchor_entry["stage1_anchor_binding_source_graph_id"] = best_source_graph_id
+        anchor_entry["anchor_bound_node_ids"] = sorted(bound_node_ids)
+        anchor_entry["anchor_bound_edge_ids"] = list(edge_ids)
+        return True
 
     def _build_code_recovery_context(
         self,
         *,
+        graph: UnionGraph,
         turn_traces: Sequence[TurnTrace],
         target_entry: Dict[str, Any],
         target_feedback: CodeRepairEval,
     ) -> Dict[str, Any]:
         provenance_node_ids = self._candidate_provenance_node_ids(target_entry)
         node_ids = set(provenance_node_ids) | set(self._v4_4_focus_node_ids) | set(self._v4_4_sink_guard_ids)
-        edge_ids: List[str] = []
+        edge_ids = [
+            str(edge_id)
+            for edge_id in target_entry.get("anchor_bound_edge_ids", ())
+            if str(edge_id)
+        ]
+        if not edge_ids:
+            edge_ids = self._induced_task_edge_ids(graph, sorted(node_ids))
         verifier_labels: List[str] = []
         if turn_traces:
             latest_turn = turn_traces[-1]
             target_nodes = set(node_ids)
-            for activation in latest_turn.active_edges:
-                if not activation.active:
-                    continue
-                if activation.src in target_nodes or activation.dst in target_nodes:
-                    edge_ids.append(str(activation.edge_id))
+            if not edge_ids:
+                for activation in latest_turn.active_edges:
+                    if not activation.active:
+                        continue
+                    if activation.src in target_nodes or activation.dst in target_nodes:
+                        edge_ids.append(str(activation.edge_id))
             for event in latest_turn.feedback_events:
                 if event.target_node_id in target_nodes:
                     verifier_labels.append(str(event.event_type))
@@ -424,6 +635,15 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             and list(entry.get("recovery_subgraph_node_ids", ()))
             and list(entry.get("provenance", ()))
             and dict(entry.get("trigger_verifier_snapshot", {}))
+        )
+
+    @staticmethod
+    def _entry_has_recovery_seed_provenance(entry: Dict[str, Any]) -> bool:
+        return bool(
+            entry.get("origin_node_id")
+            and int(entry.get("origin_turn_index", -1)) >= 0
+            and entry.get("origin_role")
+            and list(entry.get("provenance", ()))
         )
 
     def _assert_recovery_entry_invariants(self, entry: Dict[str, Any]) -> None:
@@ -1053,9 +1273,13 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         champion_feedback: CodeRepairEval,
         anchor_pair: Optional[Tuple[Dict[str, Any], CodeRepairEval]],
     ) -> Optional[Tuple[Dict[str, Any], CodeRepairEval, str]]:
-        if self._is_recoverable_code_feedback(champion_feedback):
+        if self._is_recoverable_code_feedback(champion_feedback) and self._entry_has_recovery_seed_provenance(champion_entry):
             return champion_entry, champion_feedback, "champion"
-        if anchor_pair is not None and self._is_recoverable_code_feedback(anchor_pair[1]):
+        if (
+            anchor_pair is not None
+            and self._is_recoverable_code_feedback(anchor_pair[1])
+            and self._entry_has_recovery_seed_provenance(anchor_pair[0])
+        ):
             return anchor_pair[0], anchor_pair[1], "anchor"
         return None
 
@@ -1125,6 +1349,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
     def _select_code_repair_against_anchor_v44(
         self,
         *,
+        graph: UnionGraph,
         question_text: str,
         metadata: Optional[dict],
         dataset_profile: DatasetProfile,
@@ -1141,6 +1366,26 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "v4_4_budget_bucket": budget_bucket,
                 "v4_4_collapsed_class_count": 0,
             }
+
+        anchor_recoverable_but_blocked_no_provenance_count = 0
+        anchor_recovery_seed_legalized = False
+        anchor_recovery_seed_binding_kind = ""
+        anchor_recovery_seed_source_graph = ""
+        if anchor_pair is not None:
+            anchor_entry, anchor_feedback = anchor_pair
+            anchor_recoverable = self._is_recoverable_code_feedback(anchor_feedback)
+            anchor_missing_seed = anchor_recoverable and not self._entry_has_recovery_seed_provenance(anchor_entry)
+            if anchor_missing_seed:
+                anchor_recovery_seed_legalized = self._legalize_stage1_anchor_recovery_seed(
+                    graph=graph,
+                    anchor_entry=anchor_entry,
+                    metadata=metadata,
+                )
+                if anchor_recovery_seed_legalized:
+                    anchor_recovery_seed_binding_kind = str(anchor_entry.get("stage1_anchor_binding_kind", ""))
+                    anchor_recovery_seed_source_graph = str(anchor_entry.get("stage1_anchor_binding_source_graph_id", ""))
+                else:
+                    anchor_recoverable_but_blocked_no_provenance_count = 1
 
         anchor_digest = str((anchor_pair[0] if anchor_pair is not None else {}).get("digest", ""))
         classes = self._collapse_code_classes(full_pool, anchor_digest=anchor_digest)
@@ -1200,6 +1445,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 recovery_entry, recovery_feedback, recovery_target_source = recovery_target
                 recovery_target_digest = str(recovery_entry.get("digest", ""))
                 recovery_context = self._build_code_recovery_context(
+                    graph=graph,
                     turn_traces=turn_traces,
                     target_entry=recovery_entry,
                     target_feedback=recovery_feedback,
@@ -1299,6 +1545,25 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "v4_4_stage1_anchor_visible_tests_passed": int(anchor_pair[1].passed),
                 "v4_4_stage1_anchor_visible_tests_total": int(anchor_pair[1].total),
                 "v4_4_stage1_anchor_failure_kind": str(anchor_pair[1].failure_kind),
+                "v4_4_anchor_recovery_seed_legalized": bool(anchor_recovery_seed_legalized),
+                "v4_4_anchor_recovery_seed_binding_kind": anchor_recovery_seed_binding_kind,
+                "v4_4_anchor_recovery_seed_source_graph": anchor_recovery_seed_source_graph,
+                "v4_4_anchor_recoverable_but_blocked_no_provenance_count": int(
+                    anchor_recoverable_but_blocked_no_provenance_count
+                ),
+                "v4_4_candidate_provenance_coverage": (
+                    float(
+                        sum(
+                            1
+                            for entry, _ in full_pool
+                            if self._entry_has_recovery_seed_provenance(entry)
+                            or bool(entry.get("anchor_bound_node_ids"))
+                        )
+                    )
+                    / float(len(full_pool))
+                    if full_pool
+                    else 0.0
+                ),
                 "v4_4_top_classes": [
                     {
                         "class_key": self._public_class_key(tuple(item["key"])),
@@ -1712,6 +1977,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
 
         if route_family == "code_repair":
             selected, strategy, extra = self._select_code_repair_against_anchor_v44(
+                graph=graph,
                 question_text=question_text,
                 metadata=metadata,
                 dataset_profile=dataset_profile,
@@ -1741,12 +2007,12 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
 
         selected_serialized = None
         if selected is not None:
-            for item in candidates_serialized:
+            selected_serialized = self._serialize_candidate_entry(selected)
+            for index, item in enumerate(candidates_serialized):
                 if item.get("digest") == selected.get("digest"):
-                    selected_serialized = dict(item)
+                    candidates_serialized[index] = dict(selected_serialized)
                     break
-            if selected_serialized is None:
-                selected_serialized = self._serialize_candidate_entry(selected)
+            else:
                 candidates_serialized.append(dict(selected_serialized))
             self._assert_recovery_entry_invariants(selected)
 
@@ -1776,14 +2042,19 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         provenance_count = sum(1 for item in candidates if item.get("provenance"))
         selected_digest = str(self._last_v4_4_selection.get("v4_4_selected_candidate_digest", ""))
         selected_entry = next((item for item in candidates if str(item.get("digest", "")) == selected_digest), {})
+        provenance_coverage = self._last_v4_4_selection.get("v4_4_candidate_provenance_coverage")
+        if provenance_coverage is None:
+            provenance_coverage = float(provenance_count) / float(len(candidates)) if candidates else 0.0
+        recovery_subgraph_size = int(
+            len(selected_entry.get("recovery_subgraph_node_ids", ()))
+            or self._last_v4_4_selection.get("v4_4_recovery_subgraph_node_count", 0)
+        )
         return {
             "graph_faithfulness_active_edge_ratio_by_turn": edge_ratios,
             "graph_faithfulness_active_node_ratio_by_turn": node_ratios,
-            "graph_faithfulness_candidate_provenance_coverage": (
-                float(provenance_count) / float(len(candidates)) if candidates else 0.0
-            ),
+            "graph_faithfulness_candidate_provenance_coverage": float(provenance_coverage),
             "graph_faithfulness_sink_path_provenance_length": int(len(selected_entry.get("provenance", ()))),
-            "graph_faithfulness_recovery_subgraph_size": int(len(selected_entry.get("recovery_subgraph_node_ids", ()))),
+            "graph_faithfulness_recovery_subgraph_size": recovery_subgraph_size,
             "graph_faithfulness_final_answer_source_type": str(
                 selected_entry.get("candidate_bank_source")
                 or self._last_v4_4_selection.get("v4_4_selected_candidate_source", "")

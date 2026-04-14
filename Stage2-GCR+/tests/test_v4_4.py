@@ -75,6 +75,28 @@ def _recovery_branch_entry(digest: str = "repair") -> dict:
     }
 
 
+def _code_recovery_graph() -> UnionGraph:
+    nodes = {
+        "solver": UnionNode("solver", "coder", "solver", "task", ["g_high"], 3, 1.0),
+        "checker": UnionNode("checker", "verifier", "verifier", "task", ["g_high"], 2, 1.0),
+        "relay": UnionNode("relay", "router", "router", "task", ["g_high"], 2, 1.0),
+        "sink": UnionNode("sink", "summarizer", "aggregator", "task", ["g_high"], 3, 1.0),
+        "other": UnionNode("other", "coder2", "solver", "task", ["g_low"], 1, 0.4),
+    }
+    return UnionGraph(
+        nodes=nodes,
+        edges=[
+            UnionEdge("solver", "checker", "task", ["g_high"], 1, 1.0, 1.0, 1.0, 0.5, 0.5),
+            UnionEdge("checker", "relay", "task", ["g_high"], 1, 1.0, 1.0, 1.0, 0.5, 0.5),
+            UnionEdge("relay", "sink", "task", ["g_high"], 1, 1.0, 1.0, 1.0, 0.5, 0.5),
+            UnionEdge("other", "sink", "task", ["g_low"], 1, 1.0, 0.3, 0.3, 0.5, 0.5),
+        ],
+        source_topology_signatures=["g_low", "g_high"],
+        root_node_ids=["solver"],
+        sink_node_ids=["sink"],
+    )
+
+
 def test_collapse_code_classes_keeps_only_representatives():
     runtime = _runtime_stub()
     runtime._verified_rank_key = lambda entry, feedback: feedback.rank_key  # type: ignore[attr-defined]
@@ -433,7 +455,14 @@ def test_collapse_graph_classes_prefers_anchor_on_typed_tie():
 
 def test_best_code_recovery_target_prefers_recoverable_champion():
     runtime = _runtime_stub()
-    champion = {"digest": "champion", "text": "champion"}
+    champion = {
+        "digest": "champion",
+        "text": "champion",
+        "origin_node_id": "solver",
+        "origin_turn_index": 0,
+        "origin_role": "solver",
+        "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
+    }
     champion_feedback = _code_eval(passed=1, total=3, failure_kind="visible_test_failure")
     anchor_pair = (
         {"digest": "anchor", "text": "anchor"},
@@ -456,7 +485,14 @@ def test_best_code_recovery_target_falls_back_to_anchor():
     champion = {"digest": "champion", "text": "champion"}
     champion_feedback = _code_eval(passed=0, total=0, failure_kind="no_dataset_tests")
     anchor_pair = (
-        {"digest": "anchor", "text": "anchor"},
+        {
+            "digest": "anchor",
+            "text": "anchor",
+            "origin_node_id": "solver",
+            "origin_turn_index": 0,
+            "origin_role": "solver",
+            "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
+        },
         _code_eval(passed=1, total=4, failure_kind="visible_test_failure"),
     )
 
@@ -489,6 +525,24 @@ def test_best_code_recovery_target_returns_none_without_recoverable_failure():
     assert target is None
 
 
+def test_best_code_recovery_target_skips_anchor_without_seed_provenance():
+    runtime = _runtime_stub()
+    champion = {"digest": "champion", "text": "champion"}
+    champion_feedback = _code_eval(passed=0, total=0, failure_kind="no_dataset_tests")
+    anchor_pair = (
+        {"digest": "anchor", "text": "anchor", "stage1_anchor": True},
+        _code_eval(passed=1, total=4, failure_kind="visible_test_failure"),
+    )
+
+    target = runtime._best_code_recovery_target(
+        champion_entry=champion,
+        champion_feedback=champion_feedback,
+        anchor_pair=anchor_pair,
+    )
+
+    assert target is None
+
+
 def test_recovery_entry_invariant_requires_reinsert_and_provenance():
     runtime = _runtime_stub()
     branch = _recovery_branch_entry()
@@ -503,6 +557,7 @@ def test_recovery_entry_invariant_requires_reinsert_and_provenance():
 
 def test_inspector_rejects_partial_code_promotion():
     runtime = _runtime_stub()
+    graph = _code_recovery_graph()
     runtime._quality_score = lambda entry: float(entry.get("score", 0.0))  # type: ignore[attr-defined]
     runtime._review_consensus = lambda entry: float(entry.get("review", 0.0))  # type: ignore[attr-defined]
     runtime._candidate_source_label = lambda entry: str(entry.get("source", "seed"))  # type: ignore[attr-defined]
@@ -521,13 +576,24 @@ def test_inspector_rejects_partial_code_promotion():
     ]
     runtime._inspect_code_promotion = lambda **kwargs: (False, "not fixed enough")  # type: ignore[attr-defined]
 
-    anchor = {"digest": "anchor", "text": "A", "score": 0.7, "review": 0.7, "source": "anchor"}
+    anchor = {
+        "digest": "anchor",
+        "text": "A",
+        "score": 0.7,
+        "review": 0.7,
+        "source": "anchor",
+        "origin_node_id": "solver",
+        "origin_turn_index": 0,
+        "origin_role": "solver",
+        "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
+    }
     seed = {"digest": "seed", "text": "B", "score": 0.6, "review": 0.6, "source": "stage2"}
     anchor_pair = (anchor, _code_eval(passed=1, total=4, failure_kind="visible_test_failure"))
     seed_pair = (seed, _code_eval(passed=1, total=4, failure_kind="visible_test_failure"))
     runtime._verify_code_pool = lambda **kwargs: ([anchor_pair, seed_pair], anchor_pair)  # type: ignore[attr-defined]
 
     selected, _, extra = runtime._select_code_repair_against_anchor_v44(
+        graph=graph,
         question_text="q",
         metadata={},
         dataset_profile=SimpleNamespace(task_type="code_generation", name="mbpp"),
@@ -543,6 +609,7 @@ def test_inspector_rejects_partial_code_promotion():
 
 def test_inspector_allows_partial_code_promotion():
     runtime = _runtime_stub()
+    graph = _code_recovery_graph()
     runtime._quality_score = lambda entry: float(entry.get("score", 0.0))  # type: ignore[attr-defined]
     runtime._review_consensus = lambda entry: float(entry.get("review", 0.0))  # type: ignore[attr-defined]
     runtime._candidate_source_label = lambda entry: str(entry.get("source", "seed"))  # type: ignore[attr-defined]
@@ -554,13 +621,24 @@ def test_inspector_allows_partial_code_promotion():
     ]
     runtime._inspect_code_promotion = lambda **kwargs: (True, "primary failure repaired")  # type: ignore[attr-defined]
 
-    anchor = {"digest": "anchor", "text": "A", "score": 0.7, "review": 0.7, "source": "anchor"}
+    anchor = {
+        "digest": "anchor",
+        "text": "A",
+        "score": 0.7,
+        "review": 0.7,
+        "source": "anchor",
+        "origin_node_id": "solver",
+        "origin_turn_index": 0,
+        "origin_role": "solver",
+        "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
+    }
     seed = {"digest": "seed", "text": "B", "score": 0.6, "review": 0.6, "source": "stage2"}
     anchor_pair = (anchor, _code_eval(passed=1, total=4, failure_kind="visible_test_failure"))
     seed_pair = (seed, _code_eval(passed=1, total=4, failure_kind="visible_test_failure"))
     runtime._verify_code_pool = lambda **kwargs: ([anchor_pair, seed_pair], anchor_pair)  # type: ignore[attr-defined]
 
     selected, reason, extra = runtime._select_code_repair_against_anchor_v44(
+        graph=graph,
         question_text="q",
         metadata={},
         dataset_profile=SimpleNamespace(task_type="code_generation", name="mbpp"),
@@ -574,6 +652,85 @@ def test_inspector_allows_partial_code_promotion():
     assert extra["v4_4_selected_is_repair_branch"] is True
     assert extra["v4_4_inspector_approval_count"] == 1
     assert extra["v4_4_reinserted_recovery_count"] == 1
+
+
+def test_anchor_recovery_seed_is_legalized_from_best_original_graph_prior():
+    runtime = _runtime_stub()
+    graph = _code_recovery_graph()
+    runtime._quality_score = lambda entry: float(entry.get("score", 0.0))  # type: ignore[attr-defined]
+    runtime._review_consensus = lambda entry: float(entry.get("review", 0.0))  # type: ignore[attr-defined]
+    runtime._candidate_source_label = lambda entry: str(entry.get("source", "seed"))  # type: ignore[attr-defined]
+    runtime._generate_repair_branches = lambda **kwargs: []  # type: ignore[attr-defined]
+
+    anchor = {
+        "digest": "anchor",
+        "text": "def solve(x):\n    return x\n",
+        "score": 0.8,
+        "review": 0.8,
+        "source": "anchor",
+        "stage1_anchor": True,
+    }
+    anchor_pair = (anchor, _code_eval(passed=1, total=3, failure_kind="visible_test_failure"))
+    runtime._verify_code_pool = lambda **kwargs: ([anchor_pair], anchor_pair)  # type: ignore[attr-defined]
+
+    selected, reason, extra = runtime._select_code_repair_against_anchor_v44(
+        graph=graph,
+        question_text="q",
+        metadata={
+            "stage1_selected_topology_signatures": ["g_low", "g_high"],
+            "stage1_selected_topology_scores": [0.2, 0.9],
+        },
+        dataset_profile=SimpleNamespace(task_type="code_generation", name="mbpp"),
+        candidates=[],
+        anchor=anchor,
+        budget_bucket="normal",
+    )
+
+    assert selected == anchor
+    assert reason in {"v4_4_code_preserve_anchor_after_class_collapse", "v4_4_code_anchor_guard_preserve"}
+    assert extra["v4_4_anchor_recovery_seed_legalized"] is True
+    assert extra["v4_4_anchor_recovery_seed_binding_kind"] == "best_original_graph_prior"
+    assert extra["v4_4_anchor_recovery_seed_source_graph"] == "g_high"
+    assert extra["v4_4_anchor_recoverable_but_blocked_no_provenance_count"] == 0
+    assert anchor["origin_node_id"] == "solver"
+    assert anchor["stage1_anchor_binding_legalized"] is True
+    assert anchor["anchor_bound_node_ids"] == ["checker", "relay", "sink", "solver"]
+    assert anchor["anchor_bound_edge_ids"] == ["checker->relay", "relay->sink", "solver->checker"]
+    assert [item["source_graph_id"] for item in anchor["provenance"]] == ["g_high", "g_high", "g_high", "g_high"]
+
+
+def test_anchor_recovery_seed_blocked_count_is_recorded_when_prior_binding_fails():
+    runtime = _runtime_stub()
+    graph = _code_recovery_graph()
+    runtime._quality_score = lambda entry: float(entry.get("score", 0.0))  # type: ignore[attr-defined]
+    runtime._review_consensus = lambda entry: float(entry.get("review", 0.0))  # type: ignore[attr-defined]
+    runtime._candidate_source_label = lambda entry: str(entry.get("source", "seed"))  # type: ignore[attr-defined]
+
+    anchor = {
+        "digest": "anchor",
+        "text": "def solve(x):\n    return x\n",
+        "score": 0.8,
+        "review": 0.8,
+        "source": "anchor",
+        "stage1_anchor": True,
+    }
+    anchor_pair = (anchor, _code_eval(passed=1, total=3, failure_kind="visible_test_failure"))
+    runtime._verify_code_pool = lambda **kwargs: ([anchor_pair], anchor_pair)  # type: ignore[attr-defined]
+
+    selected, reason, extra = runtime._select_code_repair_against_anchor_v44(
+        graph=graph,
+        question_text="q",
+        metadata={"stage1_selected_topology_signatures": ["missing_graph"], "stage1_selected_topology_scores": [1.0]},
+        dataset_profile=SimpleNamespace(task_type="code_generation", name="mbpp"),
+        candidates=[],
+        anchor=anchor,
+        budget_bucket="normal",
+    )
+
+    assert selected == anchor
+    assert reason in {"v4_4_code_preserve_anchor_after_class_collapse", "v4_4_code_anchor_guard_preserve"}
+    assert extra["v4_4_anchor_recovery_seed_legalized"] is False
+    assert extra["v4_4_anchor_recoverable_but_blocked_no_provenance_count"] == 1
 
 
 def test_graph_faithfulness_metrics_are_logged():
