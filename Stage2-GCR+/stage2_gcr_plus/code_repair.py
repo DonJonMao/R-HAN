@@ -23,6 +23,10 @@ class CodeRepairEval:
     stdout: str = ""
     stderr: str = ""
     exec_error: str = ""
+    test_verdicts: Tuple[Dict[str, Any], ...] = ()
+    syntax_error_line: int = 0
+    syntax_error_offset: int = 0
+    syntax_error_text: str = ""
 
     @property
     def fully_passed(self) -> bool:
@@ -104,10 +108,18 @@ def evaluate_code_candidate(
     syntax_ok = False
     entry_point_ok = False
     exec_error = ""
+    syntax_error_line = 0
+    syntax_error_offset = 0
+    syntax_error_text = ""
     try:
         compile(candidate_code, "<candidate>", "exec")
         syntax_ok = True
         entry_point_ok = _entry_point_defined(candidate_code, entry_point)
+    except SyntaxError as exc:  # pragma: no cover - parser specific wording
+        exec_error = str(exc)
+        syntax_error_line = int(exc.lineno or 0)
+        syntax_error_offset = int(exc.offset or 0)
+        syntax_error_text = str(exc.text or "").rstrip("\n")
     except Exception as exc:  # pragma: no cover - parser specific wording
         exec_error = str(exc)
 
@@ -121,6 +133,9 @@ def evaluate_code_candidate(
             failure_kind="syntax_error",
             failing_examples=((exec_error or "syntax_error"),),
             exec_error=exec_error,
+            syntax_error_line=syntax_error_line,
+            syntax_error_offset=syntax_error_offset,
+            syntax_error_text=syntax_error_text,
         )
     if not entry_point_ok:
         return CodeRepairEval(
@@ -227,14 +242,22 @@ def evaluate_code_candidate(
             results = []
         passed = 0
         failures: List[str] = []
+        verdicts: List[Dict[str, Any]] = []
         for item in results:
             if not isinstance(item, dict):
                 continue
+            expr = str(item.get("expr", "")).strip()
+            error = str(item.get("error", "")).strip()
+            verdict = {
+                "expr": expr,
+                "passed": bool(item.get("passed", False)),
+            }
+            if error:
+                verdict["error"] = error
+            verdicts.append(verdict)
             if bool(item.get("passed", False)):
                 passed += 1
                 continue
-            expr = str(item.get("expr", "")).strip()
-            error = str(item.get("error", "")).strip()
             if len(failures) < max_failed_examples:
                 failures.append(f"{expr} -> {error or 'AssertionError'}")
         total = max(1, len(results))
@@ -248,6 +271,7 @@ def evaluate_code_candidate(
             failing_examples=tuple(failures),
             stdout=stdout,
             stderr=stderr,
+            test_verdicts=tuple(verdicts),
         )
 
     passed = bool(payload.get("passed", False))
@@ -262,6 +286,13 @@ def evaluate_code_candidate(
         failing_examples=tuple([error] if error else []),
         stdout=stdout,
         stderr=stderr,
+        test_verdicts=(
+            {
+                "expr": f"check({entry_point})" if entry_point else "dataset_test",
+                "passed": bool(passed),
+                **({"error": error} if error else {}),
+            },
+        ),
     )
 
 
@@ -441,6 +472,11 @@ def build_failure_card(
             "first_failed_test": first_failed,
             "exec_error": str(evaluation.exec_error or ""),
             "top_traceback_frame": traceback_frame,
+            "syntax_error": {
+                "line": int(evaluation.syntax_error_line or 0),
+                "offset": int(evaluation.syntax_error_offset or 0),
+                "text": str(evaluation.syntax_error_text or ""),
+            },
         },
         "candidate_state": {
             "current_code_digest": str(current.get("digest", "")),
@@ -461,12 +497,21 @@ def build_locus_card(
     entry_point = str((metadata or {}).get("entry_point") or "").strip()
     traceback_frame = _parse_traceback_frame(evaluation.stderr, evaluation.stdout, evaluation.exec_error, *(evaluation.failing_examples[:1]))
     line_no = int(traceback_frame.get("line", 0) or 0)
+    if line_no <= 0 and str(evaluation.failure_kind or "").strip() == "syntax_error":
+        line_no = int(evaluation.syntax_error_line or 0)
     evidence: List[str] = []
     if traceback_frame:
         evidence.append(
             f"top traceback hits line {line_no}"
             + (f" in {traceback_frame.get('function')}" if traceback_frame.get("function") else "")
         )
+    elif line_no > 0 and str(evaluation.failure_kind or "").strip() == "syntax_error":
+        syntax_bits = [f"syntax error at line {line_no}"]
+        if int(evaluation.syntax_error_offset or 0) > 0:
+            syntax_bits.append(f"offset {int(evaluation.syntax_error_offset)}")
+        if str(evaluation.syntax_error_text or "").strip():
+            syntax_bits.append(f"text={str(evaluation.syntax_error_text).strip()}")
+        evidence.append(", ".join(syntax_bits))
     if evaluation.failing_examples:
         evidence.append(f"first failing path: {evaluation.failing_examples[0]}")
     if not code:
@@ -483,16 +528,21 @@ def build_locus_card(
     try:
         tree = ast.parse(code)
     except SyntaxError:
-        end_line = min(max(len(lines), 1), 3)
+        if line_no > 0:
+            start_line = min(max(line_no, 1), max(len(lines), 1))
+            end_line = start_line
+        else:
+            start_line = 1
+            end_line = min(max(len(lines), 1), 3)
         return {
             "scope_kind": "file_span",
             "function": entry_point,
-            "line_start": 1,
+            "line_start": start_line,
             "line_end": end_line,
             "ast_kind": [],
             "involved_symbols": [],
             "evidence": evidence or ["syntax error prevents AST localization"],
-            "editable_region_id": f"{entry_point or 'module'}:1-{end_line}",
+            "editable_region_id": f"{entry_point or 'module'}:{start_line}-{end_line}",
         }
 
     function_node = _find_enclosing_function(tree, line_no, entry_point)
@@ -553,10 +603,16 @@ def build_preserve_card(
                         signature = _function_signature_text(node) or signature
                     else:
                         helper_defs.append(node.name)
-    behavior_invariants = [
-        f"visible test #{index + 1} remains passing"
-        for index in range(max(0, int(evaluation.passed)))
+    passing_verdicts = [
+        dict(item)
+        for item in evaluation.test_verdicts
+        if isinstance(item, dict) and bool(item.get("passed", False))
     ]
+    behavior_invariants: List[str] = []
+    for item in passing_verdicts:
+        expr = str(item.get("expr", "")).strip()
+        if expr:
+            behavior_invariants.append(f"{expr} remains passing")
     frozen_regions: List[str] = []
     if imports:
         frozen_regions.append("imports")
@@ -576,6 +632,7 @@ def build_preserve_card(
             "function_name": entry_point,
         },
         "behavior_invariants": behavior_invariants,
+        "passing_tests": passing_verdicts,
         "frozen_regions": frozen_regions,
         "disallowed_changes": [
             "rename entry point",
@@ -583,6 +640,19 @@ def build_preserve_card(
             "change return type contract",
         ],
     }
+
+
+def _entry_function_signature(code: str, entry_point: str) -> str:
+    if not code or not entry_point:
+        return ""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return ""
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == entry_point:
+            return _function_signature_text(node)
+    return ""
 
 
 def apply_local_edit_artifact(
@@ -636,6 +706,13 @@ def apply_local_edit_artifact(
     for helper_name in preserve_card.get("must_keep", {}).get("helper_defs", ()):
         if str(helper_name).strip() and not re.search(rf"def\s+{re.escape(str(helper_name).strip())}\s*\(", patched_code):
             return None, "helper_removed"
+    expected_signature = str(
+        preserve_card.get("entry_contract", {}).get("signature")
+        or _entry_function_signature(code, entry_point)
+    ).strip()
+    actual_signature = _entry_function_signature(patched_code, entry_point).strip()
+    if expected_signature and actual_signature and actual_signature != expected_signature:
+        return None, "entry_signature_changed"
     try:
         compile(patched_code, "<patched>", "exec")
     except Exception:

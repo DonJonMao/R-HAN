@@ -24,6 +24,10 @@ def _code_eval(
     syntax_ok: bool = True,
     entry_point_ok: bool = True,
     failure_kind: str = "",
+    test_verdicts=(),
+    syntax_error_line: int = 0,
+    syntax_error_offset: int = 0,
+    syntax_error_text: str = "",
 ) -> CodeRepairEval:
     return CodeRepairEval(
         code_text="def solve(x):\n    return x\n",
@@ -33,6 +37,10 @@ def _code_eval(
         total=total,
         failure_kind=failure_kind,
         failing_examples=(),
+        test_verdicts=tuple(test_verdicts),
+        syntax_error_line=syntax_error_line,
+        syntax_error_offset=syntax_error_offset,
+        syntax_error_text=syntax_error_text,
     )
 
 
@@ -260,6 +268,90 @@ def test_local_edit_artifact_replaces_only_editable_region():
     assert patched is not None
     assert "def solve(nums):" in patched
     assert "x = nums[0] if nums else None" in patched
+
+
+def test_preserve_card_tracks_concrete_passing_tests():
+    preserve_card = build_preserve_card(
+        "def solve(x):\n    return x + 1\n",
+        _code_eval(
+            passed=2,
+            total=3,
+            failure_kind="visible_test_failure",
+            test_verdicts=(
+                {"expr": "assert solve(1) == 2", "passed": True},
+                {"expr": "assert solve(2) == 3", "passed": True},
+                {"expr": "assert solve(0) == 1", "passed": False, "error": "AssertionError()"},
+            ),
+        ),
+        metadata={"entry_point": "solve"},
+    )
+
+    assert preserve_card["behavior_invariants"] == [
+        "assert solve(1) == 2 remains passing",
+        "assert solve(2) == 3 remains passing",
+    ]
+    assert len(preserve_card["passing_tests"]) == 2
+
+
+def test_syntax_error_locus_uses_compiler_line_not_file_head_fallback():
+    broken_code = "def solve(x):\n    if x > 0:\n        return (x + 1\n"
+    feedback = CodeRepairEval(
+        code_text=broken_code,
+        syntax_ok=False,
+        entry_point_ok=False,
+        passed=0,
+        total=0,
+        failure_kind="syntax_error",
+        failing_examples=("SyntaxError: '(' was never closed",),
+        exec_error="'(' was never closed (<candidate>, line 3)",
+        syntax_error_line=3,
+        syntax_error_offset=16,
+        syntax_error_text="        return (x + 1",
+    )
+
+    failure_card = build_failure_card(feedback, metadata={"entry_point": "solve"})
+    locus_card = build_locus_card(broken_code, feedback, metadata={"entry_point": "solve"})
+
+    assert failure_card["symptom"]["syntax_error"]["line"] == 3
+    assert locus_card["line_start"] == 3
+    assert locus_card["line_end"] == 3
+    assert "syntax error at line 3" in locus_card["evidence"][0]
+
+
+def test_local_edit_artifact_rejects_entry_signature_change():
+    text = "def solve(x):\n    return x\n"
+    locus_card = {
+        "editable_region_id": "solve:1-1",
+        "function": "solve",
+        "line_start": 1,
+        "line_end": 1,
+    }
+    preserve_card = build_preserve_card(
+        text,
+        _code_eval(passed=0, total=1, failure_kind="visible_test_failure"),
+        metadata={"entry_point": "solve"},
+    )
+
+    patched, reason = apply_local_edit_artifact(
+        text,
+        {
+            "edit_scope": {
+                "editable_region_id": "solve:1-1",
+                "function": "solve",
+                "line_start": 1,
+                "line_end": 1,
+            },
+            "edit_op": "replace_span",
+            "replacement_code": ["def solve(x, y):"],
+            "why_this_edit": "illegally changes signature",
+        },
+        locus_card=locus_card,
+        preserve_card=preserve_card,
+        metadata={"entry_point": "solve"},
+    )
+
+    assert patched is None
+    assert reason == "entry_signature_changed"
 
 
 def test_sparsemax_support_set_keeps_all_positive_support_edges():
@@ -995,8 +1087,65 @@ def test_generate_repair_branches_runs_diagnose_patch_self_check(monkeypatch):
     assert branch_entry["repair_plan"] == "replace the return line only"
     assert branch_entry["repair_edit_artifact"]["edit_op"] == "replace_span"
     assert branch_entry["repair_delta_prediction"]["expected_verifier_delta"]["passed_delta"] == 1
+    assert branch_entry["repair_self_check_repaired"] == "yes"
     assert branch_entry["repair_self_check_drift"] == "no"
     assert branch_entry["repair_delta_match"] == 1.0
+
+
+def test_code_recovery_logs_artifact_failure_metrics():
+    runtime = _runtime_stub()
+    graph = _code_recovery_graph()
+    runtime._quality_score = lambda entry: float(entry.get("score", 0.0))  # type: ignore[attr-defined]
+    runtime._review_consensus = lambda entry: float(entry.get("review", 0.0))  # type: ignore[attr-defined]
+    runtime._candidate_source_label = lambda entry: str(entry.get("source", "seed"))  # type: ignore[attr-defined]
+
+    anchor = {
+        "digest": "anchor",
+        "text": "def solve(x):\n    return x\n",
+        "score": 0.8,
+        "review": 0.8,
+        "source": "anchor",
+        "stage1_anchor": True,
+        "origin_node_id": "solver",
+        "origin_turn_index": 0,
+        "origin_role": "solver",
+        "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
+    }
+    seed = {
+        "digest": "seed",
+        "text": "def solve(x):\n    return x\n",
+        "score": 0.7,
+        "review": 0.7,
+        "source": "stage2",
+        "origin_node_id": "solver",
+        "origin_turn_index": 0,
+        "origin_role": "solver",
+        "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
+    }
+    anchor_pair = (anchor, _code_eval(passed=1, total=3, failure_kind="visible_test_failure"))
+    seed_pair = (seed, _code_eval(passed=2, total=3, failure_kind="visible_test_failure"))
+    runtime._verify_code_pool = lambda **kwargs: ([anchor_pair, seed_pair], anchor_pair)  # type: ignore[attr-defined]
+    runtime._generate_repair_branches = lambda **kwargs: kwargs["artifact_error_counts"].update(  # type: ignore[attr-defined]
+        {"invalid_artifact": 2, "entry_signature_changed": 1}
+    ) or []
+
+    selected, reason, extra = runtime._select_code_repair_against_anchor_v44(
+        graph=graph,
+        question_text="q",
+        metadata={},
+        dataset_profile=SimpleNamespace(task_type="code_generation", name="mbpp"),
+        candidates=[seed],
+        anchor=anchor,
+        budget_bucket="normal",
+    )
+
+    assert selected == seed
+    assert reason == "v4_4_code_override_verified_class"
+    assert extra["v4_4_repair_artifact_failure_total"] == 3
+    assert extra["v4_4_repair_artifact_failure_counts"] == {
+        "entry_signature_changed": 1,
+        "invalid_artifact": 2,
+    }
 
 
 def test_code_recovery_loop_reinserts_best_improving_branch():

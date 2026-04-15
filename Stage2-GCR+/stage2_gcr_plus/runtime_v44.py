@@ -128,6 +128,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry.setdefault("repair_self_check_drift", "")
         entry.setdefault("repair_self_check_risk", "")
         entry.setdefault("repair_self_check_rationale", "")
+        entry.setdefault("repair_artifact_error", "")
         entry.setdefault("repair_failure_card", {})
         entry.setdefault("repair_locus_card", {})
         entry.setdefault("repair_preserve_card", {})
@@ -176,6 +177,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "repair_self_check_drift": str(entry.get("repair_self_check_drift", "")),
                 "repair_self_check_risk": str(entry.get("repair_self_check_risk", "")),
                 "repair_self_check_rationale": str(entry.get("repair_self_check_rationale", "")),
+                "repair_artifact_error": str(entry.get("repair_artifact_error", "")),
                 "repair_failure_card": dict(entry.get("repair_failure_card", {})),
                 "repair_locus_card": dict(entry.get("repair_locus_card", {})),
                 "repair_preserve_card": dict(entry.get("repair_preserve_card", {})),
@@ -1331,17 +1333,30 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         return "\n".join(snippet)
 
     @staticmethod
-    def _read_only_context_view(current_entry: Dict[str, Any], preserve_card: Dict[str, Any]) -> str:
+    def _read_only_context_view(
+        current_entry: Dict[str, Any],
+        preserve_card: Dict[str, Any],
+        locus_card: Dict[str, Any],
+    ) -> str:
         code = MultiFidelityEvaluator._extract_python_code(str(current_entry.get("text", "")))
         lines = code.splitlines() if code else []
-        preview = "\n".join(lines[: min(len(lines), 16)])
+        start_line = max(1, int(locus_card.get("line_start", 1) or 1))
+        end_line = max(start_line, int(locus_card.get("line_end", start_line) or start_line))
+        context_start = max(1, start_line - 4)
+        context_end = min(len(lines), end_line + 4)
+        preview = "\n".join(
+            f"{index + 1}: {line}"
+            for index, line in enumerate(lines[context_start - 1 : context_end], start=context_start - 1)
+        )
         must_keep = dict(preserve_card.get("must_keep", {}))
         contract = dict(preserve_card.get("entry_contract", {}))
+        passing_tests = list(preserve_card.get("passing_tests", ()))
         return (
             f"signature: {str(contract.get('signature', '')).strip() or str(contract.get('name', '')).strip()}\n"
             f"imports: {json.dumps(list(must_keep.get('imports', ())), ensure_ascii=False)}\n"
             f"helper defs: {json.dumps(list(must_keep.get('helper_defs', ())), ensure_ascii=False)}\n"
-            f"surrounding code preview:\n{preview}"
+            f"passing tests to preserve: {json.dumps(passing_tests, ensure_ascii=False)}\n"
+            f"locus-centered context ({context_start}-{context_end}):\n{preview}"
         ).strip()
 
     @staticmethod
@@ -1485,7 +1500,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             f"Failure card:\n{json.dumps(failure_card, ensure_ascii=False, indent=2)}\n\n"
             f"Locus card:\n{json.dumps(locus_card, ensure_ascii=False, indent=2)}\n\n"
             f"Editable region:\n{self._editable_region_view(current_entry, locus_card)}\n\n"
-            f"Read-only context:\n{self._read_only_context_view(current_entry, preserve_card)}\n\n"
+            f"Read-only context:\n{self._read_only_context_view(current_entry, preserve_card, locus_card)}\n\n"
             f"Preserve contract:\n{preserve_lines or '- preserve frozen regions and passing tests'}\n\n"
             f"Causal diagnosis:\n{json.dumps(diagnosis, ensure_ascii=False, indent=2)}\n\n"
             "Return exactly one JSON object with keys:\n"
@@ -1754,6 +1769,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         recovery_subgraph_edge_ids: Optional[Sequence[str]] = None,
         trigger_verifier_snapshot: Optional[Dict[str, Any]] = None,
         repair_operator_type: str = "",
+        artifact_error_counts: Optional[Dict[str, int]] = None,
     ) -> List[Tuple[Dict[str, Any], CodeRepairEval]]:
         branches: List[Tuple[Dict[str, Any], CodeRepairEval]] = []
         seen: set[str] = {str(current_entry.get("text", "")).strip()}
@@ -1812,7 +1828,12 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 preserve_card=preserve_card,
                 metadata=metadata,
             )
-            if not patched_code or patched_code in seen:
+            if not patched_code:
+                if artifact_error_counts is not None:
+                    reason = str(patch_error or "unknown_artifact_error")
+                    artifact_error_counts[reason] = int(artifact_error_counts.get(reason, 0)) + 1
+                continue
+            if patched_code in seen:
                 continue
             seen.add(patched_code)
             delta_prediction = self._self_check_repair_branch(
@@ -1853,10 +1874,11 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             verified["repair_edit_artifact"] = dict(edit_artifact)
             verified["repair_delta_prediction"] = dict(delta_prediction)
             verified["repair_delta_match"] = float(delta_match)
-            verified["repair_self_check_repaired"] = "predicted"
+            verified["repair_self_check_repaired"] = "yes" if verified_feedback.dominates(feedback) else "no"
             verified["repair_self_check_drift"] = str(delta_prediction.get("drift", ""))
             verified["repair_self_check_risk"] = str(len(delta_prediction.get("regression_risk", ())))
             verified["repair_self_check_rationale"] = str(delta_prediction.get("rationale", "") or patch_error)
+            verified["repair_artifact_error"] = ""
             verified["repair_trace"] = list(current_entry.get("repair_trace", ())) + [
                 self._repair_trace_record(
                     diagnosis=diagnosis,
@@ -1893,6 +1915,8 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "v4_4_execution_mode": "bypass",
                 "v4_4_budget_bucket": budget_bucket,
                 "v4_4_collapsed_class_count": 0,
+                "v4_4_repair_artifact_failure_total": 0,
+                "v4_4_repair_artifact_failure_counts": {},
             }
 
         anchor_recoverable_but_blocked_no_provenance_count = 0
@@ -1948,6 +1972,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             restart_count = 0
             inspector_approval_count = 0
             reinserted_recovery_count = 0
+            artifact_failure_counts: Dict[str, int] = {}
             recovery_target_source = "none"
             recovery_target_digest = ""
             recovery_subgraph_node_count = 0
@@ -1996,6 +2021,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                         recovery_subgraph_edge_ids=recovery_context["recovery_subgraph_edge_ids"],
                         trigger_verifier_snapshot=recovery_context["trigger_verifier_snapshot"],
                         repair_operator_type="code_repair_patch",
+                        artifact_error_counts=artifact_failure_counts,
                     )
                     repair_branch_count += len(source_branches)
                     best_source_branch: Optional[Tuple[Dict[str, Any], CodeRepairEval]] = None
@@ -2077,6 +2103,10 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "v4_4_restart_count": int(restart_count),
                 "v4_4_inspector_approval_count": int(inspector_approval_count),
                 "v4_4_reinserted_recovery_count": int(reinserted_recovery_count),
+                "v4_4_repair_artifact_failure_total": int(sum(artifact_failure_counts.values())),
+                "v4_4_repair_artifact_failure_counts": {
+                    str(key): int(value) for key, value in sorted(artifact_failure_counts.items())
+                },
                 "v4_4_recovery_target_source": recovery_target_source,
                 "v4_4_recovery_target_digest": recovery_target_digest,
                 "v4_4_recovery_subgraph_node_count": int(recovery_subgraph_node_count),
@@ -2142,6 +2172,8 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             "v4_4_restart_count": 0,
             "v4_4_inspector_approval_count": 0,
             "v4_4_reinserted_recovery_count": 0,
+            "v4_4_repair_artifact_failure_total": 0,
+            "v4_4_repair_artifact_failure_counts": {},
             "v4_4_recovery_target_source": "none",
             "v4_4_recovery_target_digest": "",
             "v4_4_recovery_subgraph_node_count": 0,
