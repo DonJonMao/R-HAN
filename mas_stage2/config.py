@@ -25,6 +25,7 @@ class Stage2GraphConfig:
     soft_prune_threshold: float = 0.38
     hard_prune_after_turn: int = 4
     min_incoming_edges: int = 1
+    support_set_mode: str = "topk"
     controller_role_boost: float = 0.18
     challenge_penalty: float = 0.22
     support_bonus: float = 0.16

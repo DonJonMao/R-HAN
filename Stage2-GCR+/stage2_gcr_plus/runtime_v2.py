@@ -343,6 +343,19 @@ class Stage2RuntimeV2(Stage2Runtime):
         keep_k = soft_top_k - int(round(progress * span))
         return max(self.config.graph.min_incoming_edges, min(incoming_count, keep_k))
 
+    @staticmethod
+    def _sparsemax_support(score_tensor: torch.Tensor) -> torch.Tensor:
+        scores = score_tensor.reshape(-1)
+        if scores.numel() == 0:
+            return scores
+        sorted_scores, _ = torch.sort(scores, descending=True)
+        cumulative = torch.cumsum(sorted_scores, dim=0)
+        ks = torch.arange(1, scores.numel() + 1, device=scores.device, dtype=scores.dtype)
+        support = 1 + ks * sorted_scores > cumulative
+        support_size = int(torch.nonzero(support, as_tuple=False)[-1].item()) + 1
+        tau = (cumulative[support_size - 1] - 1.0) / float(support_size)
+        return torch.clamp(scores - tau, min=0.0)
+
     def _activate_edges_v2(
         self,
         graph: UnionGraph,
@@ -357,6 +370,7 @@ class Stage2RuntimeV2(Stage2Runtime):
         scored_by_dst: Dict[str, List[Tuple[torch.Tensor, object, List[float]]]] = {}
         score_lookup: Dict[str, torch.Tensor] = {}
         feature_lookup: Dict[str, List[float]] = {}
+        sparse_support_lookup: Dict[str, float] = {}
         for edge in task_edges:
             src_state = prepared_states.get(edge.src)
             dst_state = prepared_states.get(edge.dst)
@@ -381,11 +395,19 @@ class Stage2RuntimeV2(Stage2Runtime):
         active_ids: set[str] = set()
         threshold_scale = 0.85 if (turn_index + 1) < self.config.graph.hard_prune_after_turn else 1.0
         dynamic_threshold = float(self.config.graph.soft_prune_threshold) * threshold_scale
+        support_set_mode = str(getattr(self.config.graph, "support_set_mode", "topk")).strip().lower()
         for dst, items in scored_by_dst.items():
             items.sort(key=lambda item: float(item[0].detach().cpu().item()), reverse=True)
             keep_k = self._turn_keep_k(len(items), turn_index=turn_index)
             score_tensor = torch.stack([item[0].reshape(()) for item in items])
-            if self._current_learn:
+            if support_set_mode == "sparsemax":
+                sparse_support = self._sparsemax_support(score_tensor)
+                chosen_indices = [index for index, weight in enumerate(sparse_support.tolist()) if float(weight) > 0.0]
+                if len(chosen_indices) < self.config.graph.min_incoming_edges:
+                    chosen_indices = list(range(min(len(items), max(1, self.config.graph.min_incoming_edges))))
+                for index, weight in enumerate(sparse_support.tolist()):
+                    sparse_support_lookup[self._edge_id(items[index][1])] = float(weight)
+            elif self._current_learn:
                 chosen_indices, log_prob, entropy = self._choose_indices(score_tensor, max_items=keep_k, sample=True)
                 if log_prob is not None:
                     self._pending_policy_log_probs.append(log_prob)
@@ -396,7 +418,9 @@ class Stage2RuntimeV2(Stage2Runtime):
             for rank, index in enumerate(chosen_indices):
                 gate_value, edge, _ = items[index]
                 score = float(gate_value.detach().cpu().item())
-                if rank < self.config.graph.min_incoming_edges or score >= dynamic_threshold:
+                if support_set_mode == "sparsemax":
+                    active_ids.add(self._edge_id(edge))
+                elif rank < self.config.graph.min_incoming_edges or score >= dynamic_threshold:
                     active_ids.add(self._edge_id(edge))
 
         activations: List[EdgeActivation] = []
@@ -414,6 +438,8 @@ class Stage2RuntimeV2(Stage2Runtime):
                     metadata={
                         "edge_features": list(feature_lookup.get(edge_id, [])),
                         "graph_gate": score,
+                        "support_set_mode": support_set_mode,
+                        "support_set_weight": float(sparse_support_lookup.get(edge_id, 0.0)),
                         "turn_index": turn_index,
                     },
                 )

@@ -113,6 +113,13 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry.setdefault("stage1_anchor_binding_source_graph_id", "")
         entry.setdefault("anchor_bound_node_ids", [])
         entry.setdefault("anchor_bound_edge_ids", [])
+        entry.setdefault("repair_patch_locus", "")
+        entry.setdefault("repair_preserve_constraints", [])
+        entry.setdefault("repair_plan", "")
+        entry.setdefault("repair_self_check_repaired", "")
+        entry.setdefault("repair_self_check_drift", "")
+        entry.setdefault("repair_self_check_risk", "")
+        entry.setdefault("repair_self_check_rationale", "")
 
     @staticmethod
     def _stable_entry_tiebreak(entry: Dict[str, Any]) -> Tuple[int, str]:
@@ -147,6 +154,13 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "stage1_anchor_binding_source_graph_id": str(entry.get("stage1_anchor_binding_source_graph_id", "")),
                 "anchor_bound_node_ids": list(entry.get("anchor_bound_node_ids", ())),
                 "anchor_bound_edge_ids": list(entry.get("anchor_bound_edge_ids", ())),
+                "repair_patch_locus": str(entry.get("repair_patch_locus", "")),
+                "repair_preserve_constraints": list(entry.get("repair_preserve_constraints", ())),
+                "repair_plan": str(entry.get("repair_plan", "")),
+                "repair_self_check_repaired": str(entry.get("repair_self_check_repaired", "")),
+                "repair_self_check_drift": str(entry.get("repair_self_check_drift", "")),
+                "repair_self_check_risk": str(entry.get("repair_self_check_risk", "")),
+                "repair_self_check_rationale": str(entry.get("repair_self_check_rationale", "")),
             }
         )
         return payload
@@ -1260,6 +1274,168 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         rationale = str(parsed.get("rationale", "")).strip()
         return repaired and not drift, rationale
 
+    def _fallback_repair_plan(
+        self,
+        *,
+        feedback: CodeRepairEval,
+        metadata: Optional[dict],
+    ) -> Dict[str, Any]:
+        entry_point = str((metadata or {}).get("entry_point") or "").strip()
+        preserve: List[str] = []
+        if entry_point:
+            preserve.append(f"keep entry point `{entry_point}`")
+        if feedback.syntax_ok:
+            preserve.append("preserve executable Python structure")
+        if feedback.entry_point_ok:
+            preserve.append("preserve required function signature")
+        if feedback.passed > 0:
+            preserve.append("preserve already passing visible tests")
+        return {
+            "patch_locus": self._code_patch_locus(feedback),
+            "preserve_constraints": preserve,
+            "patch_plan": "Patch only the failing locus, preserve passing behavior, and avoid unrelated rewrites.",
+        }
+
+    def _diagnose_code_repair_plan(
+        self,
+        *,
+        question_text: str,
+        metadata: Optional[dict],
+        dataset_profile: DatasetProfile,
+        current_entry: Dict[str, Any],
+        feedback: CodeRepairEval,
+    ) -> Dict[str, Any]:
+        fallback = self._fallback_repair_plan(feedback=feedback, metadata=metadata)
+        failure_summary = build_failure_summary(
+            feedback,
+            metadata=metadata,
+            max_examples=int(self.config.repair_max_failed_examples),
+        )
+        entry_point = str((metadata or {}).get("entry_point") or "").strip()
+        user_prompt = (
+            "You are diagnosing a code repair before generating any patch.\n\n"
+            f"Question:\n{render_question_text(question_text, metadata=metadata)}\n\n"
+            f"Current code:\n{str(current_entry.get('text', '')).strip()}\n\n"
+            f"Verifier summary:\n{failure_summary}\n\n"
+            "Return exactly three lines:\n"
+            "PATCH_LOCUS: <primary bug locus>\n"
+            "PRESERVE: <constraint 1 || constraint 2 || constraint 3>\n"
+            "PLAN: <short patch plan>\n"
+        )
+        if entry_point:
+            user_prompt += f"\nRequired entry point: {entry_point}\n"
+        raw_output = self.evaluator._cached_chat(
+            [
+                {"role": "system", "content": "You produce compact repair plans for executable Python patches."},
+                {"role": "user", "content": user_prompt},
+            ],
+            runtime=self.evaluator._resolve_runtime("tier2", dataset_profile),
+        )
+        parsed = self._parse_tagged_output(raw_output)
+        patch_locus = str(parsed.get("patch_locus", "")).strip() or str(fallback["patch_locus"])
+        preserve_raw = str(parsed.get("preserve", "")).strip()
+        preserve_constraints = [item.strip() for item in preserve_raw.split("||") if item.strip()]
+        if not preserve_constraints:
+            preserve_constraints = list(fallback["preserve_constraints"])
+        patch_plan = str(parsed.get("plan", "")).strip() or str(fallback["patch_plan"])
+        return {
+            "patch_locus": patch_locus,
+            "preserve_constraints": preserve_constraints,
+            "patch_plan": patch_plan,
+        }
+
+    def _build_code_patch_prompt(
+        self,
+        *,
+        question_text: str,
+        metadata: Optional[dict],
+        current_entry: Dict[str, Any],
+        feedback: CodeRepairEval,
+        repair_plan: Dict[str, Any],
+        repair_source_label: str,
+    ) -> str:
+        failure_summary = build_failure_summary(
+            feedback,
+            metadata=metadata,
+            max_examples=int(self.config.repair_max_failed_examples),
+        )
+        preserve_constraints = list(repair_plan.get("preserve_constraints", ()))
+        preserve_text = "\n".join(f"- {item}" for item in preserve_constraints) or "- Preserve required entry point and passing behavior."
+        return (
+            "You are patching a Python solution using a fixed repair plan.\n\n"
+            f"Question:\n{render_question_text(question_text, metadata=metadata)}\n\n"
+            f"Recovery source: {repair_source_label}\n\n"
+            f"Current code:\n{str(current_entry.get('text', '')).strip()}\n\n"
+            f"Verifier summary:\n{failure_summary}\n\n"
+            f"Primary patch locus: {str(repair_plan.get('patch_locus', '')).strip()}\n\n"
+            f"Patch plan:\n{str(repair_plan.get('patch_plan', '')).strip()}\n\n"
+            f"Preserve constraints:\n{preserve_text}\n\n"
+            "Requirements:\n"
+            "- Return only executable Python code.\n"
+            "- Follow the patch plan; do not free-rewrite unrelated logic.\n"
+            "- Fix the primary patch locus first.\n"
+            "- Preserve already passing behavior whenever possible.\n"
+        )
+
+    def _self_check_repair_branch(
+        self,
+        *,
+        question_text: str,
+        metadata: Optional[dict],
+        dataset_profile: DatasetProfile,
+        current_entry: Dict[str, Any],
+        repaired_entry: Dict[str, Any],
+        repair_plan: Dict[str, Any],
+    ) -> Dict[str, str]:
+        if not bool(getattr(self.config, "repair_self_check_enabled", True)):
+            return {"repaired": "", "drift": "", "risk": "", "rationale": ""}
+        user_prompt = (
+            "You are doing a lightweight self-check on a proposed code patch.\n\n"
+            f"Question:\n{render_question_text(question_text, metadata=metadata)}\n\n"
+            f"Original code:\n{str(current_entry.get('text', '')).strip()}\n\n"
+            f"Patched code:\n{str(repaired_entry.get('text', '')).strip()}\n\n"
+            f"Primary patch locus: {str(repair_plan.get('patch_locus', '')).strip()}\n"
+            f"Patch plan: {str(repair_plan.get('patch_plan', '')).strip()}\n\n"
+            "Return exactly four lines:\n"
+            "PATCH_OK: yes|no\n"
+            "DRIFT: yes|no\n"
+            "RISK: low|medium|high\n"
+            "RATIONALE: <short note>\n"
+        )
+        raw_output = self.evaluator._cached_chat(
+            [
+                {"role": "system", "content": "You provide concise risk notes for code patches."},
+                {"role": "user", "content": user_prompt},
+            ],
+            runtime=self.evaluator._resolve_runtime("tier2", dataset_profile),
+        )
+        parsed = self._parse_tagged_output(raw_output)
+        return {
+            "repaired": str(parsed.get("patch_ok", "")).strip().lower(),
+            "drift": str(parsed.get("drift", "")).strip().lower(),
+            "risk": str(parsed.get("risk", "")).strip().lower(),
+            "rationale": str(parsed.get("rationale", "")).strip(),
+        }
+
+    @staticmethod
+    def _repair_self_check_sort_key(entry: Dict[str, Any]) -> Tuple[int, int, int, str]:
+        repaired = str(entry.get("repair_self_check_repaired", "")).strip().lower() == "yes"
+        drift = str(entry.get("repair_self_check_drift", "")).strip().lower() == "yes"
+        risk = str(entry.get("repair_self_check_risk", "")).strip().lower()
+        risk_rank = {"low": 2, "medium": 1, "high": 0}.get(risk, -1)
+        return int(repaired), int(not drift), int(risk_rank), str(entry.get("digest", ""))
+
+    def _approved_branch_sort_key(
+        self,
+        entry: Dict[str, Any],
+        feedback: CodeRepairEval,
+    ) -> Tuple[Any, ...]:
+        return (
+            self._verified_rank_key(entry, feedback),
+            self._repair_self_check_sort_key(entry),
+            self._stable_entry_tiebreak(entry),
+        )
+
     @staticmethod
     def _is_recoverable_code_feedback(feedback: CodeRepairEval) -> bool:
         failure_kind = str(feedback.failure_kind or "").strip()
@@ -1282,6 +1458,50 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         ):
             return anchor_pair[0], anchor_pair[1], "anchor"
         return None
+
+    def _code_recovery_loop_caps(self, execution_mode: str) -> Tuple[int, int]:
+        if execution_mode == "lean":
+            return 1, 1
+        return max(1, int(self.config.repair_rounds)), max(1, int(self.config.repair_seed_top_k))
+
+    def _collect_code_recovery_sources(
+        self,
+        *,
+        classes: Sequence[Dict[str, Any]],
+        current_entry: Dict[str, Any],
+        current_feedback: CodeRepairEval,
+        anchor_pair: Optional[Tuple[Dict[str, Any], CodeRepairEval]],
+        source_cap: int,
+    ) -> List[Tuple[Dict[str, Any], CodeRepairEval, str]]:
+        candidates: List[Tuple[Dict[str, Any], CodeRepairEval, str]] = []
+        seen: set[str] = set()
+
+        def maybe_add(entry: Dict[str, Any], feedback: CodeRepairEval, label: str) -> None:
+            digest = str(entry.get("digest", ""))
+            if digest in seen:
+                return
+            if not self._is_recoverable_code_feedback(feedback):
+                return
+            if not self._entry_has_recovery_seed_provenance(entry):
+                return
+            seen.add(digest)
+            candidates.append((entry, feedback, label))
+
+        maybe_add(current_entry, current_feedback, "checkpoint")
+        if anchor_pair is not None:
+            maybe_add(anchor_pair[0], anchor_pair[1], "anchor")
+        for item in classes:
+            maybe_add(item["representative"], item["feedback"], "class_representative")
+
+        if not candidates:
+            return []
+        primary = candidates[0]
+        remainder = candidates[1:]
+        remainder.sort(
+            key=lambda item: self._approved_branch_sort_key(item[0], item[1]),
+            reverse=True,
+        )
+        return [primary] + remainder[: max(0, int(source_cap) - 1)]
 
     def _code_mode(
         self,
@@ -1345,6 +1565,87 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         if surviving:
             return self._apply_budget_bucket("lean", budget_bucket)
         return self._apply_budget_bucket("bypass", budget_bucket)
+
+    def _generate_repair_branches(
+        self,
+        *,
+        question_text: str,
+        metadata: Optional[dict],
+        dataset_profile: DatasetProfile,
+        current_entry: Dict[str, Any],
+        feedback: CodeRepairEval,
+        repair_round: int,
+        recovery_subgraph_node_ids: Optional[Sequence[str]] = None,
+        recovery_subgraph_edge_ids: Optional[Sequence[str]] = None,
+        trigger_verifier_snapshot: Optional[Dict[str, Any]] = None,
+        repair_operator_type: str = "",
+    ) -> List[Tuple[Dict[str, Any], CodeRepairEval]]:
+        branches: List[Tuple[Dict[str, Any], CodeRepairEval]] = []
+        seen: set[str] = {str(current_entry.get("text", "")).strip()}
+        repair_plan = self._diagnose_code_repair_plan(
+            question_text=question_text,
+            metadata=metadata,
+            dataset_profile=dataset_profile,
+            current_entry=current_entry,
+            feedback=feedback,
+        )
+        repair_source_label = str(current_entry.get("candidate_bank_source") or current_entry.get("digest", "") or "checkpoint")
+
+        for agent_id in self._select_repair_agents():
+            agent = self._by_id[agent_id]
+            system_prompt = build_system_prompt(agent, self._repair_slots(), extra_role_hint="code_repair")
+            user_prompt = self._build_code_patch_prompt(
+                question_text=question_text,
+                metadata=metadata,
+                current_entry=current_entry,
+                feedback=feedback,
+                repair_plan=repair_plan,
+                repair_source_label=repair_source_label,
+            )
+            raw_output = self.evaluator._cached_chat(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                runtime=self.evaluator._resolve_runtime("tier2", dataset_profile),
+            )
+            repaired = self._sanitize_candidate(question_text, raw_output, metadata=metadata)
+            if not repaired or repaired in seen:
+                continue
+            seen.add(repaired)
+            verified, verified_feedback = self._prepare_verified_entry(
+                repaired,
+                metadata=metadata,
+                parent=current_entry,
+                repair_agent_id=agent_id,
+                repair_round=repair_round,
+                recovery_subgraph_node_ids=recovery_subgraph_node_ids,
+                recovery_subgraph_edge_ids=recovery_subgraph_edge_ids,
+                trigger_verifier_snapshot=trigger_verifier_snapshot,
+                repair_operator_type=repair_operator_type,
+            )
+            self._ensure_v4_4_entry_fields(verified)
+            verified["repair_patch_locus"] = str(repair_plan.get("patch_locus", ""))
+            verified["repair_preserve_constraints"] = list(repair_plan.get("preserve_constraints", ()))
+            verified["repair_plan"] = str(repair_plan.get("patch_plan", ""))
+            self_check = self._self_check_repair_branch(
+                question_text=question_text,
+                metadata=metadata,
+                dataset_profile=dataset_profile,
+                current_entry=current_entry,
+                repaired_entry=verified,
+                repair_plan=repair_plan,
+            )
+            verified["repair_self_check_repaired"] = str(self_check.get("repaired", ""))
+            verified["repair_self_check_drift"] = str(self_check.get("drift", ""))
+            verified["repair_self_check_risk"] = str(self_check.get("risk", ""))
+            verified["repair_self_check_rationale"] = str(self_check.get("rationale", ""))
+            branches.append((verified, verified_feedback))
+        branches.sort(
+            key=lambda item: self._approved_branch_sort_key(item[0], item[1]),
+            reverse=True,
+        )
+        return branches
 
     def _select_code_repair_against_anchor_v44(
         self,
@@ -1413,7 +1714,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             else:
                 selected_reason = "v4_4_code_preserve_anchor_after_class_collapse"
 
-            repair_round_limit = 1 if execution_mode == "lean" else max(1, int(self.config.repair_rounds))
+            repair_round_limit, recovery_source_cap = self._code_recovery_loop_caps(execution_mode)
             repair_rounds_run = 0
             repair_branch_count = 0
             repair_improvement_count = 0
@@ -1424,72 +1725,90 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             recovery_target_digest = ""
             recovery_subgraph_node_count = 0
             recovery_subgraph_edge_count = 0
-            seed_index = 0
 
             while repair_rounds_run < repair_round_limit:
                 if selected_feedback.fully_passed:
                     break
-                recovery_target = self._best_code_recovery_target(
-                    champion_entry=selected_entry,
-                    champion_feedback=selected_feedback,
+                recovery_sources = self._collect_code_recovery_sources(
+                    classes=classes,
+                    current_entry=selected_entry,
+                    current_feedback=selected_feedback,
                     anchor_pair=anchor_pair,
+                    source_cap=recovery_source_cap,
                 )
-                if recovery_target is None:
-                    if execution_mode == "full" and seed_index + 1 < len(seed_pool):
-                        seed_index += 1
-                        selected_entry, selected_feedback = seed_pool[seed_index]
-                        selected_reason = "v4_4_code_restart_to_verified_class"
-                        restart_count += 1
-                        continue
+                if not recovery_sources:
                     break
-                recovery_entry, recovery_feedback, recovery_target_source = recovery_target
-                recovery_target_digest = str(recovery_entry.get("digest", ""))
-                recovery_context = self._build_code_recovery_context(
-                    graph=graph,
-                    turn_traces=turn_traces,
-                    target_entry=recovery_entry,
-                    target_feedback=recovery_feedback,
-                )
-                recovery_subgraph_node_count = len(recovery_context["recovery_subgraph_node_ids"])
-                recovery_subgraph_edge_count = len(recovery_context["recovery_subgraph_edge_ids"])
                 repair_rounds_run += 1
-                branches = self._generate_repair_branches(
-                    question_text=question_text,
-                    metadata=metadata,
-                    dataset_profile=dataset_profile,
-                    current_entry=recovery_entry,
-                    feedback=recovery_feedback,
-                    repair_round=repair_rounds_run,
-                    recovery_subgraph_node_ids=recovery_context["recovery_subgraph_node_ids"],
-                    recovery_subgraph_edge_ids=recovery_context["recovery_subgraph_edge_ids"],
-                    trigger_verifier_snapshot=recovery_context["trigger_verifier_snapshot"],
-                    repair_operator_type="code_repair_patch",
-                )
-                repair_branch_count += len(branches)
+                current_checkpoint_entry = selected_entry
+                current_checkpoint_feedback = selected_feedback
                 approved: List[Tuple[Dict[str, Any], CodeRepairEval]] = []
-                for branch_entry, branch_feedback in branches:
-                    if not branch_feedback.dominates(recovery_feedback):
-                        continue
-                    self._ensure_v4_4_entry_fields(branch_entry)
-                    if branch_feedback.fully_passed:
-                        branch_entry["promotion_inspector_decision"] = "approved_fully_passed"
-                        approved.append((branch_entry, branch_feedback))
-                        continue
-                    inspect_ok, inspect_rationale = self._inspect_code_promotion(
+                for recovery_entry, recovery_feedback, recovery_target_source in recovery_sources:
+                    recovery_target_digest = str(recovery_entry.get("digest", ""))
+                    recovery_context = self._build_code_recovery_context(
+                        graph=graph,
+                        turn_traces=turn_traces,
+                        target_entry=recovery_entry,
+                        target_feedback=recovery_feedback,
+                    )
+                    recovery_subgraph_node_count = max(
+                        recovery_subgraph_node_count,
+                        len(recovery_context["recovery_subgraph_node_ids"]),
+                    )
+                    recovery_subgraph_edge_count = max(
+                        recovery_subgraph_edge_count,
+                        len(recovery_context["recovery_subgraph_edge_ids"]),
+                    )
+                    source_branches = self._generate_repair_branches(
                         question_text=question_text,
                         metadata=metadata,
                         dataset_profile=dataset_profile,
                         current_entry=recovery_entry,
-                        current_feedback=recovery_feedback,
-                        candidate_entry=branch_entry,
-                        candidate_feedback=branch_feedback,
+                        feedback=recovery_feedback,
+                        repair_round=repair_rounds_run,
+                        recovery_subgraph_node_ids=recovery_context["recovery_subgraph_node_ids"],
+                        recovery_subgraph_edge_ids=recovery_context["recovery_subgraph_edge_ids"],
+                        trigger_verifier_snapshot=recovery_context["trigger_verifier_snapshot"],
+                        repair_operator_type="code_repair_patch",
                     )
-                    branch_entry["promotion_inspector_decision"] = "approve" if inspect_ok else "reject"
-                    branch_entry["promotion_inspector_rationale"] = inspect_rationale
-                    if inspect_ok:
-                        inspector_approval_count += 1
-                        approved.append((branch_entry, branch_feedback))
+                    repair_branch_count += len(source_branches)
+                    best_source_branch: Optional[Tuple[Dict[str, Any], CodeRepairEval]] = None
+                    for branch_entry, branch_feedback in source_branches:
+                        if not branch_feedback.dominates(recovery_feedback):
+                            continue
+                        if not branch_feedback.dominates(current_checkpoint_feedback):
+                            continue
+                        self._ensure_v4_4_entry_fields(branch_entry)
+                        if branch_feedback.fully_passed:
+                            branch_entry["promotion_inspector_decision"] = "approved_fully_passed"
+                            candidate_pair = (branch_entry, branch_feedback)
+                        else:
+                            inspect_ok, inspect_rationale = self._inspect_code_promotion(
+                                question_text=question_text,
+                                metadata=metadata,
+                                dataset_profile=dataset_profile,
+                                current_entry=recovery_entry,
+                                current_feedback=recovery_feedback,
+                                candidate_entry=branch_entry,
+                                candidate_feedback=branch_feedback,
+                            )
+                            branch_entry["promotion_inspector_decision"] = "approve" if inspect_ok else "reject"
+                            branch_entry["promotion_inspector_rationale"] = inspect_rationale
+                            if not inspect_ok:
+                                continue
+                            inspector_approval_count += 1
+                            candidate_pair = (branch_entry, branch_feedback)
+                        if best_source_branch is None or self._approved_branch_sort_key(
+                            candidate_pair[0],
+                            candidate_pair[1],
+                        ) > self._approved_branch_sort_key(best_source_branch[0], best_source_branch[1]):
+                            best_source_branch = candidate_pair
+                    if best_source_branch is not None:
+                        approved.append(best_source_branch)
                 if approved:
+                    approved.sort(
+                        key=lambda item: self._approved_branch_sort_key(item[0], item[1]),
+                        reverse=True,
+                    )
                     reinserted_recovery_count += len(approved)
                     for branch_entry, _ in approved:
                         branch_entry["recovery_reinserted"] = True
@@ -1500,15 +1819,9 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                     selected_entry = classes[0]["representative"]
                     selected_feedback = classes[0]["feedback"]
                     selected_reason = "v4_4_code_reinsert_recollapse"
-                    if selected_feedback.dominates(recovery_feedback):
+                    if selected_feedback.dominates(current_checkpoint_feedback):
                         repair_improvement_count += 1
-                    continue
-                if execution_mode == "full" and seed_index + 1 < len(seed_pool):
-                    seed_index += 1
-                    selected_entry, selected_feedback = seed_pool[seed_index]
-                    selected_reason = "v4_4_code_restart_to_verified_class"
-                    restart_count += 1
-                    continue
+                        continue
                 break
 
             if not selected_feedback.dominates(anchor_pair[1]):

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import torch
+
 from mas_stage2.types import ControllerState, EdgeActivation, TurnTrace, Stage2RunResult
 from stage2_gcr_plus.code_repair import CodeRepairEval
 from stage2_gcr_plus.runtime_v44 import GraphConstraintEval, ReasoningEval, Stage2RuntimeV44
@@ -37,6 +39,7 @@ def _runtime_stub() -> Stage2RuntimeV44:
         repair_seed_top_k=3,
         repair_rounds=1,
         repair_max_failed_examples=3,
+        repair_agent_ids=("coder",),
         graph_seed_top_k=2,
         graph_repair_rounds=1,
         graph_full_branch_cap=2,
@@ -45,6 +48,15 @@ def _runtime_stub() -> Stage2RuntimeV44:
         default_budget_bucket="normal",
         graph_repair_agent_ids=("coder",),
         inspector_agent_id="verifier",
+        repair_self_check_enabled=True,
+    )
+    runtime.config.graph = SimpleNamespace(
+        turn_count=5,
+        min_incoming_edges=1,
+        soft_prune_top_k=3,
+        hard_prune_after_turn=4,
+        soft_prune_threshold=0.38,
+        support_set_mode="topk",
     )
     runtime._v4_4_route_family = "adversarial"
     runtime._v4_4_execution_mode_hint = "lean"
@@ -52,6 +64,11 @@ def _runtime_stub() -> Stage2RuntimeV44:
     runtime._v4_4_sink_guard_ids = set()
     runtime._v4_4_protected_ids = set()
     runtime._v4_4_champion_provenance_ids = set()
+    runtime.global_node = None
+    runtime.gnn = None
+    runtime._current_learn = False
+    runtime._pending_policy_log_probs = []
+    runtime._pending_policy_entropies = []
     return runtime
 
 
@@ -169,6 +186,42 @@ def test_code_route_mode_keeps_anchor_recovery_when_no_survivors_exist():
     mode = runtime._code_mode(anchor_pair=anchor_pair, challenger_classes=[], budget_bucket="normal")
 
     assert mode == "lean"
+
+
+def test_sparsemax_support_set_keeps_all_positive_support_edges():
+    runtime = _runtime_stub()
+    runtime.config.graph.support_set_mode = "sparsemax"
+    score_by_src = {"src_a": 0.9, "src_b": 0.8, "src_c": 0.1}
+    runtime.gnn = SimpleNamespace(
+        edge_gate=lambda src_latent, dst_latent, edge_features, global_state=None: torch.tensor(edge_features[0])
+    )
+    runtime._edge_feature_vector = lambda edge, turn_index: [score_by_src[edge.src]]  # type: ignore[attr-defined]
+    graph = UnionGraph(
+        nodes={
+            "src_a": UnionNode("src_a", "a", "solver", "task", [], 1, 1.0),
+            "src_b": UnionNode("src_b", "b", "solver", "task", [], 1, 1.0),
+            "src_c": UnionNode("src_c", "c", "solver", "task", [], 1, 1.0),
+            "dst": UnionNode("dst", "d", "verifier", "task", [], 1, 1.0),
+        },
+        edges=[
+            UnionEdge("src_a", "dst", "task", [], 1, 1.0, 0.9, 0.9, 0.5, 0.5),
+            UnionEdge("src_b", "dst", "task", [], 1, 1.0, 0.8, 0.8, 0.5, 0.5),
+            UnionEdge("src_c", "dst", "task", [], 1, 1.0, 0.1, 0.1, 0.5, 0.5),
+        ],
+        source_topology_signatures=[],
+        root_node_ids=[],
+        sink_node_ids=["dst"],
+    )
+    prepared_states = {node_id: {"local_latent": torch.zeros(1, 1)} for node_id in graph.nodes}
+
+    activations = runtime._activate_edges_v2(graph, prepared_states, turn_index=0)
+    active_ids = {item.edge_id for item in activations if item.active}
+    metadata = {item.edge_id: item.metadata for item in activations}
+
+    assert active_ids == {"src_a->dst", "src_b->dst"}
+    assert metadata["src_a->dst"]["support_set_weight"] > 0.0
+    assert metadata["src_b->dst"]["support_set_weight"] > 0.0
+    assert metadata["src_c->dst"]["support_set_weight"] == 0.0
 
 
 def test_sparse_activate_filters_roles_and_keeps_focus_neighbourhood():
@@ -827,3 +880,162 @@ def test_finalize_answer_code_route_uses_graph_from_run_context():
 
     assert final_answer == "patched"
     assert strategy == "v4_4_code_anchor_guard_preserve"
+
+
+def test_generate_repair_branches_runs_diagnose_patch_self_check(monkeypatch):
+    runtime = _runtime_stub()
+    runtime._by_id = {
+        "coder": SimpleNamespace(agent_id="coder", role="solver"),
+    }
+    monkeypatch.setattr("stage2_gcr_plus.runtime_v44.build_system_prompt", lambda *args, **kwargs: "system")
+    outputs = iter(
+        [
+            "PATCH_LOCUS: visible_test_failure\nPRESERVE: keep entry point `solve` || preserve passing tests\nPLAN: change the conditional branch only",
+            "def solve(x):\n    return x + 1\n",
+            "PATCH_OK: yes\nDRIFT: no\nRISK: low\nRATIONALE: local patch only",
+        ]
+    )
+    runtime.evaluator._cached_chat = lambda *args, **kwargs: next(outputs)  # type: ignore[attr-defined]
+    runtime.evaluator._resolve_runtime = lambda *args, **kwargs: "tier2"  # type: ignore[attr-defined]
+    runtime._sanitize_candidate = lambda question_text, raw_output, metadata=None: raw_output  # type: ignore[attr-defined]
+    runtime._prepare_verified_entry = lambda *args, **kwargs: (  # type: ignore[attr-defined]
+        _recovery_branch_entry("patched"),
+        _code_eval(passed=2, total=3, failure_kind="visible_test_failure"),
+    )
+
+    branches = runtime._generate_repair_branches(
+        question_text="q",
+        metadata={"entry_point": "solve", "test_list": ["assert solve(1)==2"]},
+        dataset_profile=SimpleNamespace(task_type="code_generation", name="mbpp"),
+        current_entry={"digest": "seed", "text": "def solve(x):\n    return x\n", "candidate_bank_source": "anchor"},
+        feedback=_code_eval(passed=1, total=3, failure_kind="visible_test_failure"),
+        repair_round=1,
+        recovery_subgraph_node_ids=["solver"],
+        recovery_subgraph_edge_ids=["e1"],
+        trigger_verifier_snapshot={"labels": ["challenge"]},
+        repair_operator_type="code_repair_patch",
+    )
+
+    assert len(branches) == 1
+    branch_entry, _ = branches[0]
+    assert branch_entry["repair_patch_locus"] == "visible_test_failure"
+    assert branch_entry["repair_plan"] == "change the conditional branch only"
+    assert branch_entry["repair_self_check_risk"] == "low"
+    assert branch_entry["repair_self_check_drift"] == "no"
+
+
+def test_code_recovery_loop_reinserts_best_improving_branch():
+    runtime = _runtime_stub()
+    runtime._quality_score = lambda entry: float(entry.get("score", 0.0))  # type: ignore[attr-defined]
+    runtime._candidate_source_label = lambda entry: str(entry.get("source", "stage2"))  # type: ignore[attr-defined]
+    runtime._verify_code_pool = lambda **kwargs: (  # type: ignore[attr-defined]
+        [
+            (
+                {
+                    "digest": "anchor",
+                    "text": "anchor",
+                    "stage1_anchor": True,
+                    "origin_node_id": "solver",
+                    "origin_turn_index": 0,
+                    "origin_role": "solver",
+                    "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
+                    "score": 0.1,
+                },
+                _code_eval(passed=1, total=3, failure_kind="visible_test_failure"),
+            ),
+            (
+                {
+                    "digest": "challenger",
+                    "text": "challenger",
+                    "origin_node_id": "solver",
+                    "origin_turn_index": 0,
+                    "origin_role": "solver",
+                    "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
+                    "score": 0.2,
+                },
+                _code_eval(passed=2, total=3, failure_kind="visible_test_failure"),
+            ),
+        ],
+        (
+            {
+                "digest": "anchor",
+                "text": "anchor",
+                "stage1_anchor": True,
+                "origin_node_id": "solver",
+                "origin_turn_index": 0,
+                "origin_role": "solver",
+                "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
+                "score": 0.1,
+            },
+            _code_eval(passed=1, total=3, failure_kind="visible_test_failure"),
+        ),
+    )
+
+    def collapse(pool, anchor_digest):
+        digests = {entry["digest"] for entry, _ in pool}
+        classes = [
+            {
+                "key": ("anchor",),
+                "representative": {"digest": "anchor", "text": "anchor", "score": 0.1},
+                "feedback": _code_eval(passed=1, total=3, failure_kind="visible_test_failure"),
+                "size": 1,
+                "contains_anchor": True,
+                "repair_locus": "visible_test_failure",
+            },
+            {
+                "key": ("challenger",),
+                "representative": {
+                    "digest": "challenger",
+                    "text": "challenger",
+                    "score": 0.2,
+                    "origin_node_id": "solver",
+                    "origin_turn_index": 0,
+                    "origin_role": "solver",
+                    "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
+                },
+                "feedback": _code_eval(passed=2, total=3, failure_kind="visible_test_failure"),
+                "size": 1,
+                "contains_anchor": False,
+                "repair_locus": "visible_test_failure",
+            },
+        ]
+        if "repair_win" in digests:
+            classes.insert(
+                0,
+                {
+                    "key": ("repair_win",),
+                    "representative": _recovery_branch_entry("repair_win"),
+                    "feedback": _code_eval(passed=3, total=3),
+                    "size": 1,
+                    "contains_anchor": False,
+                    "repair_locus": "stable",
+                },
+            )
+        return classes
+
+    runtime._collapse_code_classes = collapse  # type: ignore[attr-defined]
+    runtime._build_code_recovery_context = lambda **kwargs: {  # type: ignore[attr-defined]
+        "recovery_subgraph_node_ids": ["solver", "sink"],
+        "recovery_subgraph_edge_ids": ["e1"],
+        "trigger_verifier_snapshot": {"labels": ["challenge"], "failure_kind": "visible_test_failure", "passed": 2, "total": 3},
+    }
+    runtime._generate_repair_branches = lambda **kwargs: [  # type: ignore[attr-defined]
+        (_recovery_branch_entry("repair_win"), _code_eval(passed=3, total=3)),
+    ] if kwargs["current_entry"]["digest"] == "challenger" else []
+    runtime._inspect_code_promotion = lambda **kwargs: (True, "ok")  # type: ignore[attr-defined]
+
+    selected, reason, extra = runtime._select_code_repair_against_anchor_v44(
+        graph=_code_recovery_graph(),
+        question_text="q",
+        metadata={"entry_point": "solve", "test_list": ["assert solve(1)==2"]},
+        dataset_profile=SimpleNamespace(task_type="code_generation", name="mbpp"),
+        candidates=[{"digest": "challenger", "text": "challenger"}],
+        anchor={"digest": "anchor", "text": "anchor", "stage1_anchor": True},
+        budget_bucket="normal",
+        turn_traces=[],
+    )
+
+    assert selected["digest"] == "repair_win"
+    assert reason == "v4_4_code_reinsert_recollapse"
+    assert extra["v4_4_repair_rounds_run"] == 1
+    assert extra["v4_4_reinserted_recovery_count"] == 1

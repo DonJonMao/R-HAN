@@ -69,3 +69,4 @@ class Stage2V44Config(Stage2V43Config):
     adversarial_lean_hypothesis_cap: int = 2
     adversarial_full_hypothesis_cap: int = 3
     inspector_agent_id: str = "verifier"
+    repair_self_check_enabled: bool = True
