@@ -5,7 +5,13 @@ from types import SimpleNamespace
 import torch
 
 from mas_stage2.types import ControllerState, EdgeActivation, TurnTrace, Stage2RunResult
-from stage2_gcr_plus.code_repair import CodeRepairEval
+from stage2_gcr_plus.code_repair import (
+    CodeRepairEval,
+    apply_local_edit_artifact,
+    build_failure_card,
+    build_locus_card,
+    build_preserve_card,
+)
 from stage2_gcr_plus.runtime_v44 import GraphConstraintEval, ReasoningEval, Stage2RuntimeV44
 from mas_treesearch.evaluator import MultiFidelityEvaluator
 from mas_treesearch.types import UnionEdge, UnionGraph, UnionNode
@@ -186,6 +192,74 @@ def test_code_route_mode_keeps_anchor_recovery_when_no_survivors_exist():
     mode = runtime._code_mode(anchor_pair=anchor_pair, challenger_classes=[], budget_bucket="normal")
 
     assert mode == "lean"
+
+
+def test_structured_failure_locus_and_preserve_cards_are_deterministic():
+    entry = {
+        "digest": "seed",
+        "text": "def solve(nums):\n    x = nums[0]\n    return [x]\n",
+        "parent_candidate_digest": "parent",
+        "repair_round": 1,
+    }
+    feedback = CodeRepairEval(
+        code_text="def solve(nums):\n    x = nums[0]\n    return [x]\n",
+        syntax_ok=True,
+        entry_point_ok=True,
+        passed=0,
+        total=1,
+        failure_kind="visible_test_failure",
+        failing_examples=("assert solve([]) == [] -> IndexError('list index out of range')",),
+        stderr='Traceback (most recent call last):\n  File "<candidate>", line 2, in solve\n    x = nums[0]\nIndexError: list index out of range',
+    )
+
+    failure_card = build_failure_card(feedback, metadata={"entry_point": "solve"}, current_entry=entry, repair_round=1)
+    locus_card = build_locus_card(entry["text"], feedback, metadata={"entry_point": "solve"})
+    preserve_card = build_preserve_card(entry["text"], feedback, metadata={"entry_point": "solve"})
+
+    assert failure_card["candidate_state"]["current_code_digest"] == "seed"
+    assert failure_card["symptom"]["top_traceback_frame"]["line"] == 2
+    assert locus_card["editable_region_id"] == "solve:2-2"
+    assert "nums" in locus_card["involved_symbols"]
+    assert preserve_card["entry_contract"]["name"] == "solve"
+    assert preserve_card["must_keep"]["function_name"] == "solve"
+
+
+def test_local_edit_artifact_replaces_only_editable_region():
+    text = "def solve(nums):\n    x = nums[0]\n    return [x]\n"
+    feedback = CodeRepairEval(
+        code_text=text,
+        syntax_ok=True,
+        entry_point_ok=True,
+        passed=0,
+        total=1,
+        failure_kind="visible_test_failure",
+        failing_examples=("assert solve([]) == [] -> IndexError('list index out of range')",),
+        stderr='Traceback (most recent call last):\n  File "<candidate>", line 2, in solve\n    x = nums[0]\nIndexError: list index out of range',
+    )
+    locus_card = build_locus_card(text, feedback, metadata={"entry_point": "solve"})
+    preserve_card = build_preserve_card(text, feedback, metadata={"entry_point": "solve"})
+    patched, reason = apply_local_edit_artifact(
+        text,
+        {
+            "edit_scope": {
+                "editable_region_id": locus_card["editable_region_id"],
+                "function": "solve",
+                "line_start": 2,
+                "line_end": 2,
+            },
+            "edit_op": "replace_span",
+            "replacement_code": ["    x = nums[0] if nums else None"],
+            "why_this_edit": "guard the empty-input path",
+        },
+        locus_card=locus_card,
+        preserve_card=preserve_card,
+        metadata={"entry_point": "solve"},
+    )
+
+    assert reason == ""
+    assert patched is not None
+    assert "def solve(nums):" in patched
+    assert "x = nums[0] if nums else None" in patched
 
 
 def test_sparsemax_support_set_keeps_all_positive_support_edges():
@@ -890,14 +964,13 @@ def test_generate_repair_branches_runs_diagnose_patch_self_check(monkeypatch):
     monkeypatch.setattr("stage2_gcr_plus.runtime_v44.build_system_prompt", lambda *args, **kwargs: "system")
     outputs = iter(
         [
-            "PATCH_LOCUS: visible_test_failure\nPRESERVE: keep entry point `solve` || preserve passing tests\nPLAN: change the conditional branch only",
-            "def solve(x):\n    return x + 1\n",
-            "PATCH_OK: yes\nDRIFT: no\nRISK: low\nRATIONALE: local patch only",
+            '{"bug_hypothesis":"increment logic is wrong","causal_chain":{"broken_precondition":"wrong arithmetic branch","trigger_path":"assert solve(1)==2","observed_symptom":"visible_test_failure"},"patch_locus":{"editable_region_id":"solve:2-2","function":"solve","line_start":2,"line_end":2},"preserve_constraints":["keep entry point solve","preserve visible tests"],"expected_delta":{"should_fix":["assert solve(1)==2"],"must_preserve":[],"expected_failure_kind_after_patch":"none"},"minimal_edit_plan":["replace the return line only"]}',
+            '{"edit_scope":{"editable_region_id":"solve:2-2","function":"solve","line_start":2,"line_end":2},"edit_op":"replace_span","replacement_code":["    return x + 1"],"why_this_edit":"increment the result"}',
+            '{"should_fix":["assert solve(1)==2"],"must_preserve":["visible test #1 remains passing"],"expected_verifier_delta":{"syntax_ok":1,"entry_point_ok":1,"passed_delta":1,"expected_failure_kind_after_patch":"visible_test_failure"},"regression_risk":["may affect unrelated arithmetic cases"],"drift":"no","rationale":"only the local return line changes"}',
         ]
     )
     runtime.evaluator._cached_chat = lambda *args, **kwargs: next(outputs)  # type: ignore[attr-defined]
     runtime.evaluator._resolve_runtime = lambda *args, **kwargs: "tier2"  # type: ignore[attr-defined]
-    runtime._sanitize_candidate = lambda question_text, raw_output, metadata=None: raw_output  # type: ignore[attr-defined]
     runtime._prepare_verified_entry = lambda *args, **kwargs: (  # type: ignore[attr-defined]
         _recovery_branch_entry("patched"),
         _code_eval(passed=2, total=3, failure_kind="visible_test_failure"),
@@ -918,10 +991,12 @@ def test_generate_repair_branches_runs_diagnose_patch_self_check(monkeypatch):
 
     assert len(branches) == 1
     branch_entry, _ = branches[0]
-    assert branch_entry["repair_patch_locus"] == "visible_test_failure"
-    assert branch_entry["repair_plan"] == "change the conditional branch only"
-    assert branch_entry["repair_self_check_risk"] == "low"
+    assert branch_entry["repair_patch_locus"] == "solve:2-2"
+    assert branch_entry["repair_plan"] == "replace the return line only"
+    assert branch_entry["repair_edit_artifact"]["edit_op"] == "replace_span"
+    assert branch_entry["repair_delta_prediction"]["expected_verifier_delta"]["passed_delta"] == 1
     assert branch_entry["repair_self_check_drift"] == "no"
+    assert branch_entry["repair_delta_match"] == 1.0
 
 
 def test_code_recovery_loop_reinserts_best_improving_branch():
@@ -1041,109 +1116,10 @@ def test_code_recovery_loop_reinserts_best_improving_branch():
     assert extra["v4_4_reinserted_recovery_count"] == 1
 
 
-def test_lean_code_recovery_uses_full_depth_caps_once_entered():
+def test_lean_code_recovery_caps_remain_phase3a_shallow():
     runtime = _runtime_stub()
     runtime.config.repair_rounds = 2
     runtime.config.repair_seed_top_k = 4
-    runtime._verified_rank_key = lambda entry, feedback: feedback.rank_key  # type: ignore[attr-defined]
-    runtime._quality_score = lambda entry: float(entry.get("score", 0.0))  # type: ignore[attr-defined]
-    runtime._stable_entry_tiebreak = lambda entry: (0, str(entry.get("digest", "")))  # type: ignore[attr-defined]
-    runtime._prepare_verified_entry = lambda text, metadata=None, parent=None, **kwargs: (parent, _code_eval(passed=0, total=4))  # type: ignore[attr-defined]
 
-    def collapse(pool, *, anchor_digest):
-        digests = {entry["digest"] for entry, _ in pool}
-        classes = [
-            {
-                "key": ("anchor",),
-                "representative": {
-                    "digest": "anchor",
-                    "text": "anchor",
-                    "score": 0.1,
-                    "stage1_anchor": True,
-                    "origin_node_id": "solver",
-                    "origin_turn_index": 0,
-                    "origin_role": "solver",
-                    "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
-                },
-                "feedback": _code_eval(passed=1, total=4, failure_kind="visible_test_failure"),
-                "size": 1,
-                "contains_anchor": True,
-                "repair_locus": "visible_test_failure",
-            },
-            {
-                "key": ("challenger",),
-                "representative": {
-                    "digest": "challenger",
-                    "text": "challenger",
-                    "score": 0.2,
-                    "origin_node_id": "solver",
-                    "origin_turn_index": 0,
-                    "origin_role": "solver",
-                    "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
-                },
-                "feedback": _code_eval(passed=2, total=4, failure_kind="visible_test_failure"),
-                "size": 1,
-                "contains_anchor": False,
-                "repair_locus": "visible_test_failure",
-            },
-        ]
-        if "repair_r1" in digests:
-            classes.insert(
-                0,
-                {
-                    "key": ("repair_r1",),
-                    "representative": _recovery_branch_entry("repair_r1"),
-                    "feedback": _code_eval(passed=3, total=4, failure_kind="visible_test_failure"),
-                    "size": 1,
-                    "contains_anchor": False,
-                    "repair_locus": "visible_test_failure",
-                },
-            )
-        if "repair_r2" in digests:
-            classes.insert(
-                0,
-                {
-                    "key": ("repair_r2",),
-                    "representative": _recovery_branch_entry("repair_r2"),
-                    "feedback": _code_eval(passed=4, total=4),
-                    "size": 1,
-                    "contains_anchor": False,
-                    "repair_locus": "stable",
-                },
-            )
-        return classes
-
-    runtime._collapse_code_classes = collapse  # type: ignore[attr-defined]
-    runtime._build_code_recovery_context = lambda **kwargs: {  # type: ignore[attr-defined]
-        "recovery_subgraph_node_ids": ["solver", "sink"],
-        "recovery_subgraph_edge_ids": ["e1"],
-        "trigger_verifier_snapshot": {"labels": ["challenge"], "failure_kind": "visible_test_failure", "passed": 2, "total": 4},
-    }
-
-    def generate(**kwargs):
-        digest = kwargs["current_entry"]["digest"]
-        if digest == "challenger" and kwargs["repair_round"] == 1:
-            return [(_recovery_branch_entry("repair_r1"), _code_eval(passed=3, total=4, failure_kind="visible_test_failure"))]
-        if digest == "repair_r1":
-            return [(_recovery_branch_entry("repair_r2"), _code_eval(passed=4, total=4))]
-        return []
-
-    runtime._generate_repair_branches = generate  # type: ignore[attr-defined]
-    runtime._inspect_code_promotion = lambda **kwargs: (True, "ok")  # type: ignore[attr-defined]
-
-    selected, reason, extra = runtime._select_code_repair_against_anchor_v44(
-        graph=_code_recovery_graph(),
-        question_text="q",
-        metadata={"entry_point": "solve", "test_list": ["assert solve(1)==2"]},
-        dataset_profile=SimpleNamespace(task_type="code_generation", name="mbpp"),
-        candidates=[{"digest": "challenger", "text": "challenger"}],
-        anchor={"digest": "anchor", "text": "anchor", "stage1_anchor": True},
-        budget_bucket="normal",
-        turn_traces=[],
-    )
-
-    assert selected["digest"] == "repair_r2"
-    assert reason == "v4_4_code_reinsert_recollapse"
-    assert extra["v4_4_execution_mode"] == "lean"
-    assert extra["v4_4_repair_rounds_run"] == 2
-    assert extra["v4_4_repair_branch_count"] == 2
+    assert runtime._code_recovery_loop_caps("lean") == (1, 1)
+    assert runtime._code_recovery_loop_caps("full") == (2, 4)

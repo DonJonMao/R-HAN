@@ -14,7 +14,15 @@ from mas_treesearch.prompting import build_system_prompt, render_question_text
 from mas_treesearch.profiles import DEFAULT_PROFILE, DatasetProfile
 from mas_treesearch.types import PromptSlots, UnionGraph, UnionNode
 
-from .code_repair import CodeRepairEval, build_failure_summary, evaluate_code_candidate
+from .code_repair import (
+    CodeRepairEval,
+    apply_local_edit_artifact,
+    build_failure_card,
+    build_failure_summary,
+    build_locus_card,
+    build_preserve_card,
+    evaluate_code_candidate,
+)
 from .config import Stage2V44Config
 
 
@@ -120,6 +128,13 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry.setdefault("repair_self_check_drift", "")
         entry.setdefault("repair_self_check_risk", "")
         entry.setdefault("repair_self_check_rationale", "")
+        entry.setdefault("repair_failure_card", {})
+        entry.setdefault("repair_locus_card", {})
+        entry.setdefault("repair_preserve_card", {})
+        entry.setdefault("repair_edit_artifact", {})
+        entry.setdefault("repair_delta_prediction", {})
+        entry.setdefault("repair_delta_match", 0.0)
+        entry.setdefault("repair_trace", [])
 
     @staticmethod
     def _stable_entry_tiebreak(entry: Dict[str, Any]) -> Tuple[int, str]:
@@ -161,6 +176,13 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "repair_self_check_drift": str(entry.get("repair_self_check_drift", "")),
                 "repair_self_check_risk": str(entry.get("repair_self_check_risk", "")),
                 "repair_self_check_rationale": str(entry.get("repair_self_check_rationale", "")),
+                "repair_failure_card": dict(entry.get("repair_failure_card", {})),
+                "repair_locus_card": dict(entry.get("repair_locus_card", {})),
+                "repair_preserve_card": dict(entry.get("repair_preserve_card", {})),
+                "repair_edit_artifact": dict(entry.get("repair_edit_artifact", {})),
+                "repair_delta_prediction": dict(entry.get("repair_delta_prediction", {})),
+                "repair_delta_match": float(entry.get("repair_delta_match", 0.0)),
+                "repair_trace": list(entry.get("repair_trace", ())),
             }
         )
         return payload
@@ -1274,27 +1296,127 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         rationale = str(parsed.get("rationale", "")).strip()
         return repaired and not drift, rationale
 
-    def _fallback_repair_plan(
-        self,
+    @staticmethod
+    def _parse_json_object(raw_output: str) -> Dict[str, Any]:
+        text = str(raw_output or "").strip()
+        if not text:
+            return {}
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+            if not match:
+                return {}
+            try:
+                parsed = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _editable_region_view(current_entry: Dict[str, Any], locus_card: Dict[str, Any]) -> str:
+        code = MultiFidelityEvaluator._extract_python_code(str(current_entry.get("text", "")))
+        if not code:
+            return ""
+        lines = code.splitlines()
+        start_line = max(1, int(locus_card.get("line_start", 1) or 1))
+        end_line = max(start_line, int(locus_card.get("line_end", start_line) or start_line))
+        snippet = [
+            f"{index + 1}: {line}"
+            for index, line in enumerate(lines[start_line - 1 : end_line], start=start_line - 1)
+        ]
+        return "\n".join(snippet)
+
+    @staticmethod
+    def _read_only_context_view(current_entry: Dict[str, Any], preserve_card: Dict[str, Any]) -> str:
+        code = MultiFidelityEvaluator._extract_python_code(str(current_entry.get("text", "")))
+        lines = code.splitlines() if code else []
+        preview = "\n".join(lines[: min(len(lines), 16)])
+        must_keep = dict(preserve_card.get("must_keep", {}))
+        contract = dict(preserve_card.get("entry_contract", {}))
+        return (
+            f"signature: {str(contract.get('signature', '')).strip() or str(contract.get('name', '')).strip()}\n"
+            f"imports: {json.dumps(list(must_keep.get('imports', ())), ensure_ascii=False)}\n"
+            f"helper defs: {json.dumps(list(must_keep.get('helper_defs', ())), ensure_ascii=False)}\n"
+            f"surrounding code preview:\n{preview}"
+        ).strip()
+
+    @staticmethod
+    def _fallback_repair_diagnosis(
         *,
-        feedback: CodeRepairEval,
-        metadata: Optional[dict],
+        failure_card: Dict[str, Any],
+        locus_card: Dict[str, Any],
+        preserve_card: Dict[str, Any],
     ) -> Dict[str, Any]:
-        entry_point = str((metadata or {}).get("entry_point") or "").strip()
-        preserve: List[str] = []
-        if entry_point:
-            preserve.append(f"keep entry point `{entry_point}`")
-        if feedback.syntax_ok:
-            preserve.append("preserve executable Python structure")
-        if feedback.entry_point_ok:
-            preserve.append("preserve required function signature")
-        if feedback.passed > 0:
-            preserve.append("preserve already passing visible tests")
+        preserve_constraints = [
+            f"keep entry point {str(preserve_card.get('entry_contract', {}).get('name', '')).strip()}".strip(),
+            "preserve already passing visible tests",
+            "avoid unrelated rewrites",
+        ]
+        preserve_constraints = [item for item in preserve_constraints if item and item != "keep entry point"]
         return {
-            "patch_locus": self._code_patch_locus(feedback),
-            "preserve_constraints": preserve,
-            "patch_plan": "Patch only the failing locus, preserve passing behavior, and avoid unrelated rewrites.",
+            "bug_hypothesis": "primary failing path violates a local precondition near the editable region",
+            "causal_chain": {
+                "broken_precondition": "current code does not satisfy the failing path precondition",
+                "trigger_path": str(failure_card.get("symptom", {}).get("first_failed_test", "")).strip(),
+                "observed_symptom": str(failure_card.get("verifier", {}).get("failure_kind", "")).strip(),
+            },
+            "patch_locus": {
+                "editable_region_id": str(locus_card.get("editable_region_id", "")).strip(),
+                "function": str(locus_card.get("function", "")).strip(),
+                "line_start": int(locus_card.get("line_start", 1) or 1),
+                "line_end": int(locus_card.get("line_end", 1) or 1),
+            },
+            "preserve_constraints": preserve_constraints,
+            "expected_delta": {
+                "should_fix": [str(failure_card.get("symptom", {}).get("first_failed_test", "")).strip()],
+                "must_preserve": list(preserve_card.get("behavior_invariants", ())),
+                "expected_failure_kind_after_patch": "none",
+            },
+            "minimal_edit_plan": [
+                "patch only the editable region",
+                "preserve passing behavior and frozen regions",
+            ],
         }
+
+    def _normalize_repair_diagnosis(
+        self,
+        parsed: Dict[str, Any],
+        *,
+        fallback: Dict[str, Any],
+        locus_card: Dict[str, Any],
+        preserve_card: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        diagnosis = dict(parsed) if isinstance(parsed, dict) else {}
+        patch_locus = diagnosis.get("patch_locus")
+        if not isinstance(patch_locus, dict):
+            patch_locus = {}
+        editable_region_id = str(patch_locus.get("editable_region_id", "")).strip()
+        if editable_region_id != str(locus_card.get("editable_region_id", "")).strip():
+            diagnosis = dict(fallback)
+            patch_locus = dict(diagnosis["patch_locus"])
+        preserve_constraints = diagnosis.get("preserve_constraints")
+        if not isinstance(preserve_constraints, list) or not preserve_constraints:
+            preserve_constraints = list(fallback["preserve_constraints"])
+        must_preserve = diagnosis.get("expected_delta", {}).get("must_preserve", ())
+        if not isinstance(must_preserve, list):
+            must_preserve = []
+        for invariant in preserve_card.get("behavior_invariants", ()):
+            if invariant not in must_preserve:
+                must_preserve.append(str(invariant))
+        expected_delta = dict(diagnosis.get("expected_delta", {}))
+        expected_delta["must_preserve"] = must_preserve
+        if not isinstance(diagnosis.get("minimal_edit_plan"), list) or not diagnosis.get("minimal_edit_plan"):
+            diagnosis["minimal_edit_plan"] = list(fallback["minimal_edit_plan"])
+        diagnosis["bug_hypothesis"] = str(diagnosis.get("bug_hypothesis", "")).strip() or str(fallback["bug_hypothesis"])
+        diagnosis["causal_chain"] = dict(diagnosis.get("causal_chain", {}) or fallback["causal_chain"])
+        diagnosis["patch_locus"] = patch_locus
+        diagnosis["preserve_constraints"] = [str(item).strip() for item in preserve_constraints if str(item).strip()]
+        diagnosis["expected_delta"] = expected_delta
+        return diagnosis
 
     def _diagnose_code_repair_plan(
         self,
@@ -1303,46 +1425,42 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         metadata: Optional[dict],
         dataset_profile: DatasetProfile,
         current_entry: Dict[str, Any],
-        feedback: CodeRepairEval,
+        failure_card: Dict[str, Any],
+        locus_card: Dict[str, Any],
+        preserve_card: Dict[str, Any],
     ) -> Dict[str, Any]:
-        fallback = self._fallback_repair_plan(feedback=feedback, metadata=metadata)
-        failure_summary = build_failure_summary(
-            feedback,
-            metadata=metadata,
-            max_examples=int(self.config.repair_max_failed_examples),
+        fallback = self._fallback_repair_diagnosis(
+            failure_card=failure_card,
+            locus_card=locus_card,
+            preserve_card=preserve_card,
         )
-        entry_point = str((metadata or {}).get("entry_point") or "").strip()
+        previous_trace = list(current_entry.get("repair_trace", ()))
         user_prompt = (
-            "You are diagnosing a code repair before generating any patch.\n\n"
+            "You are doing causal diagnosis for a local Python code repair.\n\n"
             f"Question:\n{render_question_text(question_text, metadata=metadata)}\n\n"
             f"Current code:\n{str(current_entry.get('text', '')).strip()}\n\n"
-            f"Verifier summary:\n{failure_summary}\n\n"
-            "Return exactly three lines:\n"
-            "PATCH_LOCUS: <primary bug locus>\n"
-            "PRESERVE: <constraint 1 || constraint 2 || constraint 3>\n"
-            "PLAN: <short patch plan>\n"
+            f"Failure card:\n{json.dumps(failure_card, ensure_ascii=False, indent=2)}\n\n"
+            f"Locus card:\n{json.dumps(locus_card, ensure_ascii=False, indent=2)}\n\n"
+            f"Preserve card:\n{json.dumps(preserve_card, ensure_ascii=False, indent=2)}\n\n"
+            f"Previous repair trace:\n{json.dumps(previous_trace[-2:], ensure_ascii=False, indent=2)}\n\n"
+            "Return exactly one JSON object with keys:\n"
+            "bug_hypothesis, causal_chain, patch_locus, preserve_constraints, expected_delta, minimal_edit_plan.\n"
+            "The patch_locus.editable_region_id must stay inside the provided locus card.\n"
         )
-        if entry_point:
-            user_prompt += f"\nRequired entry point: {entry_point}\n"
         raw_output = self.evaluator._cached_chat(
             [
-                {"role": "system", "content": "You produce compact repair plans for executable Python patches."},
+                {"role": "system", "content": "You produce verifier-grounded causal diagnoses for local code repairs."},
                 {"role": "user", "content": user_prompt},
             ],
             runtime=self.evaluator._resolve_runtime("tier2", dataset_profile),
         )
-        parsed = self._parse_tagged_output(raw_output)
-        patch_locus = str(parsed.get("patch_locus", "")).strip() or str(fallback["patch_locus"])
-        preserve_raw = str(parsed.get("preserve", "")).strip()
-        preserve_constraints = [item.strip() for item in preserve_raw.split("||") if item.strip()]
-        if not preserve_constraints:
-            preserve_constraints = list(fallback["preserve_constraints"])
-        patch_plan = str(parsed.get("plan", "")).strip() or str(fallback["patch_plan"])
-        return {
-            "patch_locus": patch_locus,
-            "preserve_constraints": preserve_constraints,
-            "patch_plan": patch_plan,
-        }
+        parsed = self._parse_json_object(raw_output)
+        return self._normalize_repair_diagnosis(
+            parsed,
+            fallback=fallback,
+            locus_card=locus_card,
+            preserve_card=preserve_card,
+        )
 
     def _build_code_patch_prompt(
         self,
@@ -1350,31 +1468,32 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         question_text: str,
         metadata: Optional[dict],
         current_entry: Dict[str, Any],
-        feedback: CodeRepairEval,
-        repair_plan: Dict[str, Any],
+        failure_card: Dict[str, Any],
+        locus_card: Dict[str, Any],
+        preserve_card: Dict[str, Any],
+        diagnosis: Dict[str, Any],
         repair_source_label: str,
     ) -> str:
-        failure_summary = build_failure_summary(
-            feedback,
-            metadata=metadata,
-            max_examples=int(self.config.repair_max_failed_examples),
+        preserve_lines = "\n".join(
+            f"- {item}"
+            for item in list(diagnosis.get("preserve_constraints", ())) or list(preserve_card.get("behavior_invariants", ()))
         )
-        preserve_constraints = list(repair_plan.get("preserve_constraints", ()))
-        preserve_text = "\n".join(f"- {item}" for item in preserve_constraints) or "- Preserve required entry point and passing behavior."
         return (
-            "You are patching a Python solution using a fixed repair plan.\n\n"
+            "You are generating a local edit artifact for a Python repair.\n\n"
             f"Question:\n{render_question_text(question_text, metadata=metadata)}\n\n"
             f"Recovery source: {repair_source_label}\n\n"
-            f"Current code:\n{str(current_entry.get('text', '')).strip()}\n\n"
-            f"Verifier summary:\n{failure_summary}\n\n"
-            f"Primary patch locus: {str(repair_plan.get('patch_locus', '')).strip()}\n\n"
-            f"Patch plan:\n{str(repair_plan.get('patch_plan', '')).strip()}\n\n"
-            f"Preserve constraints:\n{preserve_text}\n\n"
-            "Requirements:\n"
-            "- Return only executable Python code.\n"
-            "- Follow the patch plan; do not free-rewrite unrelated logic.\n"
-            "- Fix the primary patch locus first.\n"
-            "- Preserve already passing behavior whenever possible.\n"
+            f"Failure card:\n{json.dumps(failure_card, ensure_ascii=False, indent=2)}\n\n"
+            f"Locus card:\n{json.dumps(locus_card, ensure_ascii=False, indent=2)}\n\n"
+            f"Editable region:\n{self._editable_region_view(current_entry, locus_card)}\n\n"
+            f"Read-only context:\n{self._read_only_context_view(current_entry, preserve_card)}\n\n"
+            f"Preserve contract:\n{preserve_lines or '- preserve frozen regions and passing tests'}\n\n"
+            f"Causal diagnosis:\n{json.dumps(diagnosis, ensure_ascii=False, indent=2)}\n\n"
+            "Return exactly one JSON object with keys:\n"
+            "edit_scope, edit_op, replacement_code, why_this_edit.\n"
+            "- edit_op must be `replace_span`.\n"
+            "- edit_scope.editable_region_id must equal the provided locus_card.editable_region_id.\n"
+            "- replacement_code must be a list of source-code lines for the editable region only.\n"
+            "- Do not output the full program.\n"
         )
 
     def _self_check_repair_branch(
@@ -1383,47 +1502,103 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         question_text: str,
         metadata: Optional[dict],
         dataset_profile: DatasetProfile,
+        failure_card: Dict[str, Any],
+        locus_card: Dict[str, Any],
+        preserve_card: Dict[str, Any],
+        diagnosis: Dict[str, Any],
+        edit_artifact: Dict[str, Any],
         current_entry: Dict[str, Any],
-        repaired_entry: Dict[str, Any],
-        repair_plan: Dict[str, Any],
-    ) -> Dict[str, str]:
+        patched_code: str,
+    ) -> Dict[str, Any]:
         if not bool(getattr(self.config, "repair_self_check_enabled", True)):
-            return {"repaired": "", "drift": "", "risk": "", "rationale": ""}
+            return {}
         user_prompt = (
-            "You are doing a lightweight self-check on a proposed code patch.\n\n"
+            "You are predicting verifier deltas for a local code patch.\n\n"
             f"Question:\n{render_question_text(question_text, metadata=metadata)}\n\n"
+            f"Failure card:\n{json.dumps(failure_card, ensure_ascii=False, indent=2)}\n\n"
+            f"Locus card:\n{json.dumps(locus_card, ensure_ascii=False, indent=2)}\n\n"
+            f"Preserve card:\n{json.dumps(preserve_card, ensure_ascii=False, indent=2)}\n\n"
+            f"Diagnosis:\n{json.dumps(diagnosis, ensure_ascii=False, indent=2)}\n\n"
+            f"Edit artifact:\n{json.dumps(edit_artifact, ensure_ascii=False, indent=2)}\n\n"
             f"Original code:\n{str(current_entry.get('text', '')).strip()}\n\n"
-            f"Patched code:\n{str(repaired_entry.get('text', '')).strip()}\n\n"
-            f"Primary patch locus: {str(repair_plan.get('patch_locus', '')).strip()}\n"
-            f"Patch plan: {str(repair_plan.get('patch_plan', '')).strip()}\n\n"
-            "Return exactly four lines:\n"
-            "PATCH_OK: yes|no\n"
-            "DRIFT: yes|no\n"
-            "RISK: low|medium|high\n"
-            "RATIONALE: <short note>\n"
+            f"Patched code:\n{patched_code.strip()}\n\n"
+            "Return exactly one JSON object with keys:\n"
+            "should_fix, must_preserve, expected_verifier_delta, regression_risk, drift, rationale.\n"
         )
         raw_output = self.evaluator._cached_chat(
             [
-                {"role": "system", "content": "You provide concise risk notes for code patches."},
+                {"role": "system", "content": "You predict verifier deltas for structured local code edits."},
                 {"role": "user", "content": user_prompt},
             ],
             runtime=self.evaluator._resolve_runtime("tier2", dataset_profile),
         )
-        parsed = self._parse_tagged_output(raw_output)
+        parsed = self._parse_json_object(raw_output)
+        if not parsed:
+            return {}
         return {
-            "repaired": str(parsed.get("patch_ok", "")).strip().lower(),
+            "should_fix": list(parsed.get("should_fix", ())) if isinstance(parsed.get("should_fix"), list) else [],
+            "must_preserve": list(parsed.get("must_preserve", ())) if isinstance(parsed.get("must_preserve"), list) else [],
+            "expected_verifier_delta": dict(parsed.get("expected_verifier_delta", {}))
+            if isinstance(parsed.get("expected_verifier_delta"), dict)
+            else {},
+            "regression_risk": list(parsed.get("regression_risk", ())) if isinstance(parsed.get("regression_risk"), list) else [],
             "drift": str(parsed.get("drift", "")).strip().lower(),
-            "risk": str(parsed.get("risk", "")).strip().lower(),
             "rationale": str(parsed.get("rationale", "")).strip(),
         }
 
     @staticmethod
-    def _repair_self_check_sort_key(entry: Dict[str, Any]) -> Tuple[int, int, int, str]:
-        repaired = str(entry.get("repair_self_check_repaired", "")).strip().lower() == "yes"
+    def _delta_prediction_match(
+        prediction: Dict[str, Any],
+        *,
+        before_feedback: CodeRepairEval,
+        after_feedback: CodeRepairEval,
+    ) -> float:
+        expected = dict(prediction.get("expected_verifier_delta", {}))
+        if not expected:
+            return 0.0
+        checks: List[bool] = []
+        if "syntax_ok" in expected:
+            checks.append(int(bool(after_feedback.syntax_ok)) == int(expected.get("syntax_ok")))
+        if "entry_point_ok" in expected:
+            checks.append(int(bool(after_feedback.entry_point_ok)) == int(expected.get("entry_point_ok")))
+        if "passed_delta" in expected:
+            checks.append(int(after_feedback.passed) - int(before_feedback.passed) == int(expected.get("passed_delta")))
+        if "expected_failure_kind_after_patch" in expected:
+            checks.append(str(after_feedback.failure_kind or "none") == str(expected.get("expected_failure_kind_after_patch") or "none"))
+        if not checks:
+            return 0.0
+        return float(sum(1 for item in checks if item)) / float(len(checks))
+
+    @staticmethod
+    def _repair_trace_record(
+        *,
+        diagnosis: Dict[str, Any],
+        edit_artifact: Dict[str, Any],
+        prediction: Dict[str, Any],
+        before_feedback: CodeRepairEval,
+        after_feedback: CodeRepairEval,
+        delta_match: float,
+    ) -> Dict[str, Any]:
+        return {
+            "bug_hypothesis": str(diagnosis.get("bug_hypothesis", "")).strip(),
+            "editable_region_id": str(diagnosis.get("patch_locus", {}).get("editable_region_id", "")).strip(),
+            "edit_op": str(edit_artifact.get("edit_op", "")).strip(),
+            "predicted_delta": dict(prediction.get("expected_verifier_delta", {})),
+            "actual_delta": {
+                "syntax_ok": int(bool(after_feedback.syntax_ok)),
+                "entry_point_ok": int(bool(after_feedback.entry_point_ok)),
+                "passed_delta": int(after_feedback.passed) - int(before_feedback.passed),
+                "failure_kind_after_patch": str(after_feedback.failure_kind or "none"),
+            },
+            "delta_match": float(delta_match),
+        }
+
+    @staticmethod
+    def _repair_self_check_sort_key(entry: Dict[str, Any]) -> Tuple[float, int, int, str]:
+        delta_match = float(entry.get("repair_delta_match", 0.0))
         drift = str(entry.get("repair_self_check_drift", "")).strip().lower() == "yes"
-        risk = str(entry.get("repair_self_check_risk", "")).strip().lower()
-        risk_rank = {"low": 2, "medium": 1, "high": 0}.get(risk, -1)
-        return int(repaired), int(not drift), int(risk_rank), str(entry.get("digest", ""))
+        risk_count = len(list(entry.get("repair_delta_prediction", {}).get("regression_risk", ())))
+        return delta_match, int(not drift), -int(risk_count), str(entry.get("digest", ""))
 
     def _approved_branch_sort_key(
         self,
@@ -1460,11 +1635,8 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         return None
 
     def _code_recovery_loop_caps(self, execution_mode: str) -> Tuple[int, int]:
-        if execution_mode == "bypass":
-            return 0, 0
-        # Once code recovery is entered, keep the unified loop on the old
-        # Phase2 Full budget so it can actually exercise multi-source / multi-round
-        # repair instead of collapsing back to the Lean one-shot regime.
+        if execution_mode == "lean":
+            return 1, 1
         return max(1, int(self.config.repair_rounds)), max(1, int(self.config.repair_seed_top_k))
 
     def _collect_code_recovery_sources(
@@ -1585,12 +1757,30 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
     ) -> List[Tuple[Dict[str, Any], CodeRepairEval]]:
         branches: List[Tuple[Dict[str, Any], CodeRepairEval]] = []
         seen: set[str] = {str(current_entry.get("text", "")).strip()}
-        repair_plan = self._diagnose_code_repair_plan(
+        failure_card = build_failure_card(
+            feedback,
+            metadata=metadata,
+            current_entry=current_entry,
+            repair_round=repair_round,
+        )
+        locus_card = build_locus_card(
+            str(current_entry.get("text", "")),
+            feedback,
+            metadata=metadata,
+        )
+        preserve_card = build_preserve_card(
+            str(current_entry.get("text", "")),
+            feedback,
+            metadata=metadata,
+        )
+        diagnosis = self._diagnose_code_repair_plan(
             question_text=question_text,
             metadata=metadata,
             dataset_profile=dataset_profile,
             current_entry=current_entry,
-            feedback=feedback,
+            failure_card=failure_card,
+            locus_card=locus_card,
+            preserve_card=preserve_card,
         )
         repair_source_label = str(current_entry.get("candidate_bank_source") or current_entry.get("digest", "") or "checkpoint")
 
@@ -1601,8 +1791,10 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 question_text=question_text,
                 metadata=metadata,
                 current_entry=current_entry,
-                feedback=feedback,
-                repair_plan=repair_plan,
+                failure_card=failure_card,
+                locus_card=locus_card,
+                preserve_card=preserve_card,
+                diagnosis=diagnosis,
                 repair_source_label=repair_source_label,
             )
             raw_output = self.evaluator._cached_chat(
@@ -1612,12 +1804,31 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 ],
                 runtime=self.evaluator._resolve_runtime("tier2", dataset_profile),
             )
-            repaired = self._sanitize_candidate(question_text, raw_output, metadata=metadata)
-            if not repaired or repaired in seen:
+            edit_artifact = self._parse_json_object(raw_output)
+            patched_code, patch_error = apply_local_edit_artifact(
+                str(current_entry.get("text", "")),
+                edit_artifact,
+                locus_card=locus_card,
+                preserve_card=preserve_card,
+                metadata=metadata,
+            )
+            if not patched_code or patched_code in seen:
                 continue
-            seen.add(repaired)
+            seen.add(patched_code)
+            delta_prediction = self._self_check_repair_branch(
+                question_text=question_text,
+                metadata=metadata,
+                dataset_profile=dataset_profile,
+                failure_card=failure_card,
+                locus_card=locus_card,
+                preserve_card=preserve_card,
+                diagnosis=diagnosis,
+                edit_artifact=edit_artifact,
+                current_entry=current_entry,
+                patched_code=patched_code,
+            )
             verified, verified_feedback = self._prepare_verified_entry(
-                repaired,
+                patched_code,
                 metadata=metadata,
                 parent=current_entry,
                 repair_agent_id=agent_id,
@@ -1628,21 +1839,34 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 repair_operator_type=repair_operator_type,
             )
             self._ensure_v4_4_entry_fields(verified)
-            verified["repair_patch_locus"] = str(repair_plan.get("patch_locus", ""))
-            verified["repair_preserve_constraints"] = list(repair_plan.get("preserve_constraints", ()))
-            verified["repair_plan"] = str(repair_plan.get("patch_plan", ""))
-            self_check = self._self_check_repair_branch(
-                question_text=question_text,
-                metadata=metadata,
-                dataset_profile=dataset_profile,
-                current_entry=current_entry,
-                repaired_entry=verified,
-                repair_plan=repair_plan,
+            delta_match = self._delta_prediction_match(
+                delta_prediction,
+                before_feedback=feedback,
+                after_feedback=verified_feedback,
             )
-            verified["repair_self_check_repaired"] = str(self_check.get("repaired", ""))
-            verified["repair_self_check_drift"] = str(self_check.get("drift", ""))
-            verified["repair_self_check_risk"] = str(self_check.get("risk", ""))
-            verified["repair_self_check_rationale"] = str(self_check.get("rationale", ""))
+            verified["repair_patch_locus"] = str(diagnosis.get("patch_locus", {}).get("editable_region_id", ""))
+            verified["repair_preserve_constraints"] = list(diagnosis.get("preserve_constraints", ()))
+            verified["repair_plan"] = " | ".join(str(item).strip() for item in diagnosis.get("minimal_edit_plan", ()) if str(item).strip())
+            verified["repair_failure_card"] = dict(failure_card)
+            verified["repair_locus_card"] = dict(locus_card)
+            verified["repair_preserve_card"] = dict(preserve_card)
+            verified["repair_edit_artifact"] = dict(edit_artifact)
+            verified["repair_delta_prediction"] = dict(delta_prediction)
+            verified["repair_delta_match"] = float(delta_match)
+            verified["repair_self_check_repaired"] = "predicted"
+            verified["repair_self_check_drift"] = str(delta_prediction.get("drift", ""))
+            verified["repair_self_check_risk"] = str(len(delta_prediction.get("regression_risk", ())))
+            verified["repair_self_check_rationale"] = str(delta_prediction.get("rationale", "") or patch_error)
+            verified["repair_trace"] = list(current_entry.get("repair_trace", ())) + [
+                self._repair_trace_record(
+                    diagnosis=diagnosis,
+                    edit_artifact=edit_artifact,
+                    prediction=delta_prediction,
+                    before_feedback=feedback,
+                    after_feedback=verified_feedback,
+                    delta_match=delta_match,
+                )
+            ]
             branches.append((verified, verified_feedback))
         branches.sort(
             key=lambda item: self._approved_branch_sort_key(item[0], item[1]),
