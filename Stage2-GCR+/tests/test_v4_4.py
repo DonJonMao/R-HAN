@@ -1039,3 +1039,111 @@ def test_code_recovery_loop_reinserts_best_improving_branch():
     assert reason == "v4_4_code_reinsert_recollapse"
     assert extra["v4_4_repair_rounds_run"] == 1
     assert extra["v4_4_reinserted_recovery_count"] == 1
+
+
+def test_lean_code_recovery_uses_full_depth_caps_once_entered():
+    runtime = _runtime_stub()
+    runtime.config.repair_rounds = 2
+    runtime.config.repair_seed_top_k = 4
+    runtime._verified_rank_key = lambda entry, feedback: feedback.rank_key  # type: ignore[attr-defined]
+    runtime._quality_score = lambda entry: float(entry.get("score", 0.0))  # type: ignore[attr-defined]
+    runtime._stable_entry_tiebreak = lambda entry: (0, str(entry.get("digest", "")))  # type: ignore[attr-defined]
+    runtime._prepare_verified_entry = lambda text, metadata=None, parent=None, **kwargs: (parent, _code_eval(passed=0, total=4))  # type: ignore[attr-defined]
+
+    def collapse(pool, *, anchor_digest):
+        digests = {entry["digest"] for entry, _ in pool}
+        classes = [
+            {
+                "key": ("anchor",),
+                "representative": {
+                    "digest": "anchor",
+                    "text": "anchor",
+                    "score": 0.1,
+                    "stage1_anchor": True,
+                    "origin_node_id": "solver",
+                    "origin_turn_index": 0,
+                    "origin_role": "solver",
+                    "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
+                },
+                "feedback": _code_eval(passed=1, total=4, failure_kind="visible_test_failure"),
+                "size": 1,
+                "contains_anchor": True,
+                "repair_locus": "visible_test_failure",
+            },
+            {
+                "key": ("challenger",),
+                "representative": {
+                    "digest": "challenger",
+                    "text": "challenger",
+                    "score": 0.2,
+                    "origin_node_id": "solver",
+                    "origin_turn_index": 0,
+                    "origin_role": "solver",
+                    "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
+                },
+                "feedback": _code_eval(passed=2, total=4, failure_kind="visible_test_failure"),
+                "size": 1,
+                "contains_anchor": False,
+                "repair_locus": "visible_test_failure",
+            },
+        ]
+        if "repair_r1" in digests:
+            classes.insert(
+                0,
+                {
+                    "key": ("repair_r1",),
+                    "representative": _recovery_branch_entry("repair_r1"),
+                    "feedback": _code_eval(passed=3, total=4, failure_kind="visible_test_failure"),
+                    "size": 1,
+                    "contains_anchor": False,
+                    "repair_locus": "visible_test_failure",
+                },
+            )
+        if "repair_r2" in digests:
+            classes.insert(
+                0,
+                {
+                    "key": ("repair_r2",),
+                    "representative": _recovery_branch_entry("repair_r2"),
+                    "feedback": _code_eval(passed=4, total=4),
+                    "size": 1,
+                    "contains_anchor": False,
+                    "repair_locus": "stable",
+                },
+            )
+        return classes
+
+    runtime._collapse_code_classes = collapse  # type: ignore[attr-defined]
+    runtime._build_code_recovery_context = lambda **kwargs: {  # type: ignore[attr-defined]
+        "recovery_subgraph_node_ids": ["solver", "sink"],
+        "recovery_subgraph_edge_ids": ["e1"],
+        "trigger_verifier_snapshot": {"labels": ["challenge"], "failure_kind": "visible_test_failure", "passed": 2, "total": 4},
+    }
+
+    def generate(**kwargs):
+        digest = kwargs["current_entry"]["digest"]
+        if digest == "challenger" and kwargs["repair_round"] == 1:
+            return [(_recovery_branch_entry("repair_r1"), _code_eval(passed=3, total=4, failure_kind="visible_test_failure"))]
+        if digest == "repair_r1":
+            return [(_recovery_branch_entry("repair_r2"), _code_eval(passed=4, total=4))]
+        return []
+
+    runtime._generate_repair_branches = generate  # type: ignore[attr-defined]
+    runtime._inspect_code_promotion = lambda **kwargs: (True, "ok")  # type: ignore[attr-defined]
+
+    selected, reason, extra = runtime._select_code_repair_against_anchor_v44(
+        graph=_code_recovery_graph(),
+        question_text="q",
+        metadata={"entry_point": "solve", "test_list": ["assert solve(1)==2"]},
+        dataset_profile=SimpleNamespace(task_type="code_generation", name="mbpp"),
+        candidates=[{"digest": "challenger", "text": "challenger"}],
+        anchor={"digest": "anchor", "text": "anchor", "stage1_anchor": True},
+        budget_bucket="normal",
+        turn_traces=[],
+    )
+
+    assert selected["digest"] == "repair_r2"
+    assert reason == "v4_4_code_reinsert_recollapse"
+    assert extra["v4_4_execution_mode"] == "lean"
+    assert extra["v4_4_repair_rounds_run"] == 2
+    assert extra["v4_4_repair_branch_count"] == 2

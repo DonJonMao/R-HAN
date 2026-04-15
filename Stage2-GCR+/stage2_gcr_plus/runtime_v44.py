@@ -1460,8 +1460,11 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         return None
 
     def _code_recovery_loop_caps(self, execution_mode: str) -> Tuple[int, int]:
-        if execution_mode == "lean":
-            return 1, 1
+        if execution_mode == "bypass":
+            return 0, 0
+        # Once code recovery is entered, keep the unified loop on the old
+        # Phase2 Full budget so it can actually exercise multi-source / multi-round
+        # repair instead of collapsing back to the Lean one-shot regime.
         return max(1, int(self.config.repair_rounds)), max(1, int(self.config.repair_seed_top_k))
 
     def _collect_code_recovery_sources(
