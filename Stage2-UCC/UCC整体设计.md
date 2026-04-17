@@ -1,3769 +1,703 @@
-统一三步走总览
-阶段一（当前版本）
+# UCC整体设计
 
-Bootstrap Unified Scaffold
+更新时间：2026-04-17
 
-目标：
-把旧版 “任务型主壳” 改造成一个统一 correction scaffold，但允许内部还有 heuristic teacher、adapter verifier、soft/硬混合控制。
-这一阶段最重要的是：先统一接口与数据流，为后续训练创造条件。
+本文档正式采用新的阶段定义。
 
-阶段二
+最重要的重定位只有一句话：当前 `phase3a_unified` 代码不再计入正式三阶段，而被定义为 `P0: Bootstrap Teacher Scaffold`。它负责统一接口、统一数据流、产 teacher 轨迹、暴露真实失败模式；新的正式阶段一从 `answer/evidence` 对象语义和 `overturn` 校准开始。
 
-Unified Verifier + Unified Local Correction
+## 1. 为什么要重定义阶段
 
-目标：
-彻底拿掉任务类型在 canonicalization / verification / operator 中的直接作用。
-让 verifier、localizer、preserve、artifact proposal、delta predictor 全部成为统一可学习模块。
+当前系统已经暴露出一个非常明确的现实瓶颈：
 
-阶段三
+- 在 `MMLU-Pro` 这类 finite-answer / closed-set 任务上，主要损失不是候选不够多，而是错误 override 会把本来正确的 `stage1 anchor` 翻坏。
+- 在 `MBPP/HumanEval` 上，系统已经能产生少量有效修复，但现有 hard guard 和粗粒度 correction 让这些收益很难稳定穿透 final selection。
+- 在 `GSM8K/MATH/NLGraph/Knowledge Crosswords` 上，当前统一对象还不够语义化，verifier 能看到的是“一团 units”，而不是“最终答案单元”和“支持证据单元”的区别。
 
-Fully Continuous Unified Controller
+因此，旧定义里的“阶段一=当前代码”已经不再准确。当前代码更像一个 bootstrap 平台，而不是正式的方法阶段。
 
-目标：
-把当前仍保留的 heuristics controller、hard thresholds、hard guard、hard cluster 进一步连续化，最终变成一个真正的 verifier-conditioned unified corrective system。
+## 2. 新的总览
 
-阶段一：Bootstrap Unified Scaffold（当前代码对应阶段）
+新的统一路线图如下：
 
-这一阶段你已经做了不少，所以我直接按“该如何定义它”来写。
-它的定位不是最终版，而是：
+- `P0: Bootstrap Teacher Scaffold`
+- `阶段一: Unified Semantic Verification & Safe Override`
+- `阶段二: Unified Local Correction`
+- `阶段三: Fully Continuous Unified Controller`
 
-统一数据流 + 统一对象接口 + 统一可训练日志器
+实现优先级严格按下面顺序推进：
 
-1.1 输入定义
-
-对每个样本，输入写成：
-
-𝐼
-=
-(
-𝐺
-union
-,
-𝑎
-0
-,
-Π
-,
-𝑆
-,
-𝑋
-)
-I=(G
-union
-	​
-,a
-0
-	​
-,Π,S,X)
+`1 -> 2 -> 5 -> 4 -> 3 -> 6`
 
 其中：
 
-𝐺
-union
-G
-union
-	​
-：冻结的题目专属 UnionGraph
-𝑎
-0
-a
-0
-	​
-：Stage1 anchor
-Π
-Π：Stage1 节点/边先验
-𝑆
-S：prepared artifact / 一阶段摘要
-𝑋
-X：题面或原始输入
+- `1`：`answer/evidence` 对象语义
+- `2`：`pairwise overturn verifier`
+- `5`：风险感知 final utility / safe override
+- `4`：`localize/preserve` 与 correction value
+- `3`：`CorrectionArtifact` proposal / apply / delta
+- `6`：训练连续化与 on-policy self-correction
 
-这和你旧版 code 路线的输入定义完全兼容。
+叙事上，阶段二里的 `4/3` 不是两块相互独立的系统，而是同一个 `local correction block`：
 
-1.2 图内 rerun 仍然保留
+`localize -> preserve -> propose -> apply -> delta -> value`
 
-这一阶段你不要动旧版最核心的东西：
+只是工程实现顺序上，先做 `localize/preserve`，再接 `artifact proposal` 更稳。
 
-Frozen UnionGraph
-私有 memory 四桶
-GlobalNode
-edge gating
-candidate bank
-provenance
-reinsert 主壳
+## 3. P0：Bootstrap Teacher Scaffold
 
-也就是说，阶段一不推翻旧版的 graph-native rerun，只是把 rerun 后面的对象和状态统一起来。
+### 3.1 定位
 
-1.3 Memory retrieval：统一连续检索（修正版）
+`P0` 对应当前 `phase3a_unified` 代码。
 
-你前面指出得对：
-memory retrieval 不能简单理解为“把四桶拼起来和问题做一个相似度”。
-更准确的公式应该是：
+它的职责只有三个：
 
-记录级检索
+- 提供统一数据流：`candidate -> artifact -> verifier -> correction trace -> reinsert`
+- 提供稳定但保守的 teacher 轨迹
+- 暴露真实失败模式，例如：
+  - `MMLU-Pro` 的错误 overturn
+  - `MBPP/HumanEval` 的“内部修好但最终放不出来”
+  - `GSM8K/MATH` 的“解释更完整但答案更错”
 
-对节点
-𝑣
-v、memory view/slot
-𝜏
-τ、记忆记录
-𝑚
-m：
+### 3.2 P0 保留什么
 
-𝑠
-𝑣
-,
-𝑚
-(
-𝜏
-,
-𝑡
+P0 继续保留当前主壳：
+
+- 冻结 `UnionGraph`
+- graph-native rerun
+- candidate bank
+- 统一化的 artifact / verifier / correction 接口
+- teacher-style hard guard
+- replay / trajectory logging
+
+### 3.3 P0 不承担什么
+
+P0 不承担以下正式方法责任：
+
+- 不承担真正的 answer/evidence 语义建模
+- 不承担显式的 pairwise overturn 校准
+- 不承担正式的 risk-aware safe override
+- 不承担 learnable local correction block
+- 不承担 fully continuous controller
+
+一句话：`P0` 是训练与分析平台，不是最终算法阶段。
+
+## 4. 阶段一：Unified Semantic Verification & Safe Override
+
+阶段一的目标不是做 correction，而是先把“谁有资格翻案”这件事做对。
+
+核心原则：先修 `semantic verification` 和 `safe override`，再让 correction 进入主舞台。
+
+### 4.1 阶段一的三项核心任务
+
+阶段一只做三件事：
+
+1. 把 candidate 统一成 `answer/evidence-aware ArtifactIR++`
+2. 把 verifier 统一成 `single-candidate + pairwise overturn` 的单接口系统
+3. 把 final selection 改成风险感知的 `safe override`
+
+### 4.2 ArtifactIR++
+
+阶段一的统一对象定义为：
+
+```text
+A_i = (
+  U_i,
+  E_i,
+  V_i,
+  y_i,
+  p_i,
+  q_i,
+  R_i,
+  S_i
 )
-=
-𝑞
-𝑣
-,
-𝜏
-𝑡
-⊤
-𝑘
-𝑚
-(
-𝜏
-)
-𝑑
-s
-v,m
-(τ,t)
-	​
-=
-d
-	​
-q
-v,τ
-t⊤
-	​
-k
-m
-(τ)
-	​
-	​
-
+```
 
 其中：
 
-𝑞
-𝑣
-,
-𝜏
-𝑡
-q
-v,τ
-t
-	​
-：当前节点在 slot
-𝜏
-τ 下的 query
-𝑘
-𝑚
-(
-𝜏
-)
-k
-m
-(τ)
-	​
-：记录
-𝑚
-m 的 key
-𝑑
-d：向量维度
-稀疏化选择
-𝑤
-𝑣
-,
-𝑚
-(
-𝜏
-,
-𝑡
-)
-=
-sparsemax
-⁡
-𝑚
-(
-𝑠
-𝑣
-,
-𝑚
-(
-𝜏
-,
-𝑡
-)
-)
-w
-v,m
-(τ,t)
-	​
-=sparsemax
-m
-	​
-(s
-v,m
-(τ,t)
-	​
-)
-slot 读出
-𝑟
-𝑣
-,
-𝜏
-𝑡
-=
-∑
-𝑚
-𝑤
-𝑣
-,
-𝑚
-(
-𝜏
-,
-𝑡
-)
- 
-val
-𝑚
-r
-v,τ
-t
-	​
-=
-m
-∑
-	​
-w
-v,m
-(τ,t)
-	​
-val
-m
-	​
+- `U_i`：全部 units
+- `E_i`：unit graph
+- `V_i`：多视图表示
+- `y_i`：rendered answer
+- `p_i`：provenance
+- `q_i`：各视图置信度
+- `R_i`：unit roles
+- `S_i`：schema features / answer signature
 
-Query 构造
-𝑞
-𝑣
-,
-𝜏
-𝑡
-=
-𝑊
-𝑞
-[
-ℎ
-𝑣
-𝑡
-−
-1
-,
-𝑧
-𝑣
-𝑡
-−
-1
-,
-𝑔
-𝑡
-−
-1
-,
-𝑒
-𝑋
-,
-𝑟
-ˉ
-𝑡
-−
-1
-,
-𝑒
-𝜏
-]
-q
-v,τ
-t
-	​
-=W
-q
-	​
-[h
-v
-t−1
-	​
-,z
-v
-t−1
-	​
-,g
-t−1
-	​
-,e
-X
-	​
-,
-r
-ˉ
-t−1
-	​
-,e
-τ
-	​
-]
+### 4.3 unit role 语义
 
-这里：
+每个 unit 不只存硬标签，而是存一个软角色分布：
 
-ℎ
-𝑣
-𝑡
-−
-1
-h
-v
-t−1
-	​
-：节点状态
-𝑧
-𝑣
-𝑡
-−
-1
-z
-v
-t−1
-	​
-：上一轮局部 latent
-𝑔
-𝑡
-−
-1
-g
-t−1
-	​
-：上一轮 global state
-𝑒
-𝑋
-e
-X
-	​
-：题面编码
-𝑟
-ˉ
-𝑡
-−
-1
-r
-ˉ
-t−1
-	​
-：上一轮 frontier 残差均值
-𝑒
-𝜏
-e
-τ
-	​
-：slot embedding
-解释
+```text
+r_u = softmax(W_r h_u) in R^3
+```
 
-这一步做的是：
+三维对应：
 
-在四个物理 memory 桶里统一建 key/value
-用统一 query 检索
-用 sparsemax 得到真正稀疏的记录集合
+- `answer`
+- `evidence`
+- `mixed`
 
-所以第 1 阶段的 memory 就已经是统一检索机制，而不是任务型 memory route。
+同时，在 metadata 中缓存一个 hard role：
 
-1.4 Slot/view attention：决定“这一轮更该读哪类 memory”
+```text
+unit_role(u) = argmax r_u
+```
 
-你前面问得很对：2.1 选记录，2.3 生成 latent，那 2.2 干嘛。
-阶段一里，2.2 定义成：
+### 4.4 顶层 answer/evidence 索引
 
-𝑎
-𝑣
-𝑡
-=
-MLP
-⁡
-𝑎
-𝑓
-𝑓
-(
-[
-𝑒
-role
-(
-𝑣
-)
-,
-𝜋
-𝑣
-,
-sinkdist
-𝑣
-,
-stage1_support
-𝑣
-,
-𝜙
-𝑣
-𝑡
-−
-1
-]
-)
-a
-v
-t
-	​
-=MLP
-aff
-	​
-([e
-role(v)
-	​
-,π
-v
-	​
-,sinkdist
-v
-	​
-,stage1_support
-v
-	​
-,ϕ
-v
-t−1
-	​
-])
-𝜇
-𝑣
-,
-𝜏
-𝑡
-=
-softmax
-⁡
-𝜏
-(
-𝑊
-𝜇
-𝑎
-𝑣
-𝑡
-)
-μ
-v,τ
-t
-	​
-=softmax
-τ
-	​
-(W
-μ
-	​
-a
-v
-t
-	​
-)
-𝑟
-~
-𝑣
-𝑡
-=
-∑
-𝜏
-𝜇
-𝑣
-,
-𝜏
-𝑡
-𝑟
-𝑣
-,
-𝜏
-𝑡
-r
-~
-v
-t
-	​
-=
-τ
-∑
-	​
-μ
-v,τ
-t
-	​
-r
-v,τ
-t
-	​
-解释
-2.1：每个 slot 里读哪些记录
-2.2：各个 slot 本轮权重如何分配
-2.3：把汇总后的 memory 写入 latent
+阶段一要求在顶层显式缓存：
 
-所以 2.2 的角色是：
-
-决定这轮 memory retrieval 的“视角”
-
-例如某轮更该看 failure_view，另一轮更该看 stable_view，但这不是任务型 policy，而是节点状态诱导出的连续 attention。
-
-1.5 局部 latent 更新
-𝑧
-𝑣
-𝑡
-=
-GRU
-⁡
-𝜌
-(
-𝑧
-𝑣
-𝑡
-−
-1
-,
-[
-𝑟
-~
-𝑣
-𝑡
-,
-𝑔
-𝑡
-−
-1
-,
-𝜙
-𝑣
-𝑡
-−
-1
-]
-)
-z
-v
-t
-	​
-=GRU
-ρ
-	​
-(z
-v
-t−1
-	​
-,[
-r
-~
-v
-t
-	​
-,g
-t−1
-	​
-,ϕ
-v
-t−1
-	​
-])
-
-这里：
-
-𝑟
-~
-𝑣
-𝑡
-r
-~
-v
-t
-	​
-：memory 汇总读出
-𝑔
-𝑡
-−
-1
-g
-t−1
-	​
-：全局状态
-𝜙
-𝑣
-𝑡
-−
-1
-ϕ
-v
-t−1
-	​
-：上一轮局部反馈摘要
-解释
-
-它保留了你旧版“local latent -> verbalized brief”的思想。
-这一点非常值得保留，因为它是统一系统里最自然的“图内记忆压缩器”。
-
-1.6 阶段一的统一图控制（仍允许 heuristics）
-节点参与强度
-
-你前面指出 sigmoid 不能实现真稀疏，这个修正我在这里直接做掉：
-
-𝑒
-~
-𝑣
-𝑡
-=
-MLP
-⁡
-𝑛
-𝑜
-𝑑
-𝑒
-(
-[
-ℎ
-𝑣
-𝑡
-−
-1
-,
-𝑧
-𝑣
-𝑡
-,
-𝑔
-𝑡
-−
-1
-,
-𝑟
-ˉ
-𝑡
-−
-1
-]
-)
-e
-~
-v
-t
-	​
-=MLP
-node
-	​
-([h
-v
-t−1
-	​
-,z
-v
-t
-	​
-,g
-t−1
-	​
-,
-r
-ˉ
-t−1
-	​
-])
-𝛼
-𝑡
-=
-sparsemax
-⁡
-𝑣
-(
-𝑒
-~
-𝑡
-)
-α
-t
-=sparsemax
-v
-	​
-(
-e
-~
-t
-)
-边支持强度
-ℓ
-𝑢
-→
-𝑣
-𝑡
-=
-MLP
-⁡
-𝑒
-𝑑
-𝑔
-𝑒
-(
-[
-ℎ
-𝑢
-𝑡
-−
-1
-,
-ℎ
-𝑣
-𝑡
-−
-1
-,
-ℎ
-𝑢
-𝑡
-−
-1
-⊙
-ℎ
-𝑣
-𝑡
-−
-1
-,
-∣
-ℎ
-𝑢
-𝑡
-−
-1
-−
-ℎ
-𝑣
-𝑡
-−
-1
-∣
-,
-𝑔
-𝑡
-−
-1
-,
-𝜋
-𝑢
-𝑣
-]
-)
-ℓ
-u→v
-t
-	​
-=MLP
-edge
-	​
-([h
-u
-t−1
-	​
-,h
-v
-t−1
-	​
-,h
-u
-t−1
-	​
-⊙h
-v
-t−1
-	​
-,∣h
-u
-t−1
-	​
-−h
-v
-t−1
-	​
-∣,g
-t−1
-	​
-,π
-uv
-	​
-])
-𝛽
-𝑢
-→
-𝑣
-𝑡
-=
-𝛼
-𝑢
-𝑡
-𝛼
-𝑣
-𝑡
-  
-sparsemax
-⁡
-𝑢
-∈
-𝑁
-−
-(
-𝑣
-)
-(
-ℓ
-𝑢
-→
-𝑣
-𝑡
-)
-β
-u→v
-t
-	​
-=α
-u
-t
-	​
-α
-v
-t
-	​
-sparsemax
-u∈N
-−
-(v)
-	​
-(ℓ
-u→v
-t
-	​
-)
-消息聚合
-𝑚
-𝑣
-𝑡
-=
-∑
-𝑢
-𝛽
-𝑢
-→
-𝑣
-𝑡
-𝑊
-𝑚
-𝑠
-𝑔
-ℎ
-𝑢
-𝑡
-−
-1
-m
-v
-t
-	​
-=
-u
-∑
-	​
-β
-u→v
-t
-	​
-W
-msg
-	​
-h
-u
-t−1
-	​
-节点更新
-ℎ
-𝑣
-𝑡
-=
-GRU
-⁡
-ℎ
-(
-ℎ
-𝑣
-𝑡
-−
-1
-,
-[
-𝑧
-𝑣
-𝑡
-,
-𝑚
-𝑣
-𝑡
-,
-𝑔
-𝑡
-−
-1
-]
-)
-h
-v
-t
-	​
-=GRU
-h
-	​
-(h
-v
-t−1
-	​
-,[z
-v
-t
-	​
-,m
-v
-t
-	​
-,g
-t−1
-	​
-])
-全局状态
-𝑔
-𝑡
-=
-AttnPool
-⁡
-(
-{
-𝛼
-𝑣
-𝑡
-ℎ
-𝑣
-𝑡
-}
-𝑣
-∈
-𝑉
-)
-g
-t
-	​
-=AttnPool({α
-v
-t
-	​
-h
-v
-t
-	​
-}
-v∈V
-	​
-)
-解释
-
-这里已经是“连续统一 controller”的雏形。
-但阶段一可以允许你继续保留少量 heuristic bonus（如 root/sink/provenance bias）作为 teacher，只要它们不依赖任务类型。
-
-1.7 候选发射与 bank 更新
-节点候选发射先验
-𝜂
-𝑣
-𝑡
-=
-𝜎
-(
-MLP
-⁡
-𝑒
-𝑚
-𝑖
-𝑡
-(
-[
-ℎ
-𝑣
-𝑡
-,
-  
-𝑧
-𝑣
-𝑡
-,
-  
-𝑔
-𝑡
-,
-  
-𝑒
-role
-(
-𝑣
-)
-]
-)
-)
-η
-v
-t
-	​
-=σ(MLP
-emit
-	​
-([h
-v
-t
-	​
-,z
-v
-t
-	​
-,g
-t
-	​
-,e
-role(v)
-	​
-]))
-候选进入 bank 的初始质量
-𝑏
-𝑣
-,
-0
-𝑡
-=
-𝛼
-𝑣
-𝑡
-⋅
-𝜂
-𝑣
-𝑡
-b
-v,0
-t
-	​
-=α
-v
-t
-	​
-⋅η
-v
-t
-	​
-
-Bank 更新
-𝐵
-𝑡
-=
-𝐵
-𝑡
-−
-1
-∪
-{
-(
-𝑦
-𝑣
-𝑡
-,
-𝑏
-𝑣
-,
-0
-𝑡
-,
-prov
-𝑣
-𝑡
-)
-}
-𝑣
-B
-t
-	​
-=B
-t−1
-	​
-∪{(y
-v
-t
-	​
-,b
-v,0
-t
-	​
-,prov
-v
-t
-	​
-)}
-v
-	​
-
-解释
-
-这一阶段开始，就取消“只有某个 route 的入口能进 bank”的任务型规则。
-所有节点都允许发射候选，区别只在于
-𝑏
-𝑣
-,
-0
-𝑡
-b
-v,0
-t
-	​
- 的大小。
-你前面说“role 预定义还能接受”，我也同意；所以 role 可以作为 emission prior 的输入，但不做硬 gate。
-
-1.8 ArtifactIR（阶段一可先做弱版本）
-
-这一阶段开始统一 candidate 对象：
-
-𝐴
-𝑖
-=
-ArtifactIR
-(
-𝑐
-𝑖
-)
-A
-i
-	​
-=ArtifactIR(c
-i
-	​
-)
+- `answer_unit_ids`
+- `evidence_unit_ids`
+- `schema_features`
+- `answer_signature`
 
 定义：
 
-ArtifactIR(
-    units,
-    edges,
-    views,
-    rendered_answer,
-    provenance,
-    parse_confidence,
-)
-四视图
+```text
+A_i^ans = { u in U_i | r_u^ans > tau_a }
+A_i^evd = { u in U_i | r_u^evd > tau_e }
+```
 
-固定：
+这一步的意义非常直接：系统终于能明确区分“真正决定最终输出的 answer units”和“只是支持它的 evidence units”。
 
-surface_view
-step_view
-struct_view
-exec_view
-视图置信度（阶段一可用启发式）
-𝑞
-𝑖
-(
-𝑚
-)
-=
-𝜎
-(
-MLP
-⁡
-𝑣
-𝑖
-𝑒
-𝑤
-(
-𝑚
-)
-(
-𝑓
-𝑖
-(
-𝑚
-)
-)
-)
-q
-i
-(m)
-	​
-=σ(MLP
-view
-(m)
-	​
-(f
-i
-(m)
-	​
-))
-𝑞
-~
-𝑖
-=
-sparsemax
-⁡
-(
-𝑞
-𝑖
-)
-q
-~
-	​
-i
-	​
-=sparsemax(q
-i
-	​
-)
-ℎ
-𝑖
-,
-𝑢
-=
-∑
-𝑚
-𝑞
-~
-𝑖
-(
-𝑚
-)
-𝑊
-𝑚
-𝑧
-𝑖
-,
-𝑢
-(
-𝑚
-)
-h
-i,u
-	​
-=
-m
-∑
-	​
-q
-~
-	​
-i
-(m)
-	​
-W
-m
-	​
-z
-i,u
-(m)
-	​
-解释
+### 4.5 answer signature
 
-阶段一这里可以先允许：
+`answer_signature` 必须统一定义，而不是按任务硬 route。
 
-parser heuristics
-canonicalizer prompt 可选开关
-task-specific adapter 还没完全去掉
+统一规则如下：
 
-因为阶段一的重点是：先统一对象容器。
-你现在 7e6fb70 的 unified 包已经有 artifacts.py，所以这一步完全能落到当前代码结构里。(github.com
+- 多选题：`option::<label>`
+- 数学 / GSM：`numeric::<normalized value>`
+- 代码：`code::<entry_point>::<canonical hash>`
+- 结构任务：`structured::<canonical form>`
+- 其他文本：`text::<normalized surface>`
+
+这不是任务分流，而是统一答案表征。
+
+### 4.6 多视图统一编码
+
+阶段一保留四视图，但不按任务硬切换，而是软加权：
+
+- `surface_view`
+- `step_view`
+- `struct_view`
+- `exec_view`
+
+视图置信度：
+
+```text
+q_i^(m) = sigma(MLP_view^(m)(f_i^(m)))
+q~_i = sparsemax(q_i)
+```
+
+统一 unit 表示：
+
+```text
+h_{i,u} = sum_m q~_i^(m) W_m z_{i,u}^(m)
+```
+
+解释：
+
+- 在 `MBPP/HumanEval` 上，`exec_view` 会自然更强
+- 在 `NLGraph/Knowledge Crosswords` 上，`struct_view` 会自然更强
+- 在 `MMLU/GSM8K/MATH` 上，`step_view` 和 `answer/evidence` 结构更重要
+
+权重来自视图可靠性，不来自任务标签。
+
+### 4.7 阶段一统一 verifier
+
+阶段一的 verifier 是一套单接口系统，但输出三类结果：
+
+- `single-candidate verification`
+- `answer/evidence consistency`
+- `pairwise overturn evaluation`
+
+统一表示为：
+
+```text
+V_i = (
+  r_i,
+  epsilon_i,
+  s_i,
+  c_i,
+  p_i,
+  omega_i
 )
-
-1.9 统一 verifier（阶段一先做 adapter 版）
-
-定义统一状态：
-
-𝑉
-𝑖
-=
-(
-𝑟
-𝑖
-,
-  
-𝜖
-𝑖
-,
-  
-𝑠
-𝑖
-,
-  
-𝑐
-𝑖
-,
-  
-𝑝
-𝑖
-)
-V
-i
-	​
-=(r
-i
-	​
-,ϵ
-i
-	​
-,s
-i
-	​
-,c
-i
-	​
-,p
-i
-	​
-)
+```
 
 其中：
 
-𝑟
-𝑖
-r
-i
-	​
-：统一残差向量
-𝜖
-𝑖
-ϵ
-i
-	​
-：unit-level 错误热度
-𝑠
-𝑖
-s
-i
-	​
-：unit-level 支持度
-𝑐
-𝑖
-c
-i
-	​
-：候选置信度
-𝑝
-𝑖
-p
-i
-	​
-：候选进步潜力
-统一残差向量
-𝑟
-𝑖
-=
-[
-𝑟
-𝑝
-𝑎
-𝑟
-𝑠
-𝑒
-,
-𝑟
-𝑐
-𝑜
-𝑛
-𝑠
-,
-𝑟
-𝑐
-𝑜
-𝑚
-𝑝
-,
-𝑟
-𝑒
-𝑥
-𝑒
-𝑐
-,
-𝑟
-𝑐
-𝑜
-𝑛
-𝑠
-𝑡
-,
-𝑟
-𝑠
-𝑢
-𝑝
-𝑝
-𝑜
-𝑟
-𝑡
-,
-𝑟
-𝑝
-𝑟
-𝑒
-𝑠
-𝑒
-𝑟
-𝑣
-𝑒
-]
-𝑖
-r
-i
-	​
-=[r
-parse
-	​
-,r
-cons
-	​
-,r
-comp
-	​
-,r
-exec
-	​
-,r
-const
-	​
-,r
-support
-	​
-,r
-preserve
-	​
-]
-i
-	​
-Meta verifier
-𝑟
-𝑖
-,
-meta
-=
-MLP
-⁡
-𝑚
-𝑒
-𝑡
-𝑎
-(
-[
-Pool
-⁡
-(
-𝐻
-𝑖
+- `r_i`：统一残差向量
+- `epsilon_i`：unit-level error map
+- `s_i`：unit-level support map
+- `c_i`：candidate confidence
+- `p_i`：progress score
+- `omega_i`：overturn bundle
+
+### 4.8 统一残差向量
+
+统一残差定义为：
+
+```text
+r_i = [
+  r_parse,
+  r_cons,
+  r_comp,
+  r_exec,
+  r_const,
+  r_support,
+  r_preserve
+]_i
+```
+
+所有任务都投影到这一残差空间里，不再分别维护 reasoning/code/graph verifier。
+
+### 4.9 meta verifier
+
+meta verifier 负责检查：
+
+- 完整性
+- 一致性
+- unsupported units
+- 格式风险
+- preserve 风险
+
+形式上：
+
+```text
+r_i^meta = MLP_meta([Pool(H_i), e_X, S_i, p_i])
+```
+
+### 4.10 证据通道融合
+
+证据通道保持统一定义：
+
+- `parser`
+- `executor`
+- `constraint`
+- `search`
+- `symbolic`
+
+对每个通道 `k`：
+
+```text
+alpha_ik = sparsemax_k(MLP_rel([g_ik, q~_i, tool_health_k, S_i]))
+r_i = r_i^meta + sum_k alpha_ik T_k(o_ik)
+```
+
+解释：这是 evidence-channel weighting，不是 task routing。
+
+### 4.11 unit-level error / support
+
+错误热度：
+
+```text
+epsilon_{i,u} = sigma(MLP_err([h_{i,u}, r_i]))
+```
+
+支持度：
+
+```text
+s_{i,u} = sigma(MLP_sup([h_{i,u}, e_X, evidence_{i,u}]))
+```
+
+这两个输出在阶段一就要训练好，因为阶段二的 `localize/preserve` 会直接吃它们。
+
+### 4.12 answer/evidence consistency
+
+阶段一新增显式的答案一致性分数：
+
+```text
+a_i^cons = sigma(MLP_ans([
+  Pool(H_i^ans),
+  Pool(H_i^evd),
+  S_i,
+  r_i
+]))
+```
+
+它回答的是：
+
+“当前 evidence units 是否真的支持当前 answer units？”
+
+这是当前 `MMLU-Pro` 最缺的一层。
+
+### 4.13 overturn bundle
+
+定义：
+
+```text
+omega_i = (
+  Delta a_i,
+  Delta c_i,
+  Delta r_i,
+  pi_i^pres,
+  rho_{i > a0}
 )
-,
-  
-𝑒
-𝑋
-,
-  
-prov
-𝑖
-]
-)
-r
-i,meta
-	​
-=MLP
-meta
-	​
-([Pool(H
-i
-	​
-),e
-X
-	​
-,prov
-i
-	​
-])
-证据通道融合（阶段一允许 adapter）
-𝑟
-𝑖
-=
-𝑟
-𝑖
-,
-meta
-+
-∑
-𝑘
-𝛼
-𝑖
-𝑘
-𝑇
-𝑘
-(
-𝑜
-𝑖
-𝑘
-)
-r
-i
-	​
-=r
-i,meta
-	​
-+
-k
-∑
-	​
-α
-ik
-	​
-T
-k
-	​
-(o
-ik
-	​
-)
+```
 
 其中：
 
-𝛼
-𝑖
-𝑘
-=
-sparsemax
-⁡
-𝑘
-(
-MLP
-⁡
-𝑟
-𝑒
-𝑙
-(
-[
-𝑔
-𝑖
-𝑘
-,
-𝑞
-~
-𝑖
-,
-tool_health
-𝑘
-]
-)
-)
-α
-ik
-	​
-=sparsemax
-k
-	​
-(MLP
-rel
-	​
-([g
-ik
-	​
-,
-q
-~
-	​
-i
-	​
-,tool_health
-k
-	​
+- `Delta a_i`：candidate 与 anchor 在 answer units 上的差异
+- `Delta c_i`：confidence 差异
+- `Delta r_i`：residual 差异
+- `pi_i^pres`：candidate preserve risk
+- `rho_{i > a0}`：candidate 推翻 anchor 的风险
+
+具体定义：
+
+```text
+Delta a_i = g_ans(A_i^ans, A_a0^ans, S_i)
+
+rho_{i > a0} = sigma(MLP_ovr([
+  Pool(H_i), r_i,
+  Pool(H_a0), r_a0,
+  Delta a_i,
+  pi_i^pres,
+  1 - a_i^cons
 ]))
-错误热度
-𝜖
-𝑖
-,
-𝑢
-=
-𝜎
-(
-MLP
-⁡
-𝑒
-𝑟
-𝑟
-(
-[
-ℎ
-𝑖
-,
-𝑢
-,
-𝑟
-𝑖
-]
-)
-)
-ϵ
-i,u
-	​
-=σ(MLP
-err
-	​
-([h
-i,u
-	​
-,r
-i
-	​
-]))
-支持度
-𝑠
-𝑖
-,
-𝑢
-=
-𝜎
-(
-MLP
-⁡
-𝑠
-𝑢
-𝑝
-(
-[
-ℎ
-𝑖
-,
-𝑢
-,
-𝑒
-𝑋
-,
-evidence
-𝑖
-,
-𝑢
-]
-)
-)
-s
-i,u
-	​
-=σ(MLP
-sup
-	​
-([h
-i,u
-	​
-,e
-X
-	​
-,evidence
-i,u
-	​
-]))
-置信度
-𝑐
-𝑖
-=
-𝜎
-(
-MLP
-⁡
-𝑐
-𝑜
-𝑛
-𝑓
-(
-[
-Pool
-⁡
-(
-𝐻
-𝑖
-)
-,
-𝑟
-𝑖
-,
-Var
-⁡
-𝑘
-(
-𝑇
-𝑘
-(
-𝑜
-𝑖
-𝑘
-)
-)
-]
-)
-)
-c
-i
-	​
-=σ(MLP
-conf
-	​
-([Pool(H
-i
-	​
-),r
-i
-	​
-,Var
-k
-	​
-(T
-k
-	​
-(o
-ik
-	​
-))]))
-进步潜力
-𝑝
-𝑖
-=
-MLP
-⁡
-𝑝
-𝑟
-𝑜
-𝑔
-(
-[
-𝑟
-ˉ
-𝑓
-𝑟
-𝑜
-𝑛
-𝑡
-𝑖
-𝑒
-𝑟
-−
-𝑟
-𝑖
-,
-𝑐
-𝑖
-,
-Δ
-prov
-𝑖
-]
-)
-p
-i
-	​
-=MLP
-prog
-	​
-([
-r
-ˉ
-frontier
-	​
-−r
-i
-	​
-,c
-i
-	​
-,Δprov
-i
-	​
+```
+
+这一步的关键不在于“candidate 好不好”，而在于“candidate 是否真的有资格推翻当前 anchor”。
+
+### 4.14 风险感知 utility
+
+阶段一先定义基础 utility：
+
+```text
+u_i = MLP_u([
+  Pool(H_i),
+  r_i,
+  c_i,
+  p_i,
+  a_i^cons,
+  prov_i
 ])
-阶段一的现实处理
+```
 
-这一阶段可以暂时允许 adapter，把现有不同验证器映射进统一残差空间。
-这不是最终版，但允许你先训练 unified rerank。
+相似度核：
 
-1.10 统一 utility 与 soft frontier（阶段一可 heuristic-first）
-候选基础效用
-𝑢
-𝑖
-=
-MLP
-⁡
-𝑢
-(
-[
-Pool
-⁡
-(
-𝐻
-𝑖
-)
-,
-𝑟
-𝑖
-,
-𝑐
-𝑖
-,
-𝑝
-𝑖
-,
-prov
-𝑖
-]
-)
-u
-i
-	​
-=MLP
-u
-	​
-([Pool(H
-i
-	​
-),r
-i
-	​
-,c
-i
-	​
-,p
-i
-	​
-,prov
-i
-	​
-])
-相似度核
-𝐾
-𝑖
-𝑗
-=
-cos
-⁡
-(
-Pool
-⁡
-(
-𝐻
-𝑖
-)
-,
-Pool
-⁡
-(
-𝐻
-𝑗
-)
-)
-+
-cos
-⁡
-(
-𝑟
-𝑖
-,
-𝑟
-𝑗
-)
-2
-K
-ij
-	​
-=
-2
-cos(Pool(H
-i
-	​
-),Pool(H
-j
-	​
-))+cos(r
-i
-	​
-,r
-j
-	​
-)
-	​
+```text
+K_ij = (2 * cos(Pool(H_i), Pool(H_j)) + cos(r_i, r_j)) / 3
+```
 
-冗余惩罚后效用
-𝜋
-𝑖
-=
-softmax
-⁡
-(
-𝑢
-𝑖
-/
-𝜏
-)
-π
-i
-	​
-=softmax(u
-i
-	​
-/τ)
-𝑢
-~
-𝑖
-=
-𝑢
-𝑖
-−
-𝛾
-∑
-𝑗
-𝜋
-𝑗
-𝐾
-𝑖
-𝑗
-u
-~
-i
-	​
-=u
-i
-	​
-−γ
-j
-∑
-	​
-π
-j
-	​
-K
-ij
-	​
+软去重后的 utility：
 
-soft frontier
-𝜋
-^
-𝑖
-=
-softmax
-⁡
-(
-𝑢
-~
-𝑖
-/
-𝜏
-)
-π
-^
-i
-	​
-=softmax(
-u
-~
-i
-	​
-/τ)
-解释
+```text
+u~_i = u_i - gamma * sum_j pi_j K_ij
+pi_i = softmax(u_i / tau)
+```
 
-阶段一不要再用旧版那种任务特异 class key。
-如果当前代码中还保留 cluster threshold，那就把它当 teacher 辅助，不要当最终定义。
+最终安全效用：
 
-1.11 阶段一训练目标
+```text
+u_i^safe = u~_i
+           - eta1 * rho_{i > a0}
+           - eta2 * pi_i^pres
+           + eta3 * a_i^cons
+```
 
-当前版本就可以训练：
+### 4.15 safe override 规则
 
-𝐿
-(
-1
-)
-=
-𝜆
-1
-𝐿
-𝑣
-𝑒
-𝑟
-𝑖
-𝑓
-𝑦
-+
-𝜆
-2
-𝐿
-𝑟
-𝑎
-𝑛
-𝑘
-+
-𝜆
-3
-𝐿
-𝑐
-𝑜
-𝑛
-𝑓
-+
-𝜆
-4
-𝐿
-ℎ
-𝑎
-𝑙
-𝑡
-L
-(1)
-=λ
-1
-	​
-L
-verify
-	​
-+λ
-2
-	​
-L
-rank
-	​
-+λ
-3
-	​
-L
-conf
-	​
-+λ
-4
-	​
-L
-halt
-	​
+阶段一的 final selection 由 `risk-aware safe utility` 主导，同时保留一层很薄的 fail-safe：
 
+```text
+override(i)
+iff
+u_i^safe > u_a0^safe
+and rho_{i > a0} < tau_ovr
+and not catastrophic_answer_rewrite
+```
 
 其中：
 
-𝐿
-𝑣
-𝑒
-𝑟
-𝑖
-𝑓
-𝑦
-=
-∥
-𝑟
-^
-−
-𝑟
-⋆
-∥
-2
-2
-+
-BCE
-⁡
-(
-𝑐
-^
-,
-𝑐
-⋆
-)
-L
-verify
-	​
-=∥
-r
-^
-−r
-⋆
-∥
-2
-2
-	​
-+BCE(
-c
-^
-,c
-⋆
-)
-𝐿
-𝑟
-𝑎
-𝑛
-𝑘
-=
-max
-⁡
-(
-0
-,
-  
-𝑚
-−
-𝑢
-~
-(
-𝑐
-+
-)
-+
-𝑢
-~
-(
-𝑐
-−
-)
-)
-L
-rank
-	​
-=max(0,m−
-u
-~
-(c
-+)
-+
-u
-~
-(c
-−
-))
-𝐿
-𝑐
-𝑜
-𝑛
-𝑓
-=
-∥
-𝑐
-^
-−
-1
-[
-𝑐
- correct
-]
-∥
-2
-L
-conf
-	​
-=∥
-c
-^
-−1[c correct]∥
-2
-𝐿
-ℎ
-𝑎
-𝑙
-𝑡
-=
-BCE
-⁡
-(
-ℎ
-^
-,
-ℎ
-⋆
-)
-L
-halt
-	​
-=BCE(
-h
-^
-,h
-⋆
-)
-阶段一的目标
+```text
+catastrophic_answer_rewrite
+iff
+|Delta a_i| > tau_a
+and a_i^cons < tau_c
+```
 
-这一步不是追求最终统一 correction，而是先：
+这层 fail-safe 不是旧的 hard anchor guard，而是防止 closed-set 任务继续大规模错翻的极薄保护层。
 
-学会 unified rerank
-学会 unified verifier projection
-学会 halt 校准
-大量记录 trajectories
-阶段二：Unified Verifier + Unified Local Correction
+### 4.16 阶段一训练目标
 
-这一阶段开始，目标变成：
+阶段一的损失定义为：
 
-去掉任务类型在 canonicalizer / verifier / operator 中的直接作用。
+```text
+L^(1) = L_verify + L_ans + L_ovr + L_rank + L_safe
+```
 
-也就是从“统一 scaffold”进入“统一 correction system”。
+各项含义：
 
-2.1 先拿掉 task_type 显式作用
+- `L_verify`：统一 verifier 校准
+- `L_ans`：answer/evidence consistency 校准
+- `L_ovr`：pairwise overturn 校准
+- `L_rank`：utility 排序损失
+- `L_safe`：safe override 二分类损失
 
-阶段二最关键的工程动作不是公式，而是接口清理：
+阶段一成功的判据非常明确：
 
-canonicalize_candidate(..., task_type=...) 删除
-verify_artifact(..., task_type=...) 删除
-proposal(..., task_type=...) 删除
-替代原则
+- `MMLU-Pro` 的错误 overturn 显著下降
+- `MBPP/HumanEval` 不因为过强保守而明显掉分
+- utility / overturn / safe override 三个头都能产出稳定可解释的轨迹
 
-不再根据任务名决定：
+## 5. 阶段二：Unified Local Correction
 
-用哪个 parser
-开哪个 executor
-走哪个 operator
+阶段二才引入 correction 主体，而且必须建立在阶段一已经训好的语义 verifier 之上。
 
-而是根据：
+### 5.1 阶段二的唯一主线
 
-parse_confidence
-view quality
-evidence channel reliability
-tool availability
+阶段二的方法主线只有一条：
 
-连续决定。
+```text
+localize -> preserve -> propose -> apply -> delta -> value
+```
 
-2.2 统一 localize 与 preserve
-localize
+这就是统一的 `local correction block`。
 
-对每个 candidate
-𝑖
-i、每个 unit
-𝑢
-u：
+### 5.2 阶段二的目标
 
-ℓ
-𝑖
-,
-𝑢
-=
-MLP
-⁡
-𝑙
-𝑜
-𝑐
-(
-[
-ℎ
-𝑖
-,
-𝑢
-,
-𝜖
-𝑖
-,
-𝑢
-,
-𝑠
-𝑖
-,
-𝑢
-,
-𝑝
-𝑖
-,
-𝑢
-𝑝
-𝑟
-𝑜
-𝑣
-,
-𝑚
-𝑖
-,
-𝑢
-𝑚
-𝑒
-𝑚
-,
-Δ
-𝑖
-,
-𝑢
-ℎ
-𝑖
-𝑠
-𝑡
-]
-)
-ℓ
-i,u
-	​
-=MLP
-loc
-	​
-([h
-i,u
-	​
-,ϵ
-i,u
-	​
-,s
-i,u
-	​
-,p
-i,u
-prov
-	​
-,m
-i,u
-mem
-	​
-,Δ
-i,u
-hist
-	​
-])
-𝜆
-𝑖
-=
-sparsemax
-⁡
-𝑢
-(
-ℓ
-𝑖
-,
-𝑢
-)
-λ
-i
-	​
-=sparsemax
-u
-	​
-(ℓ
-i,u
-	​
-)
-preserve
-𝜌
-𝑖
-,
-𝑢
-=
-𝜎
-(
-MLP
-⁡
-𝑝
-𝑟
-𝑒
-𝑠
-(
-[
-ℎ
-𝑖
-,
-𝑢
-,
-𝑠
-𝑖
-,
-𝑢
-,
-𝑚
-𝑖
-,
-𝑢
-𝑠
-𝑡
-𝑎
-𝑏
-𝑙
-𝑒
-,
-𝑎
-𝑖
-,
-𝑢
-𝑎
-𝑛
-𝑐
-ℎ
-𝑜
-𝑟
-]
-)
-)
-ρ
-i,u
-	​
-=σ(MLP
-pres
-	​
-([h
-i,u
-	​
-,s
-i,u
-	​
-,m
-i,u
-stable
-	​
-,a
-i,u
-anchor
-	​
+阶段二要同时做到两件事：
+
+- 放宽：让真正有价值的 correction 能穿透 final selection
+- 收紧：让 correction 本身更局部、更可验证、更可解释
+
+### 5.3 answer-first / evidence-first localize
+
+阶段二引入 gate：
+
+```text
+g_i^ans = sigma(MLP_af([r_i, omega_i, a_i^cons, u~_i]))
+```
+
+解释：
+
+- `g_i^ans` 接近 1：优先修 answer units
+- `g_i^ans` 接近 0：优先修 evidence units
+
+localize：
+
+```text
+l_{i,u} = MLP_loc([h_{i,u}, epsilon_{i,u}, s_{i,u}, m_{i,u}^{mem}, Delta_{i,u}^{hist}])
+```
+
+按角色混合得到：
+
+```text
+lambda_{i,u} = g_i^ans * 1[u in A_i^ans] * l_{i,u}
+             + (1 - g_i^ans) * 1[u in A_i^evd] * l_{i,u}
+
+lambda^_i = sparsemax_u(lambda_{i,u})
+```
+
+### 5.4 preserve heatmap
+
+```text
+rho_{i,u}^{keep} = sigma(MLP_keep([
+  h_{i,u},
+  s_{i,u},
+  a_{i,u}^{anchor},
+  m_{i,u}^{stable}
 ]))
-解释
+```
 
-这一步统一替代：
+这一步统一学习“哪些 unit 最不该动”，而不是再写任务型 preserve rule。
 
-code 的 patch locus
-graph 的 repair locus
-reasoning 的 first unsupported step
+### 5.5 critique summary
 
-所有任务都统一成：
+```text
+c_i^{loc} = sum_u lambda^_{i,u} h_{i,u}
+k_i^{pres} = sum_u rho_{i,u}^{keep} h_{i,u}
+d_i = MLP_crit([Pool(H_i), c_i^{loc}, k_i^{pres}, r_i, omega_i, g_t])
+```
 
-哪些 unit 问题大，哪些 unit 应保留。
+### 5.6 CorrectionArtifact
 
-2.3 统一 critique summary
-𝑐
-𝑖
-=
-∑
-𝑢
-𝜆
-𝑖
-,
-𝑢
-ℎ
-𝑖
-,
-𝑢
-c
-i
-	​
-=
-u
-∑
-	​
-λ
-i,u
-	​
-h
-i,u
-	​
-𝑝
-𝑖
-𝑝
-𝑟
-𝑒
-𝑠
-=
-∑
-𝑢
-𝜌
-𝑖
-,
-𝑢
-ℎ
-𝑖
-,
-𝑢
-p
-i
-pres
-	​
-=
-u
-∑
-	​
-ρ
-i,u
-	​
-h
-i,u
-	​
-𝑑
-𝑖
-=
-MLP
-⁡
-𝑐
-𝑟
-𝑖
-𝑡
-(
-[
-Pool
-⁡
-(
-𝐻
-𝑖
-)
-,
-𝑐
-𝑖
-,
-𝑝
-𝑖
-𝑝
-𝑟
-𝑒
-𝑠
-,
-𝑟
-𝑖
-,
-𝑔
-𝑡
-]
-)
-d
-i
-	​
-=MLP
-crit
-	​
-([Pool(H
-i
-	​
-),c
-i
-	​
-,p
-i
-pres
-	​
-,r
-i
-	​
-,g
-t
-	​
-])
-解释
+阶段二的 correction 只能是局部 artifact，不允许自由全文改写：
 
-critique summary 不再是任务型 prompt。
-它统一表示：
-
-问题集中在哪里
-哪些部分不能动
-当前主要 residual 是什么
-2.4 统一 CorrectionArtifact 分布
-𝑃
-(
-𝑎
-𝑖
-∣
-𝐴
-𝑖
-,
-𝑉
-𝑖
-,
-𝑔
-𝑡
-)
-=
-Decoder
-⁡
-𝑎
-𝑟
-𝑡
-(
-𝑎
-𝑖
-;
-  
-𝑑
-𝑖
-,
-  
-Pool
-⁡
-(
-𝐻
-𝑖
-)
-,
-  
-𝑟
-𝑖
-,
-  
-𝑔
-𝑡
-)
-P(a
-i
-	​
-∣A
-i
-	​
-,V
-i
-	​
-,g
-t
-	​
-)=Decoder
-art
-	​
-(a
-i
-	​
-;d
-i
-	​
-,Pool(H
-i
-	​
-),r
-i
-	​
-,g
-t
-	​
-)
-
-artifact 固定为：
-
+```json
 {
   "target_units": [...],
-  "operation": "...",
+  "operation": "replace | insert_before | insert_after | delete | reorder",
   "new_units": [...],
   "preserve_units": [...],
   "expected_delta": {...},
   "rationale": "..."
 }
-解释
+```
 
-这一阶段才真正形成统一 operator。
-不再有 code patch / graph repair / reasoning fix。
+### 5.7 apply + delta predictor
 
-2.5 apply + delta predictor
-apply
-𝐴
-𝑖
-′
-=
-Apply
-⁡
-(
-𝐴
-𝑖
-,
-𝑎
-𝑖
-)
-A
-i
-′
-	​
-=Apply(A
-i
-	​
-,a
-i
-	​
-)
-delta predictor
-Δ
-^
-𝑖
-=
-MLP
-⁡
-𝑑
-𝑒
-𝑙
-𝑡
-𝑎
-(
-[
-Pool
-⁡
-(
-𝐻
-𝑖
-)
-,
-Pool
-⁡
-(
-𝐻
-𝑖
-′
-)
-,
-𝑟
-𝑖
-,
-Emb
-⁡
-(
-𝑎
-𝑖
-)
-]
-)
-Δ
-^
-i
-	​
-=MLP
-delta
-	​
-([Pool(H
-i
-	​
-),Pool(H
-i
-′
-	​
-),r
-i
-	​
-,Emb(a
-i
-	​
-)])
+```text
+A'_i = Apply(A_i, a_i)
 
-其中：
-
-Δ
-^
-𝑖
-=
-(
-Δ
-𝑟
-𝑖
-^
-,
-Δ
-𝑐
-𝑖
-^
-,
-Δ
-𝑝
-𝑖
-^
-,
-preserve_risk
-^
-𝑖
-)
-Δ
-^
-i
-	​
-=(
-Δr
-i
-	​
-	​
-,Δc
-i
-	​
-	​
-,Δp
-i
-	​
-	​
-,preserve_risk
-	​
-i
-	​
-)
-解释
-
-这一步把 self-check 从“写感想”升级成：
-
-预测这次局部编辑是不是会真的改善 verifier state。
-
-2.6 阶段二损失
-𝐿
-(
-2
-)
-=
-𝐿
-(
-1
-)
-+
-𝜆
-5
-𝐿
-𝑙
-𝑜
-𝑐
-+
-𝜆
-6
-𝐿
-𝑝
-𝑟
-𝑒
-𝑠
-+
-𝜆
-7
-𝐿
-𝑎
-𝑟
-𝑡
-+
-𝜆
-8
-𝐿
-𝑑
-𝑒
-𝑙
-𝑡
-𝑎
-L
-(2)
-=L
-(1)
-+λ
-5
-	​
-L
-loc
-	​
-+λ
-6
-	​
-L
-pres
-	​
-+λ
-7
-	​
-L
-art
-	​
-+λ
-8
-	​
-L
-delta
-	​
-
-
-其中：
-
-𝐿
-𝑙
-𝑜
-𝑐
-=
-KL
-⁡
-(
-𝜆
-∥
-𝜆
-⋆
-)
-L
-loc
-	​
-=KL(λ∥λ
-⋆
-)
-𝐿
-𝑝
-𝑟
-𝑒
-𝑠
-=
-BCE
-⁡
-(
-𝜌
-,
-𝜌
-⋆
-)
-L
-pres
-	​
-=BCE(ρ,ρ
-⋆
-)
-𝐿
-𝑎
-𝑟
-𝑡
-=
-−
-log
-⁡
-𝑃
-(
-𝑎
-⋆
-∣
-𝐴
-,
-𝑉
-,
-𝑔
-)
-L
-art
-	​
-=−logP(a
-⋆
-∣A,V,g)
-𝐿
-𝑑
-𝑒
-𝑙
-𝑡
-𝑎
-=
-∥
-Δ
-^
-−
-Δ
-⋆
-∥
-2
-2
-L
-delta
-	​
-=∥
-Δ
-^
-−Δ
-⋆
-∥
-2
-2
-	​
-
-阶段二目标
-
-这一步完成后，系统应该真正开始出现：
-
-correction branch 不再只是数量增加
-而是会带来真实 residual drop
-reinsert -> rescoring 开始稳定工作
-阶段三：Fully Continuous Unified Controller
-
-阶段三才是你最终想要的版本：
-
-完全不依赖任务类型，也不依赖 hard route / hard mode / hard role gating / hard class collapse 的 unified correction system。
-
-3.1 统一 controller 四个连续量
-节点参与强度
-𝑒
-~
-𝑣
-𝑡
-=
-MLP
-⁡
-𝑛
-𝑜
-𝑑
-𝑒
-(
-[
-ℎ
-𝑣
-𝑡
-−
-1
-,
-𝑧
-𝑣
-𝑡
-,
-𝑔
-𝑡
-−
-1
-,
-𝑟
-ˉ
-𝑡
-−
-1
-]
-)
-e
-~
-v
-t
-	​
-=MLP
-node
-	​
-([h
-v
-t−1
-	​
-,z
-v
-t
-	​
-,g
-t−1
-	​
-,
-r
-ˉ
-t−1
-	​
+Delta^_i = MLP_Delta([
+  Pool(H_i),
+  Pool(H'_i),
+  r_i,
+  omega_i,
+  Emb(a_i)
 ])
-𝛼
-𝑡
-=
-sparsemax
-⁡
-𝑣
-(
-𝑒
-~
-𝑡
-)
-α
-t
-=sparsemax
-v
-	​
-(
-e
-~
-t
-)
-边支持强度
-ℓ
-𝑢
-→
-𝑣
-𝑡
-=
-MLP
-⁡
-𝑒
-𝑑
-𝑔
-𝑒
-(
-[
-ℎ
-𝑢
-𝑡
-−
-1
-,
-ℎ
-𝑣
-𝑡
-−
-1
-,
-ℎ
-𝑢
-𝑡
-−
-1
-⊙
-ℎ
-𝑣
-𝑡
-−
-1
-,
-∣
-ℎ
-𝑢
-𝑡
-−
-1
-−
-ℎ
-𝑣
-𝑡
-−
-1
-∣
-,
-𝑔
-𝑡
-−
-1
-,
-𝜋
-𝑢
-𝑣
-]
-)
-ℓ
-u→v
-t
-	​
-=MLP
-edge
-	​
-([h
-u
-t−1
-	​
-,h
-v
-t−1
-	​
-,h
-u
-t−1
-	​
-⊙h
-v
-t−1
-	​
-,∣h
-u
-t−1
-	​
-−h
-v
-t−1
-	​
-∣,g
-t−1
-	​
-,π
-uv
-	​
+```
+
+输出：
+
+- `Delta r_i`
+- `Delta c_i`
+- `Delta p_i`
+- `risk_i`
+
+### 5.8 correction value
+
+阶段二先判断“这次 correction 值不值得做”：
+
+```text
+v_i^corr = MLP_cv([
+  -Delta ||r_i||_1,
+  Delta c_i,
+  -risk_i,
+  -rho_{i > a0}
 ])
-𝛽
-𝑢
-→
-𝑣
-𝑡
-=
-𝛼
-𝑢
-𝑡
-𝛼
-𝑣
-𝑡
-  
-sparsemax
-⁡
-𝑢
-∈
-𝑁
-−
-(
-𝑣
-)
-(
-ℓ
-𝑢
-→
-𝑣
-𝑡
-)
-β
-u→v
-t
-	​
-=α
-u
-t
-	​
-α
-v
-t
-	​
-sparsemax
-u∈N
-−
-(v)
-	​
-(ℓ
-u→v
-t
-	​
-)
-memory-view attention
-𝜇
-𝑣
-,
-𝜏
-𝑡
-=
-softmax
-⁡
-𝜏
-(
-𝑊
-𝜇
-𝑎
-𝑣
-𝑡
-)
-μ
-v,τ
-t
-	​
-=softmax
-τ
-	​
-(W
-μ
-	​
-a
-v
-t
-	​
-)
-halting mass
-𝜁
-𝑡
-=
-𝜎
-(
-MLP
-⁡
-ℎ
-𝑎
-𝑙
-𝑡
-(
-[
-𝑔
-𝑡
-,
-∑
-𝑖
-𝜋
-^
-𝑖
-𝑝
-𝑖
-,
-∑
-𝑖
-𝜋
-^
-𝑖
-∥
-𝑟
-𝑖
-∥
-1
-,
-max
-⁡
-𝑖
-(
-𝑢
-~
-𝑖
-′
-−
-𝑢
-~
-𝑖
-)
-,
-cost
-𝑡
-]
-)
-)
-ζ
-t
-	​
-=σ(MLP
-halt
-	​
-([g
-t
-	​
-,
-i
-∑
-	​
-π
-^
-i
-	​
-p
-i
-	​
-,
-i
-∑
-	​
-π
-^
-i
-	​
-∥r
-i
-	​
-∥
-1
-	​
-,
-i
-max
-	​
-(
-u
-~
-i
-′
-	​
-−
-u
-~
-i
-	​
-),cost
-t
-	​
+```
+
+这一步是 selective refinement 的统一形式。
+
+### 5.9 阶段二 final selection
+
+```text
+u_i^final = u_i^safe + eta4 * v_i^corr
+```
+
+通过规则：
+
+```text
+override(i)
+iff
+u_i^final > u_a0^final
+and rho_{i > a0} < tau_ovr
+and risk_i < tau_risk
+```
+
+### 5.10 阶段二训练
+
+阶段二损失定义：
+
+```text
+L^(2) = L^(1) + L_loc + L_keep + L_art + L_Delta + L_cv
+```
+
+推荐训练顺序：
+
+1. `supervised calibration`
+2. 小规模 `on-policy` 更新 `overturn + correction value + final utility`
+3. 最后再把 aggression / halting / controller 放进来
+
+## 6. 阶段三：Fully Continuous Unified Controller
+
+阶段三不再改 verifier 或 correction operator，而是把 controller 本身连续化。
+
+### 6.1 连续 controller 的五个部分
+
+- 节点参与 `alpha_t`
+- 边支持 `beta_{u->v}^t`
+- memory-view attention `mu_{v,t}`
+- correction aggression `g_i^edit`
+- halting `zeta_t`
+
+### 6.2 关键变量
+
+节点参与：
+
+```text
+alpha_t = sparsemax_v(MLP_node([h_v^{t-1}, z_v^t, g_{t-1}, r_F^bar]))
+```
+
+边支持：
+
+```text
+beta_{u->v}^t = alpha_u^t alpha_v^t sparsemax(MLP_edge(...))
+```
+
+correction aggression：
+
+```text
+g_i^edit = sigma(MLP_aggr([r_i, omega_i, v_i^corr, u_i^final]))
+```
+
+halting：
+
+```text
+zeta_t = sigma(MLP_halt([
+  g_t,
+  sum_i w_i p_i,
+  sum_i w_i ||r_i||_1,
+  max_i Delta u_i^final,
+  cost_t
 ]))
-𝐻
-𝑡
-=
-1
-−
-∏
-𝑠
-=
-1
-𝑡
-(
-1
-−
-𝜁
-𝑠
-)
-H
-t
-	​
-=1−
-s=1
-∏
-t
-	​
-(1−ζ
-s
-	​
-)
+```
 
-当
-𝐻
-𝑡
-≥
-𝜂
-H
-t
-	​
-≥η 时停止。
+### 6.3 阶段三训练
 
-3.2 彻底软化 frontier / 折类 / 最终选择
-soft utility
-𝑢
-𝑖
-=
-MLP
-⁡
-𝑢
-(
-[
-Pool
-⁡
-(
-𝐻
-𝑖
-)
-,
-𝑟
-𝑖
-,
-𝑐
-𝑖
-,
-𝑝
-𝑖
-,
-prov
-𝑖
-]
-)
-u
-i
-	​
-=MLP
-u
-	​
-([Pool(H
-i
-	​
-),r
-i
-	​
-,c
-i
-	​
-,p
-i
-	​
-,prov
-i
-	​
-])
-冗余惩罚
-𝐾
-𝑖
-𝑗
-=
-cos
-⁡
-(
-Pool
-⁡
-(
-𝐻
-𝑖
-)
-,
-Pool
-⁡
-(
-𝐻
-𝑗
-)
-)
-+
-cos
-⁡
-(
-𝑟
-𝑖
-,
-𝑟
-𝑗
-)
-2
-K
-ij
-	​
-=
-2
-cos(Pool(H
-i
-	​
-),Pool(H
-j
-	​
-))+cos(r
-i
-	​
-,r
-j
-	​
-)
-	​
+阶段三采用 on-policy multi-turn self-correction：
 
-𝑢
-~
-𝑖
-=
-𝑢
-𝑖
-−
-𝛾
-∑
-𝑗
-𝜋
-𝑗
-𝐾
-𝑖
-𝑗
-u
-~
-i
-	​
-=u
-i
-	​
-−γ
-j
-∑
-	​
-π
-j
-	​
-K
-ij
-	​
+```text
+R_t = Delta Acc
+    + eta1 * (-Delta ||r||_1)
+    + eta2 * Delta u_final
+    - eta3 * preserve_violation
+    - eta4 * cost
+```
 
-最终 frontier
-𝜋
-^
-𝑖
-=
-softmax
-⁡
-(
-𝑢
-~
-𝑖
-/
-𝜏
-)
-π
-^
-i
-	​
-=softmax(
-u
-~
-i
-	​
-/τ)
-最终输出
-𝑐
-⋆
-=
-arg
-⁡
-max
-⁡
-𝑖
-𝑢
-~
-𝑖
-c
-⋆
-=arg
-i
-max
-	​
-u
-~
-i
-	​
+控制器损失：
 
-解释
+```text
+L_ctrl = -E[R_t log pi_theta(alpha, beta, mu, g_edit, zeta)]
+```
 
-阶段三里，不再需要：
+总损失：
 
-hard route
-hard cluster threshold
-hard anchor guard
+```text
+L^(3) = L^(2) + lambda9 * L_ctrl + lambda10 * L_halt
+```
 
-所有这些都被 unified utility 与 redundancy penalty 吃掉。
+## 7. 新旧阶段映射
 
-3.3 阶段三训练：on-policy self-improvement
-回报函数
-𝑅
-𝑡
-=
-Δ
-Acc
-+
-𝜂
-1
-(
-−
-Δ
-∥
-𝑟
-∥
-1
-)
-+
-𝜂
-2
-(
-Δ
-𝑢
-~
-)
-−
-𝜂
-3
-(
-preserve violation
-)
-−
-𝜂
-4
-(
-compute cost
-)
-R
-t
-	​
-=ΔAcc+η
-1
-	​
-(−Δ∥r∥
-1
-	​
-)+η
-2
-	​
-(Δ
-u
-~
-)−η
-3
-	​
-(preserve violation)−η
-4
-	​
-(compute cost)
-策略损失
-𝐿
-𝑐
-𝑡
-𝑟
-𝑙
-=
-−
-𝐸
-[
-𝑅
-𝑡
-log
-⁡
-𝜋
-𝜃
-(
-𝛼
-,
-𝛽
-,
-𝜇
-,
-𝜆
-,
-𝜁
-)
-]
-L
-ctrl
-	​
-=−E[R
-t
-	​
-logπ
-θ
-	​
-(α,β,μ,λ,ζ)]
-总损失
-𝐿
-(
-3
-)
-=
-𝐿
-(
-2
-)
-+
-𝜆
-9
-𝐿
-𝑐
-𝑡
-𝑟
-𝑙
-+
-𝜆
-10
-𝐿
-ℎ
-𝑎
-𝑙
-𝑡
-L
-(3)
-=L
-(2)
-+λ
-9
-	​
-L
-ctrl
-	​
-+λ
-10
-	​
-L
-halt
-	​
-解释
+旧定义与新定义的映射如下：
 
-阶段三训练的意义，不是继续蒸馏 heuristics，而是：
+- 旧“阶段一” `Bootstrap Unified Scaffold` -> 新 `P0: Bootstrap Teacher Scaffold`
+- 旧“阶段二” `Unified Verifier + Unified Local Correction` -> 拆成：
+  - 新 `阶段一: Unified Semantic Verification & Safe Override`
+  - 新 `阶段二: Unified Local Correction`
+- 旧“阶段三” `Fully Continuous Unified Controller` -> 保持为新 `阶段三`
 
-让 controller 真的学会在 unified verifier state 下如何分配计算、分配边支持、分配局部修复预算。
+## 8. 代码落位约定
 
-五、各阶段的关系
-当前代码 = 阶段一
+从这版设计开始，目录职责明确如下：
 
-你现在的 7e6fb70 最适合被定义成：
+- `Stage2-UCC/stage2_phase3a_unified/`
+  - 对应 `P0`
+  - 保持 teacher scaffold 身份，不再被叙述成正式阶段一
+- `Stage2-UCC/stage2_phase1_semantic_safe_override/`
+  - 对应新正式阶段一
+  - 负责 `ArtifactIR++`、语义 verifier、pairwise overturn、safe override
+- 阶段二与阶段三应当继续采用新的独立目录，不回写覆盖 P0 或阶段一实现
 
-Bootstrap Unified Scaffold
+## 9. 当前实现优先级
 
-也就是：
+后续工程推进顺序固定为：
 
-对象开始统一
-verifier 开始统一
-correction skeleton 已经有了
-但还允许 heuristics、adapter、少量过渡规则
+1. `ArtifactIR++`：先把 answer/evidence 语义对象做对
+2. `pairwise overturn verifier`：先把翻案资格做对
+3. `risk-aware safe utility`：先把 final selection 做对
+4. `localize/preserve`：先把 correction block 的前半段做对
+5. `CorrectionArtifact + apply + delta + value`：再把 correction 后半段接上
+6. `continuous controller + on-policy self-improvement`：最后再连续化
 
-这个定位最合理。
+## 10. 最终结论
 
-阶段二
+新的 UCC 主线可以压缩成一句话：
 
-把“统一框架”变成“统一 correction system”。
-
-阶段三
-
-把“统一 correction system”变成“统一连续 controller”。
-
-六、我给你的最直接建议
-
-如果你现在要继续推进，我会建议你严格按下面顺序做：
-
-先做
-统一 verifier
-统一 utility
-统一 localize / preserve
-统一 artifact proposal / delta
-后做
-完全去 heuristic controller
-完全去 hard cluster / hard guard
-on-policy unified refinement
-七、最终一句话
-
-这版重新整理后的“三步走”可以概括成：
-
-阶段一：统一外壳与统一数据流（当前版本）
-阶段二：统一 verifier 与统一 local correction
-阶段三：统一连续 controller 与统一 self-improvement
-
-其中最核心的一句话是：
-
-所有任务统一成“在 Frozen UnionGraph 上，对 ArtifactIR 做 verifier-conditioned local unit editing”的问题。
-
-旧版你贴出来的 code 路线里，真正有价值的东西——graph-native rerun、provenance、candidate bank、reinsert、hard guard 思想——全部都能保留；变的只是后半段从任务型后处理，变成统一 correction。
+当前 `phase3a` 不应该继续被训练成“更会保 anchor 的正式阶段一系统”；它应该被稳定地当作 `P0 teacher scaffold`。正式方法的第一步必须先把 `answer/evidence` 语义和 `safe override` 做对，再让 `local correction` 成为主角，最后才把 controller 连续化。
