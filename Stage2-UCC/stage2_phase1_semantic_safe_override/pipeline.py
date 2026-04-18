@@ -14,15 +14,6 @@ from mas_treesearch.types import EvalSummary, SearchResult
 from .config import Phase1SemanticSafeOverrideConfig
 from .runtime import Phase1SemanticSafeOverrideRuntime
 
-
-def _clamp01(value: float) -> float:
-    return max(0.0, min(1.0, float(value)))
-
-
-def _summary_target(summary: EvalSummary) -> float:
-    return _clamp01(0.55 * float(summary.mean_success) + 0.45 * float(summary.mean_task_score))
-
-
 @dataclass
 class Phase1SemanticSafeOverridePipelineResult:
     stage1_result: Optional[SearchResult]
@@ -145,6 +136,8 @@ class Phase1SemanticSafeOverridePipeline:
             raise ValueError("Prepared stage-1 artifact does not match the requested question text.")
         resolved_dataset = dataset_name or prepared_structure.dataset_name or self._resolve_dataset_name(dataset_name, metadata)
         profile = resolve_dataset_profile(resolved_dataset)
+        if not str(profile.answer_format or "").strip():
+            raise ValueError(f"Dataset profile for {resolved_dataset!r} must provide a non-empty answer_format.")
         runtime_metadata = self._metadata_with_stage1_anchor(
             metadata,
             prepared_structure,
@@ -184,7 +177,6 @@ class Phase1SemanticSafeOverridePipeline:
         )
         final_signature = stage2_result.signature
         final_output = stage2_result.final_answer
-        learning_target = _summary_target(final_summary)
 
         baseline_summary = prepared_structure.stage1_summary
         if baseline_summary is not None:
@@ -201,6 +193,7 @@ class Phase1SemanticSafeOverridePipeline:
         stage2_result.metadata["stage2_latency"] = float(final_summary.mean_latency)
         stage2_result.metadata["stage2_token_cost"] = float(final_summary.mean_token_cost)
         stage2_result.metadata["stage1_signature"] = prepared_structure.stage1_signature
+        stage2_result.metadata["phase1_learning_protocol"] = "pairwise_lexicographic_frontier_mining"
         stage2_result.metadata["structure_source"] = str(
             prepared_structure.metadata.get("source")
             or ("live_stage1_search" if stage1_result is not None else "prepared_stage1_artifact")
@@ -212,7 +205,7 @@ class Phase1SemanticSafeOverridePipeline:
                 stage2_result,
                 dataset_profile=profile,
                 summary=final_summary,
-                reward_target=learning_target,
+                reward_target=None,
                 question_text=question_text,
                 reference_answer=reference_answer,
                 metadata=runtime_metadata,

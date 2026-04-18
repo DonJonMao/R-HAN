@@ -71,6 +71,7 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
         entry.setdefault("phase1_artifact", None)
         entry.setdefault("phase1_verifier_state", None)
         entry.setdefault("phase1_support_mean", 0.0)
+        entry.setdefault("phase1_typed_support_score", 0.0)
         entry.setdefault("phase1_raw_utility", 0.0)
         entry.setdefault("phase1_adjusted_utility", 0.0)
         entry.setdefault("phase1_safe_utility", 0.0)
@@ -98,6 +99,7 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
                 "phase1_safe_utility": float(entry.get("phase1_safe_utility", 0.0)),
                 "phase1_frontier_weight": float(entry.get("phase1_frontier_weight", 0.0)),
                 "phase1_support_mean": float(entry.get("phase1_support_mean", 0.0)),
+                "phase1_typed_support_score": float(entry.get("phase1_typed_support_score", 0.0)),
                 "phase1_residual_mean": float(entry.get("phase1_residual_mean", 0.0)),
                 "phase1_confidence_score": float(entry.get("phase1_confidence_score", 0.0)),
                 "phase1_answer_consistency_score": float(entry.get("phase1_answer_consistency_score", 0.0)),
@@ -461,6 +463,7 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
         entry["phase1_artifact"] = artifact
         entry["phase1_verifier_state"] = verifier_state
         entry["phase1_support_mean"] = _mean(verifier_state.support_map.values())
+        entry["phase1_typed_support_score"] = verifier_state.typed_support_score
         entry["phase1_utility_features"] = features
         entry["phase1_raw_utility"] = raw_utility
         entry["phase1_adjusted_utility"] = raw_utility
@@ -552,7 +555,7 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
                 "anchor_residual": float(mean_residual(anchor_state)) if isinstance(anchor_state, VerifierState) else 0.0,
                 "confidence_gap": float(state.confidence_score) - float(anchor_state.confidence_score) if isinstance(anchor_state, VerifierState) else 0.0,
                 "answer_consistency": float(state.answer_consistency_score),
-                "support_gap": float(state.answer_consistency_score) - float(anchor_state.answer_consistency_score) if isinstance(anchor_state, VerifierState) else 0.0,
+                "typed_support_gap": float(state.typed_support_score) - float(anchor_state.typed_support_score) if isinstance(anchor_state, VerifierState) else 0.0,
                 "preserve_risk": float(state.preserve_risk),
             }
             predicted_risk, _ = self._overturn_model.predict(risk_features)
@@ -567,6 +570,7 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
             entry["phase1_verifier_state"] = new_state
             entry["phase1_overturn_risk"] = overturn_risk
             entry["phase1_answer_consistency_score"] = new_state.answer_consistency_score
+            entry["phase1_typed_support_score"] = new_state.typed_support_score
             entry["phase1_answer_delta"] = new_state.answer_delta
             entry["phase1_anchor_similarity"] = new_state.anchor_similarity
             entry["phase1_answer_similarity"] = new_state.answer_similarity
@@ -1021,17 +1025,16 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
         reference_answer: Optional[str] = None,
         metadata: Optional[dict] = None,
     ) -> Dict[str, float]:
-        graph_ref = self._phase1_current_graph or graph
-        stats = dict(
-            Stage2RuntimeV2.learn_from_run(
-                self,
-                graph_ref,
-                result,
-                dataset_profile=dataset_profile,
-                summary=summary,
-                reward_target=reward_target,
-            )
-        )
+        del graph
+        del summary
+        del reward_target
+        stats = {
+            "enabled": 0.0,
+            "selector_updates": 0.0,
+            "edge_updates": 0.0,
+            "controller_updates": 0.0,
+            "phase1_frozen_base_runtime_learning": 1.0,
+        }
         if not self.config.learning.enabled or not question_text:
             stats.update(
                 {
@@ -1051,7 +1054,6 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
             metadata=metadata,
             dataset_profile=dataset_profile,
         )
-        target = self._summary_target(summary, reward_target)
         anchor = bundle.get("anchor")
         anchor_digest = str((anchor or {}).get("digest", ""))
         candidate_pool: List[Dict[str, Any]] = []
@@ -1061,8 +1063,6 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
             if str(entry.get("digest", "")) == anchor_digest:
                 continue
             candidate_pool.append(entry)
-            if len(candidate_pool) >= max(2, int(self.config.candidate_max_k)):
-                break
 
         candidate_eval: Dict[str, Dict[str, float]] = {}
         for entry in candidate_pool:
@@ -1107,6 +1107,8 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
 
         any_better = any(label > 0.5 for label in challenger_labels.values())
         any_tie = any(abs(label - 0.5) <= 1e-9 for label in challenger_labels.values())
+        positive_pairs = sum(1 for label in challenger_labels.values() if label > 0.5)
+        mined_pairs = len(challenger_labels)
 
         utility_updates = 0
         overturn_updates = 0
@@ -1136,7 +1138,7 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
                     "anchor_residual": float(anchor.get("phase1_residual_mean", 1.0)) if isinstance(anchor, dict) else 1.0,
                     "confidence_gap": float(state.confidence_score) - float(anchor.get("phase1_confidence_score", 0.0) if isinstance(anchor, dict) else 0.0),
                     "answer_consistency": float(state.answer_consistency_score),
-                    "support_gap": float(state.answer_consistency_score) - float(anchor.get("phase1_answer_consistency_score", 0.0) if isinstance(anchor, dict) else 0.0),
+                    "typed_support_gap": float(state.typed_support_score) - float((anchor.get("phase1_verifier_state").typed_support_score) if isinstance(anchor, dict) and isinstance(anchor.get("phase1_verifier_state"), VerifierState) else 0.0),
                     "preserve_risk": float(state.preserve_risk),
                 }
                 pairwise_target = challenger_labels.get(digest, 0.0)
@@ -1152,7 +1154,10 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
 
         stats.update(
             {
-                "base_target": float(target),
+                "pairwise_learning_protocol": 1.0,
+                "pairwise_mined_candidates": float(len(candidate_pool)),
+                "pairwise_mined_pairs": float(mined_pairs),
+                "pairwise_positive_pairs": float(positive_pairs),
                 "utility_updates": float(utility_updates),
                 "overturn_updates": float(overturn_updates),
                 "safe_override_updates": float(safe_override_updates),

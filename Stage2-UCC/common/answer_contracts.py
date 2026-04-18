@@ -192,6 +192,9 @@ def _parse_code_answer(text: str, metadata: Optional[Dict[str, Any]]) -> AnswerO
             "schema_valid": True,
             "contract_valid": True,
             "recoverable_valid": bool(code.strip()),
+            "recoverable_value": code,
+            "recoverable_object": code,
+            "task_subtype": str((metadata or {}).get("task", "")),
         },
         signature=signature,
     )
@@ -415,6 +418,9 @@ def parse_answer_object(
                 "schema_valid": True,
                 "contract_valid": option is not None,
                 "recoverable_valid": option is not None,
+                "recoverable_value": option,
+                "recoverable_object": option,
+                "task_subtype": str(task_subtype or ""),
             },
             signature=f"option::{option}" if option is not None else "option::invalid",
         )
@@ -432,7 +438,14 @@ def parse_answer_object(
             kind="bool",
             value=value,
             valid=valid,
-            fields={"schema_valid": True, "contract_valid": valid, "recoverable_valid": valid},
+            fields={
+                "schema_valid": True,
+                "contract_valid": valid,
+                "recoverable_valid": valid,
+                "recoverable_value": value,
+                "recoverable_object": value,
+                "task_subtype": str(task_subtype or ""),
+            },
             signature=f"bool::{value}" if valid else "bool::invalid",
         )
 
@@ -442,7 +455,14 @@ def parse_answer_object(
             kind="numeric",
             value=numeric,
             valid=True,
-            fields={"schema_valid": True, "contract_valid": True, "recoverable_valid": True},
+            fields={
+                "schema_valid": True,
+                "contract_valid": True,
+                "recoverable_valid": True,
+                "recoverable_value": numeric,
+                "recoverable_object": numeric,
+                "task_subtype": str(task_subtype or ""),
+            },
             signature=f"numeric::{numeric}",
         )
 
@@ -450,7 +470,14 @@ def parse_answer_object(
         kind="text",
         value=cleaned,
         valid=bool(cleaned),
-        fields={"schema_valid": True, "contract_valid": bool(cleaned), "recoverable_valid": bool(cleaned)},
+        fields={
+            "schema_valid": True,
+            "contract_valid": bool(cleaned),
+            "recoverable_valid": bool(cleaned),
+            "recoverable_value": cleaned,
+            "recoverable_object": cleaned,
+            "task_subtype": str(task_subtype or ""),
+        },
         signature=f"text::{_stable_hash(cleaned)}" if cleaned else "text::invalid",
     )
 

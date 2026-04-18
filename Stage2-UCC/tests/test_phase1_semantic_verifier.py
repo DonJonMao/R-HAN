@@ -19,6 +19,15 @@ QUESTION_TEXT = (
     'A:\n\nReturn only a JSON object using this schema: {"answer":"yes"}. Do not output explanations.'
 )
 
+MCQ_QUESTION = (
+    "Question: Which option is correct?\n"
+    "1) alpha\n"
+    "2) beta\n"
+    "3) gamma\n"
+    "4) delta\n"
+    "Return only the final answer."
+)
+
 
 def test_verify_artifact_nlgraph_connectivity_marks_correct_json_as_low_execution_residual():
     artifact = canonicalize_candidate(
@@ -112,3 +121,26 @@ def test_support_map_is_not_boosted_by_stage1_anchor_identity():
     non_anchor_support = _support_map(artifact, {"stage1_anchor": False, "reviewer_mean_trust": 0.5})
 
     assert anchor_support == non_anchor_support
+
+
+def test_verify_artifact_mcq_exposes_typed_support_and_nonzero_execution_penalty_when_support_is_weak():
+    artifact = canonicalize_candidate(
+        candidate_text="Answer: B",
+        metadata={"options": ["alpha", "beta", "gamma", "delta"]},
+        dataset_name="mmlu_pro",
+        task_type="mcq",
+        answer_format="option",
+    )
+
+    state = verify_artifact(
+        artifact,
+        question_text=MCQ_QUESTION,
+        metadata={"options": ["alpha", "beta", "gamma", "delta"]},
+        dataset_name="mmlu_pro",
+        task_type="mcq",
+        answer_format="option",
+        task_subtype="",
+    )
+
+    assert 0.0 < state.typed_support_score < 1.0
+    assert state.residual_vector["r_execution"] > 0.0

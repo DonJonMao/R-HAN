@@ -39,6 +39,7 @@ class VerifierState:
     residual_vector: Dict[str, float]
     unit_error_map: Dict[str, float]
     support_map: Dict[str, float]
+    typed_support_score: float
     completeness_score: float
     consistency_score: float
     answer_consistency_score: float
@@ -574,10 +575,10 @@ def _typed_executor_channel(
         valid_option = isinstance(value, int) and (max_option <= 0 or 1 <= value <= max_option)
         mcq_features = _mcq_support_features(artifact, metadata=metadata)
         support_score = float(mcq_features.get("support_score", 0.0))
-        quality = clamp01(0.55 * (1.0 if valid_option else 0.0) + 0.45 * support_score)
+        quality = clamp01(0.35 * (1.0 if valid_option else 0.0) + 0.65 * support_score)
         return (
             {
-                "r_execution": 0.0,
+                "r_execution": clamp01(1.0 - quality),
                 "r_constraint": 0.0 if valid_option else 1.0,
             },
             quality,
@@ -814,6 +815,29 @@ def _answer_consistency(
     return clamp01(score)
 
 
+def _typed_support_score(
+    artifact: ArtifactIR,
+    *,
+    metadata: Optional[Dict[str, Any]],
+    contradiction_score: float,
+    residual_vector: Dict[str, float],
+    executor_feedback: Optional[Dict[str, Any]],
+) -> float:
+    if artifact.answer_object.kind == "option":
+        mcq_features = _mcq_support_features(
+            artifact,
+            metadata=metadata,
+            contradiction_score=contradiction_score,
+            residual_vector=residual_vector,
+        )
+        return clamp01(float((executor_feedback or {}).get("mcq_support_score", mcq_features.get("support_score", 0.0))))
+    support_quality = clamp01(1.0 - float(residual_vector.get("r_support", 1.0)))
+    parse_quality = clamp01(1.0 - float(residual_vector.get("r_parse", 1.0)))
+    constraint_quality = clamp01(1.0 - float(residual_vector.get("r_constraint", 1.0)))
+    execution_quality = clamp01(1.0 - float(residual_vector.get("r_execution", 1.0)))
+    return clamp01(0.34 * support_quality + 0.22 * parse_quality + 0.22 * constraint_quality + 0.22 * execution_quality)
+
+
 def _normalize_unit_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
 
@@ -988,6 +1012,13 @@ def verify_artifact(
         metadata=metadata,
         executor_feedback=executor_feedback,
     )
+    typed_support_score = _typed_support_score(
+        artifact,
+        metadata=metadata,
+        contradiction_score=contradiction_score,
+        residual_vector=residual_vector,
+        executor_feedback=executor_feedback,
+    )
     confidence_score = clamp01(
         0.42 * (1.0 - _mean(list(residual_vector.values())))
         + 0.24 * answer_consistency_score
@@ -1012,6 +1043,7 @@ def verify_artifact(
         residual_vector={key: clamp01(residual_vector.get(key, 0.0)) for key in RESIDUAL_KEYS},
         unit_error_map={unit_id: clamp01(score) for unit_id, score in unit_error_map.items()},
         support_map={unit_id: clamp01(score) for unit_id, score in support_map.items()},
+        typed_support_score=typed_support_score,
         completeness_score=clamp01(1.0 - residual_vector["r_completeness"]),
         consistency_score=clamp01(1.0 - residual_vector["r_consistency"]),
         answer_consistency_score=answer_consistency_score,
@@ -1045,7 +1077,7 @@ def compute_overturn_risk(
     anchor_residual = mean_residual(anchor_state)
     residual_gap = candidate_residual - anchor_residual
     confidence_gap = float(verifier_state.confidence_score) - float(anchor_state.confidence_score)
-    support_gap = float(verifier_state.answer_consistency_score) - float(anchor_state.answer_consistency_score)
+    support_gap = float(verifier_state.typed_support_score) - float(anchor_state.typed_support_score)
     risk = (
         0.30 * float(verifier_state.answer_delta)
         + 0.18 * clamp01(residual_gap + 0.5)

@@ -396,6 +396,17 @@ a_i^cons = sigma(MLP_ans([
 
 然后再让 `MLP_ans` 在此基础上学习校准。
 
+对 closed-set / `option` 任务，阶段一还必须显式维护 `typed_support_score`，并在 pairwise overturn 中使用：
+
+```text
+Delta_sup^mcq = s_i^mcq - s_a0^mcq
+```
+
+也就是说：
+
+- `MMLU-Pro` 里答案标签变了，但对该标签的 typed support 没有净增时，不应轻易翻案
+- `typed_support_score` 不能再被 generic lexical consistency 或普通 `answer_consistency` 代替
+
 ### 4.14 overturn bundle
 
 定义：
@@ -535,6 +546,10 @@ L^(1) = L_verify + L_ans + L_ovr + L_rank + L_safe
 
 - 对 realized override 很少的任务，默认启用 replay frontier 的 `offline pair mining`
 - 不能只依赖 on-policy 最终 winner，否则 `NLGraph` 一类任务会长期缺正样本
+- phase1 专有头的监督必须以 pairwise label 为主，不再把单个 run-level summary target 直接涂满整个 frontier
+- 最小实现约定：
+  - `utility / safe override / overturn` 都从 `anchor vs challenger` 的 pairwise supervision 获得核心监督
+  - replay bundle 中的 challenger 默认参与 `pairwise frontier mining`
 
 ## 5. 阶段二：Unified Local Correction
 
