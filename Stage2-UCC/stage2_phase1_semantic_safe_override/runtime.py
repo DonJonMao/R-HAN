@@ -16,7 +16,13 @@ from stage2_phase3a_unified.runtime import Phase3aUnifiedRuntime
 from .artifacts import ArtifactIR, answer_text, canonicalize_candidate, clamp01, cosine_similarity, pooled_artifact_vector, softmax
 from .config import Phase1SemanticSafeOverrideConfig
 from .controller import UnifiedControllerSnapshot, build_controller_state
-from .verifier import VerifierState, compute_overturn_risk, mean_residual, verify_artifact
+from .verifier import (
+    VerifierState,
+    apply_anchor_pairwise_metrics,
+    compute_overturn_risk,
+    mean_residual,
+    verify_artifact,
+)
 
 
 def _mean(values: Iterable[float]) -> float:
@@ -243,7 +249,10 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
             candidate_text=anchor_text,
             provenance=(),
             metadata=metadata,
+            dataset_name=dataset_profile.name,
             task_type=dataset_profile.task_type,
+            answer_format=dataset_profile.answer_format,
+            task_subtype=str((metadata or {}).get("task", "")),
             answer_role_threshold=float(self.config.answer_role_threshold),
             evidence_role_threshold=float(self.config.evidence_role_threshold),
         )
@@ -259,13 +268,16 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
     ) -> Dict[str, float]:
         return {
             "bias": 1.0,
+            f"dataset::{dataset_profile.name}": 1.0,
             f"task::{dataset_profile.task_type}": 1.0,
+            f"answer_format::{dataset_profile.answer_format}": 1.0,
+            f"task_subtype::{str(artifact.metadata.get('task_subtype', '')) or 'unknown'}": 1.0,
             "support_mean": float(_mean(verifier_state.support_map.values())),
             "confidence_score": float(verifier_state.confidence_score),
             "progress_score": float(verifier_state.progress_score),
             "answer_consistency": float(verifier_state.answer_consistency_score),
-            "anchor_similarity": float(verifier_state.anchor_similarity),
-            "answer_similarity": float(verifier_state.answer_similarity),
+            "answer_valid": 1.0 if artifact.answer_object.valid else 0.0,
+            "schema_valid": 1.0 if bool(artifact.answer_object.fields.get("schema_valid", True)) else 0.0,
             "stage1_anchor": 1.0 if entry.get("stage1_anchor") else 0.0,
             "occurrence_log": float(entry.get("occurrence_count", 0.0)),
             "sink_support": float(entry.get("sink_support", 0.0)),
@@ -317,7 +329,10 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
         catastrophic = 1.0 if self._is_catastrophic_answer_rewrite(entry, anchor) else 0.0
         return {
             "bias": 1.0,
+            f"dataset::{dataset_profile.name}": 1.0,
             f"task::{dataset_profile.task_type}": 1.0,
+            f"answer_format::{dataset_profile.answer_format}": 1.0,
+            f"task_subtype::{str(entry.get('phase1_artifact').metadata.get('task_subtype', '')) if isinstance(entry.get('phase1_artifact'), ArtifactIR) else 'unknown'}": 1.0,
             "safe_utility_gap": float(entry.get("phase1_safe_utility", 0.0)) - anchor_safe,
             "adjusted_utility_gap": float(entry.get("phase1_adjusted_utility", 0.0)) - float(anchor.get("phase1_adjusted_utility", 0.0) if isinstance(anchor, dict) else 0.0),
             "confidence_gap": float(entry.get("phase1_confidence_score", 0.0)) - anchor_confidence,
@@ -412,7 +427,10 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
             candidate_text=str(entry.get("text", "")),
             provenance=entry.get("provenance", ()),
             metadata=metadata,
+            dataset_name=dataset_profile.name,
             task_type=dataset_profile.task_type,
+            answer_format=dataset_profile.answer_format,
+            task_subtype=str((metadata or {}).get("task", "")),
             answer_role_threshold=float(self.config.answer_role_threshold),
             evidence_role_threshold=float(self.config.evidence_role_threshold),
         )
@@ -420,7 +438,10 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
             artifact,
             question_text=question_text,
             metadata=metadata,
+            dataset_name=dataset_profile.name,
             task_type=dataset_profile.task_type,
+            answer_format=dataset_profile.answer_format,
+            task_subtype=str((metadata or {}).get("task", "")),
             candidate_entry=entry,
             anchor_artifact=anchor_artifact,
             timeout_s=float(self.config.code_timeout_s),
@@ -502,11 +523,31 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
         anchor_state = anchor.get("phase1_verifier_state") if isinstance(anchor, dict) else None
         anchor_artifact = anchor.get("phase1_artifact") if isinstance(anchor, dict) else anchor_artifact
 
+        if isinstance(anchor_state, VerifierState) and isinstance(anchor_artifact, ArtifactIR):
+            updated_anchor_state = apply_anchor_pairwise_metrics(
+                anchor_artifact,
+                anchor_state,
+                anchor_artifact=anchor_artifact,
+                anchor_state=anchor_state,
+            )
+            anchor["phase1_verifier_state"] = updated_anchor_state
+            anchor["phase1_answer_consistency_score"] = updated_anchor_state.answer_consistency_score
+            anchor["phase1_answer_delta"] = updated_anchor_state.answer_delta
+            anchor["phase1_anchor_similarity"] = updated_anchor_state.anchor_similarity
+            anchor["phase1_answer_similarity"] = updated_anchor_state.answer_similarity
+            anchor_state = updated_anchor_state
+
         for entry in candidates:
             state = entry.get("phase1_verifier_state")
             artifact = entry.get("phase1_artifact")
             if not isinstance(state, VerifierState) or not isinstance(artifact, ArtifactIR):
                 continue
+            state = apply_anchor_pairwise_metrics(
+                artifact,
+                state,
+                anchor_artifact=anchor_artifact if isinstance(anchor_artifact, ArtifactIR) else None,
+                anchor_state=anchor_state if isinstance(anchor_state, VerifierState) else None,
+            )
             risk_features = {
                 "bias": 1.0,
                 "answer_delta": float(state.answer_delta),
@@ -709,24 +750,44 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
         if anchor is None:
             self._phase1_last_residual_mean = float(best.get("phase1_residual_mean", 0.5))
             return best, "phase1_semantic_safe_override_no_anchor"
-        if best.get("digest") == anchor.get("digest"):
+        challengers = [dict(entry) for entry in candidates if entry.get("digest") != anchor.get("digest")]
+        if not challengers:
+            self._phase1_last_residual_mean = float(anchor.get("phase1_residual_mean", 0.5))
+            return anchor, "phase1_semantic_safe_override_anchor_wins_frontier"
+        anchor_safe_utility = float(anchor.get("phase1_safe_utility", 0.0))
+        challengers.sort(
+            key=lambda entry: (
+                float(entry.get("phase1_safe_utility", 0.0)) - anchor_safe_utility,
+                float(entry.get("phase1_safe_override_score", 0.0)),
+                float(entry.get("phase1_answer_consistency_score", 0.0)),
+                -float(entry.get("phase1_overturn_risk", 1.0)),
+                float(entry.get("phase1_confidence_score", 0.0)),
+                -float(entry.get("phase1_residual_mean", 1.0)),
+                str(entry.get("digest", "")),
+            ),
+            reverse=True,
+        )
+        best = challengers[0]
+        best_safe_utility = float(best.get("phase1_safe_utility", 0.0))
+        pairwise_value = best_safe_utility - anchor_safe_utility
+        if pairwise_value <= 0.0:
             self._phase1_last_residual_mean = float(anchor.get("phase1_residual_mean", 0.5))
             return anchor, "phase1_semantic_safe_override_anchor_wins_frontier"
         if self._is_catastrophic_answer_rewrite(best, anchor):
             self._phase1_last_residual_mean = float(anchor.get("phase1_residual_mean", 0.5))
             return anchor, "phase1_semantic_safe_override_catastrophic_answer_guard"
-        anchor_safe_utility = float(anchor.get("phase1_safe_utility", 0.0))
-        best_safe_utility = float(best.get("phase1_safe_utility", 0.0))
         best_overturn = float(best.get("phase1_overturn_risk", 1.0))
         best_safe_override_score = float(best.get("phase1_safe_override_score", 0.0))
+        best_answer_consistency = float(best.get("phase1_answer_consistency_score", 0.0))
         best_confidence = float(best.get("phase1_confidence_score", 0.0))
         anchor_confidence = float(anchor.get("phase1_confidence_score", 0.0))
         best_residual = float(best.get("phase1_residual_mean", 1.0))
         anchor_residual = float(anchor.get("phase1_residual_mean", 1.0))
         if (
-            best_safe_utility >= anchor_safe_utility + float(self.config.safe_margin)
+            best_safe_utility > anchor_safe_utility
             and best_safe_override_score >= float(self.config.safe_override_threshold)
             and best_overturn < float(self.config.overturn_threshold)
+            and best_answer_consistency >= float(self.config.catastrophic_consistency_threshold)
             and (best_confidence >= anchor_confidence or best_residual + 0.05 < anchor_residual)
         ):
             self._phase1_last_residual_mean = best_residual
@@ -747,6 +808,9 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
         selected_overturn = float((selected or {}).get("phase1_overturn_risk", 0.0))
         selected_consistency = float((selected or {}).get("phase1_answer_consistency_score", 0.0))
         selected_safe_override = float((selected or {}).get("phase1_safe_override_score", 0.0))
+        selected_pairwise_value = 0.0
+        if selected is not None and anchor is not None:
+            selected_pairwise_value = float((selected or {}).get("phase1_safe_utility", 0.0)) - float(anchor.get("phase1_safe_utility", 0.0))
         self._last_phase1_selection = {
             "stage2_version": self.config.stage2_version,
             "selection_reason": strategy,
@@ -759,8 +823,10 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
             "phase1_selected_overturn_risk": selected_overturn,
             "phase1_selected_answer_consistency": selected_consistency,
             "phase1_selected_safe_override_score": selected_safe_override,
+            "phase1_selected_pairwise_value": selected_pairwise_value,
             "phase1_top_candidates": top,
             "phase1_top_classes": list(bundle.get("phase1_soft_classes", [])),
+            "phase1_pairwise_audit": list(bundle.get("phase1_pairwise_audit", [])),
             "phase1_halt_mass": float(
                 self._phase1_controller_snapshot.halt_mass if self._phase1_controller_snapshot is not None else 0.0
             ),
@@ -891,6 +957,45 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
         with open(os.path.join(replay_dir, "phase1_selection.json"), "w", encoding="utf-8") as handle:
             json.dump(self._last_phase1_selection, handle, ensure_ascii=False, indent=2)
 
+    @staticmethod
+    def _lexicographic_preference(left: Dict[str, float], right: Dict[str, float], *, eps: float = 1e-9) -> float:
+        left_success = float(left.get("success", 0.0))
+        right_success = float(right.get("success", 0.0))
+        if left_success > right_success + eps:
+            return 1.0
+        if left_success < right_success - eps:
+            return 0.0
+        left_task = float(left.get("task_score", 0.0))
+        right_task = float(right.get("task_score", 0.0))
+        if left_task > right_task + eps:
+            return 1.0
+        if left_task < right_task - eps:
+            return 0.0
+        return 0.5
+
+    def _evaluate_candidate_summary(
+        self,
+        *,
+        question_text: str,
+        candidate_text: str,
+        reference_answer: Optional[str],
+        metadata: Optional[dict],
+        dataset_profile: DatasetProfile,
+    ) -> Dict[str, float]:
+        summary = self._evaluator.evaluate_output(
+            question_text,
+            candidate_text,
+            tier="tier2",
+            reference_answer=reference_answer,
+            metadata=metadata,
+            dataset_profile=dataset_profile,
+        )
+        return {
+            "success": float(summary.mean_success),
+            "task_score": float(summary.mean_task_score),
+            "safety_penalty": float(summary.mean_safety_penalty),
+        }
+
     def learn_from_run(
         self,
         graph: UnionGraph,
@@ -904,7 +1009,6 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
         metadata: Optional[dict] = None,
     ) -> Dict[str, float]:
         graph_ref = self._phase1_current_graph or graph
-        del reference_answer
         stats = dict(
             Stage2RuntimeV2.learn_from_run(
                 self,
@@ -935,42 +1039,100 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
             dataset_profile=dataset_profile,
         )
         target = self._summary_target(summary, reward_target)
-        selected_digest = str(self._last_phase1_selection.get("selected_candidate_digest", ""))
-        anchor_used = bool(self._last_phase1_selection.get("stage1_anchor_used", False))
+        anchor = bundle.get("anchor")
+        anchor_digest = str((anchor or {}).get("digest", ""))
+        candidate_pool: List[Dict[str, Any]] = []
+        if isinstance(anchor, dict):
+            candidate_pool.append(anchor)
+        for entry in list(bundle.get("candidates", [])):
+            if str(entry.get("digest", "")) == anchor_digest:
+                continue
+            candidate_pool.append(entry)
+            if len(candidate_pool) >= max(2, int(self.config.candidate_max_k)):
+                break
+
+        candidate_eval: Dict[str, Dict[str, float]] = {}
+        for entry in candidate_pool:
+            digest = str(entry.get("digest", ""))
+            if not digest:
+                continue
+            candidate_eval[digest] = self._evaluate_candidate_summary(
+                question_text=question_text,
+                candidate_text=str(entry.get("text", "")),
+                reference_answer=reference_answer,
+                metadata=metadata,
+                dataset_profile=dataset_profile,
+            )
+
+        anchor_eval = candidate_eval.get(anchor_digest, {"success": 0.0, "task_score": 0.0, "safety_penalty": 0.0})
+        pairwise_audit: List[Dict[str, Any]] = []
+        challenger_labels: Dict[str, float] = {}
+        for entry in candidate_pool:
+            digest = str(entry.get("digest", ""))
+            eval_summary = candidate_eval.get(digest, {"success": 0.0, "task_score": 0.0, "safety_penalty": 0.0})
+            if digest == anchor_digest:
+                continue
+            label = self._lexicographic_preference(eval_summary, anchor_eval)
+            challenger_labels[digest] = label
+            pairwise_audit.append(
+                {
+                    "digest": digest,
+                    "source": self._candidate_source_label(entry),
+                    "success": float(eval_summary.get("success", 0.0)),
+                    "task_score": float(eval_summary.get("task_score", 0.0)),
+                    "pairwise_label_vs_anchor": label,
+                    "better_than_anchor": bool(label > 0.5),
+                }
+            )
+
+        bundle["phase1_pairwise_audit"] = pairwise_audit
+        self._last_candidate_bundle = bundle
+        if isinstance(result.metadata, dict):
+            result.metadata["phase1_pairwise_audit"] = pairwise_audit
+        if isinstance(self._last_phase1_selection, dict):
+            self._last_phase1_selection["phase1_pairwise_audit"] = pairwise_audit
+
+        any_better = any(label > 0.5 for label in challenger_labels.values())
+        any_tie = any(abs(label - 0.5) <= 1e-9 for label in challenger_labels.values())
 
         utility_updates = 0
         overturn_updates = 0
         safe_override_updates = 0
-        for entry in list(bundle.get("candidates", []))[: max(1, int(self.config.candidate_max_k))]:
+        for entry in candidate_pool:
+            digest = str(entry.get("digest", ""))
             features = entry.get("phase1_utility_features", {})
             if isinstance(features, dict) and features:
-                local_target = clamp01(target * (1.0 - 0.45 * float(entry.get("phase1_residual_mean", 1.0))))
-                if str(entry.get("digest", "")) == selected_digest:
-                    local_target = clamp01(target)
+                if digest == anchor_digest:
+                    if any_better:
+                        local_target = 0.0
+                    elif any_tie:
+                        local_target = 0.5
+                    else:
+                        local_target = 1.0
+                else:
+                    local_target = challenger_labels.get(digest, 0.0)
                 self._utility_model.update({str(name): float(value) for name, value in features.items()}, local_target)
                 utility_updates += 1
 
             state = entry.get("phase1_verifier_state")
-            if isinstance(state, VerifierState) and not bool(entry.get("stage1_anchor", False)):
+            if isinstance(state, VerifierState) and digest != anchor_digest:
                 ovr_features = {
                     "bias": 1.0,
                     "answer_delta": float(state.answer_delta),
                     "candidate_residual": float(mean_residual(state)),
-                    "confidence": float(state.confidence_score),
+                    "anchor_residual": float(anchor.get("phase1_residual_mean", 1.0)) if isinstance(anchor, dict) else 1.0,
+                    "confidence_gap": float(state.confidence_score) - float(anchor.get("phase1_confidence_score", 0.0) if isinstance(anchor, dict) else 0.0),
                     "answer_consistency": float(state.answer_consistency_score),
                     "preserve_risk": float(state.preserve_risk),
                 }
-                ovr_target = 0.0
-                if str(entry.get("digest", "")) == selected_digest and not anchor_used:
-                    ovr_target = clamp01(target)
+                pairwise_target = challenger_labels.get(digest, 0.0)
+                ovr_target = clamp01(1.0 - pairwise_target)
                 self._overturn_model.update(ovr_features, ovr_target)
                 overturn_updates += 1
 
             safe_features = entry.get("phase1_safe_override_features", {})
-            if isinstance(safe_features, dict) and safe_features and not bool(entry.get("stage1_anchor", False)):
-                safe_target = 0.0
-                if str(entry.get("digest", "")) == selected_digest and not anchor_used:
-                    safe_target = clamp01(target)
+            if isinstance(safe_features, dict) and safe_features and digest != anchor_digest:
+                safe_target = challenger_labels.get(digest, 0.0)
                 self._safe_override_model.update({str(name): float(value) for name, value in safe_features.items()}, safe_target)
                 safe_override_updates += 1
 

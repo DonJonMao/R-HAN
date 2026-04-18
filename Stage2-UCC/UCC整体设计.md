@@ -152,6 +152,7 @@ unit_role(u) = argmax r_u
 - `evidence_unit_ids`
 - `schema_features`
 - `answer_signature`
+- `answer_object`
 
 定义：
 
@@ -162,21 +163,64 @@ A_i^evd = { u in U_i | r_u^evd > tau_e }
 
 这一步的意义非常直接：系统终于能明确区分“真正决定最终输出的 answer units”和“只是支持它的 evidence units”。
 
-### 4.5 answer signature
+### 4.5 Typed Answer Contract
+
+阶段一必须新增统一的 typed answer contract：
+
+```text
+Y_i = ParseContract(
+  y_i;
+  dataset_name,
+  answer_format,
+  task_subtype
+)
+```
+
+其中：
+
+- `Y_i` 就是 `answer_object`
+- 它至少包含 `kind / value / valid / fields / signature`
+- `schema_features S_i` 必须扩成：
+
+```text
+S_i = (
+  schema_features,
+  answer_signature,
+  answer_object,
+  schema_valid,
+  task_subtype
+)
+```
+
+实现约束：
+
+- `phase1 canonicalizer` 与 `evaluator` 必须共用同一套 `ParseContract`
+- 不能再出现 `profile` 声明了 `answer_format`，但 `phase1` 只按 `task_type` 粗分的实现
+- `MMLU-Pro / NLGraph / MBPP` 都必须落到 typed object，而不是统一退化成普通文本 surface
+
+### 4.6 answer signature
 
 `answer_signature` 必须统一定义，而不是按任务硬 route。
 
 统一规则如下：
 
-- 多选题：`option::<label>`
+- `MMLU-Pro` / 多选题：`option::<int>`
 - 数学 / GSM：`numeric::<normalized value>`
-- 代码：`code::<entry_point>::<canonical hash>`
-- 结构任务：`structured::<canonical form>`
+- `NLGraph`：`graph_json::<subtask>::<field-or-canonical-form>`
+- 代码：`code::<entry_point>::<canonical ast hash>`
+- 结构任务：`structured::<canonical form>` 或更细的 typed signature
 - 其他文本：`text::<normalized surface>`
 
 这不是任务分流，而是统一答案表征。
 
-### 4.6 多视图统一编码
+最小实现例子：
+
+- `MMLU-Pro`：`option::8`
+- `NLGraph/connectivity`：`graph_bool::answer::no`
+- `NLGraph/flow`：`graph_scalar::max_flow::31`
+- `MBPP`：`code::solve::<ast_hash>`
+
+### 4.7 多视图统一编码
 
 阶段一保留四视图，但不按任务硬切换，而是软加权：
 
@@ -206,7 +250,7 @@ h_{i,u} = sum_m q~_i^(m) W_m z_{i,u}^(m)
 
 权重来自视图可靠性，不来自任务标签。
 
-### 4.7 阶段一统一 verifier
+### 4.8 阶段一统一 verifier
 
 阶段一的 verifier 是一套单接口系统，但输出三类结果：
 
@@ -236,7 +280,7 @@ V_i = (
 - `p_i`：progress score
 - `omega_i`：overturn bundle
 
-### 4.8 统一残差向量
+### 4.9 统一残差向量
 
 统一残差定义为：
 
@@ -254,7 +298,18 @@ r_i = [
 
 所有任务都投影到这一残差空间里，不再分别维护 reasoning/code/graph verifier。
 
-### 4.9 meta verifier
+语义约束必须写死：
+
+- `r_parse`：`answer_object` 解析失败或 schema 解析失败
+- `r_comp`：typed contract 要求的关键字段缺失
+- `r_const`：对象级约束不满足
+- `r_exec`：可执行 / 可计算检查失败
+- `r_support`：当前 answer 缺少 evidence 支撑
+- `r_preserve`：anchor 关键单元流失风险
+
+实现上不允许把 `r_exec / r_const` 继续退化成 `parse_confidence` 的代理量。
+
+### 4.10 meta verifier
 
 meta verifier 负责检查：
 
@@ -270,7 +325,7 @@ meta verifier 负责检查：
 r_i^meta = MLP_meta([Pool(H_i), e_X, S_i, p_i])
 ```
 
-### 4.10 证据通道融合
+### 4.11 证据通道融合
 
 证据通道保持统一定义：
 
@@ -289,7 +344,7 @@ r_i = r_i^meta + sum_k alpha_ik T_k(o_ik)
 
 解释：这是 evidence-channel weighting，不是 task routing。
 
-### 4.11 unit-level error / support
+### 4.12 unit-level error / support
 
 错误热度：
 
@@ -305,7 +360,7 @@ s_{i,u} = sigma(MLP_sup([h_{i,u}, e_X, evidence_{i,u}]))
 
 这两个输出在阶段一就要训练好，因为阶段二的 `localize/preserve` 会直接吃它们。
 
-### 4.12 answer/evidence consistency
+### 4.13 answer/evidence consistency
 
 阶段一新增显式的答案一致性分数：
 
@@ -324,7 +379,16 @@ a_i^cons = sigma(MLP_ans([
 
 这是当前 `MMLU-Pro` 最缺的一层。
 
-### 4.13 overturn bundle
+冷启动阶段必须先有 typed bootstrap：
+
+- `parse invalid` -> 低
+- `schema missing` -> 低
+- `graph/code executable contradiction` -> 低
+- `answer unit 缺 evidence support` -> 低
+
+然后再让 `MLP_ans` 在此基础上学习校准。
+
+### 4.14 overturn bundle
 
 定义：
 
@@ -360,9 +424,18 @@ rho_{i > a0} = sigma(MLP_ovr([
 ]))
 ```
 
+其中 `g_ans` 必须是 answer-type-aware typed distance，不能退化成 generic lexical similarity。
+
+最小实现约定：
+
+- categorical / bool：exact mismatch
+- scalar：typed numeric discrepancy
+- sequence / path / order：constraint-set discrepancy
+- code：API / entry-point / AST discrepancy
+
 这一步的关键不在于“candidate 好不好”，而在于“candidate 是否真的有资格推翻当前 anchor”。
 
-### 4.14 风险感知 utility
+### 4.15 风险感知 utility
 
 阶段一先定义基础 utility：
 
@@ -399,7 +472,7 @@ u_i^safe = u~_i
            + eta3 * a_i^cons
 ```
 
-### 4.15 safe override 规则
+### 4.16 safe override 规则
 
 阶段一的 final selection 由 `risk-aware safe utility` 主导，同时保留一层很薄的 fail-safe：
 
@@ -422,7 +495,7 @@ and a_i^cons < tau_c
 
 这层 fail-safe 不是旧的 hard anchor guard，而是防止 closed-set 任务继续大规模错翻的极薄保护层。
 
-### 4.16 阶段一训练目标
+### 4.17 阶段一训练目标
 
 阶段一的损失定义为：
 
@@ -524,10 +597,18 @@ d_i = MLP_crit([Pool(H_i), c_i^{loc}, k_i^{pres}, r_i, omega_i, g_t])
   "operation": "replace | insert_before | insert_after | delete | reorder",
   "new_units": [...],
   "preserve_units": [...],
-  "expected_delta": {...},
+  "expected_delta": {
+    "delta_answer": "...",
+    "delta_parse": 0.0,
+    "delta_constraint": 0.0,
+    "delta_exec": 0.0,
+    "delta_preserve": 0.0
+  },
   "rationale": "..."
 }
 ```
+
+其中 `expected_delta.delta_answer` 必须复用阶段一的 typed `g_ans`，不能重新退化成“全文文本更顺”的自由表述。
 
 ### 5.7 apply + delta predictor
 
@@ -599,6 +680,12 @@ L^(2) = L^(1) + L_loc + L_keep + L_art + L_Delta + L_cv
 
 阶段三不再改 verifier 或 correction operator，而是把 controller 本身连续化。
 
+显式约束：
+
+- controller 只控制参与强度、编辑 aggression、halting
+- controller 不能定义或改写 `ParseContract / answer_signature / g_ans`
+- phase3 只能调度 phase1 / phase2 的 typed semantics，不能回写覆盖它们
+
 ### 6.1 连续 controller 的五个部分
 
 - 节点参与 `alpha_t`
@@ -662,6 +749,14 @@ L_ctrl = -E[R_t log pi_theta(alpha, beta, mu, g_edit, zeta)]
 ```text
 L^(3) = L^(2) + lambda9 * L_ctrl + lambda10 * L_halt
 ```
+
+实现时 `Delta Acc` 的优先级应采用字典序：
+
+1. 先看 `success`
+2. 再看 `task_score`
+3. 最后才看 `cost`
+
+不能重新退回一个不透明的大权重和，掩盖 phase1 typed semantics 是否已经做对。
 
 ## 7. 新旧阶段映射
 

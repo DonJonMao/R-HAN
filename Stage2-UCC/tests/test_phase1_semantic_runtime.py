@@ -109,6 +109,43 @@ def test_select_final_candidate_overrides_when_safe_score_is_good():
     assert reason == "phase1_semantic_safe_override_override_frontier"
 
 
+def test_select_final_candidate_compares_pairwise_against_anchor_for_all_challengers():
+    runtime = _runtime_stub()
+    anchor = {
+        "digest": "anchor",
+        "phase1_safe_utility": 0.80,
+        "phase1_confidence_score": 0.80,
+        "phase1_residual_mean": 0.20,
+        "phase1_answer_delta": 0.0,
+        "phase1_answer_consistency_score": 0.92,
+    }
+    weaker = {
+        "digest": "weaker",
+        "phase1_safe_utility": 0.79,
+        "phase1_safe_override_score": 0.90,
+        "phase1_overturn_risk": 0.12,
+        "phase1_confidence_score": 0.84,
+        "phase1_residual_mean": 0.17,
+        "phase1_answer_delta": 0.10,
+        "phase1_answer_consistency_score": 0.83,
+    }
+    stronger = {
+        "digest": "stronger",
+        "phase1_safe_utility": 0.88,
+        "phase1_safe_override_score": 0.79,
+        "phase1_overturn_risk": 0.20,
+        "phase1_confidence_score": 0.82,
+        "phase1_residual_mean": 0.15,
+        "phase1_answer_delta": 0.12,
+        "phase1_answer_consistency_score": 0.85,
+    }
+
+    selected, reason = runtime._select_final_candidate([weaker, stronger], anchor)
+
+    assert selected == stronger
+    assert reason == "phase1_semantic_safe_override_override_frontier"
+
+
 def test_select_final_candidate_blocks_catastrophic_answer_rewrite():
     runtime = _runtime_stub()
     anchor = {

@@ -72,11 +72,17 @@ class Phase1SemanticSafeOverridePipeline:
     def _metadata_with_stage1_anchor(
         metadata: Optional[dict],
         artifact: PreparedStage1Artifact,
+        *,
+        answer_format: str,
+        task_type: str,
     ) -> dict:
         enriched = dict(metadata or {})
         enriched["stage1_anchor_output"] = artifact.stage1_output
         enriched["stage1_anchor_signature"] = artifact.stage1_signature
         enriched["stage1_source_topology_signatures"] = list(artifact.union_graph.source_topology_signatures)
+        enriched.setdefault("mas_answer_format", answer_format)
+        enriched.setdefault("mas_task_type", task_type)
+        enriched.setdefault("mas_task_subtype", str(enriched.get("task", "")))
         if artifact.structure_summary is not None:
             enriched["stage1_structure_summary_signature"] = str(artifact.structure_summary.signature)
             enriched["stage1_selected_topology_signatures"] = list(artifact.structure_summary.selected_topology_signatures)
@@ -139,7 +145,12 @@ class Phase1SemanticSafeOverridePipeline:
             raise ValueError("Prepared stage-1 artifact does not match the requested question text.")
         resolved_dataset = dataset_name or prepared_structure.dataset_name or self._resolve_dataset_name(dataset_name, metadata)
         profile = resolve_dataset_profile(resolved_dataset)
-        runtime_metadata = self._metadata_with_stage1_anchor(metadata, prepared_structure)
+        runtime_metadata = self._metadata_with_stage1_anchor(
+            metadata,
+            prepared_structure,
+            answer_format=profile.answer_format,
+            task_type=profile.task_type,
+        )
         stage2_result = self._stage2.run(
             prepared_structure.union_graph,
             question_text=question_text,

@@ -7,6 +7,8 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
+from common.answer_contracts import AnswerObject, parse_answer_object
+
 
 def clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
@@ -100,6 +102,7 @@ class ArtifactIR:
     evidence_unit_ids: List[str]
     schema_features: Dict[str, Any]
     answer_signature: str
+    answer_object: AnswerObject
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -114,6 +117,7 @@ class ArtifactIR:
             "evidence_unit_ids": list(self.evidence_unit_ids),
             "schema_features": dict(self.schema_features),
             "answer_signature": self.answer_signature,
+            "answer_object": self.answer_object.to_dict(),
             "metadata": dict(self.metadata),
         }
 
@@ -220,7 +224,7 @@ def _looks_like_answer_line(text: str, *, task_type: str, position: int, total_u
     if not stripped:
         return False
     if task_type == "code_generation":
-        return True
+        return False
     if lower.startswith(("answer:", "final answer", "final:", "therefore", "thus")):
         return True
     if _extract_option_label(stripped):
@@ -238,6 +242,7 @@ def _role_scores_for_unit(
     text: str,
     *,
     task_type: str,
+    metadata: Optional[Dict[str, Any]],
     position: int,
     total_units: int,
     answer_role_threshold: float,
@@ -249,9 +254,22 @@ def _role_scores_for_unit(
     evidence_score = 0.20
     mixed_score = 0.10
     if task_type == "code_generation":
-        answer_score = 0.72
-        evidence_score = 0.58 if any(token in lower for token in ("def ", "class ", "return", "assert ")) else 0.42
-        mixed_score = 0.30
+        entry_point = str((metadata or {}).get("entry_point") or "").strip().lower()
+        stripped_left = stripped.lstrip()
+        answer_score = 0.16
+        evidence_score = 0.26
+        mixed_score = 0.12
+        if stripped_left.startswith(("def ", "class ")):
+            answer_score += 0.58
+            mixed_score += 0.12
+        if entry_point and stripped_left.startswith(f"def {entry_point}("):
+            answer_score += 0.20
+        if stripped_left.startswith(("return", "if ", "elif ", "else:", "for ", "while ", "try:", "except", "raise", "assert ")):
+            evidence_score += 0.46
+        if stripped_left.startswith(("from ", "import ", "@")):
+            mixed_score += 0.24
+        if position == total_units - 1 and stripped_left.startswith("return"):
+            evidence_score += 0.10
     else:
         if _looks_like_answer_line(stripped, task_type=task_type, position=position, total_units=total_units):
             answer_score += 0.62
@@ -284,62 +302,43 @@ def _role_scores_for_unit(
 
 
 def _schema_features(
-    text: str,
+    answer_object: AnswerObject,
     *,
+    dataset_name: str,
     task_type: str,
+    answer_format: str,
+    task_subtype: str,
     units: Sequence[str],
     struct_units: Sequence[str],
     exec_meta: Dict[str, Any],
 ) -> Dict[str, Any]:
-    option = _extract_option_label(text)
-    numeric = _extract_numeric_answer(text)
-    answer_kind = "text"
-    if task_type == "code_generation":
-        answer_kind = "code"
-    elif option:
-        answer_kind = "multiple_choice"
-    elif numeric:
-        answer_kind = "numeric"
-    elif struct_units:
-        answer_kind = "structured"
+    answer_kind = str(answer_object.kind or "text")
+    schema_valid = bool(answer_object.fields.get("schema_valid", True))
     return {
+        "dataset_name": dataset_name,
         "task_type": task_type,
+        "answer_format": answer_format,
+        "task_subtype": task_subtype,
         "answer_kind": answer_kind,
+        "answer_valid": bool(answer_object.valid),
+        "answer_schema_valid": schema_valid,
         "unit_count": int(len(units)),
         "has_json_shape": bool(struct_units),
         "has_code_shape": bool(task_type == "code_generation"),
-        "has_option_label": bool(option),
-        "has_numeric_answer": bool(numeric),
+        "has_option_label": answer_kind == "option",
+        "has_numeric_answer": answer_kind in {"numeric", "graph_scalar"},
         "exec_parse_ok": bool(exec_meta.get("parse_ok", False)),
-        "answer_token_count": int(len(_normalize_text(text).split())),
+        "answer_token_count": int(len(_normalize_text(str(answer_object.value or "")).split())),
     }
 
 
 def _answer_signature(
-    answer_text: str,
+    answer_object: AnswerObject,
     *,
-    schema_features: Dict[str, Any],
     metadata: Dict[str, Any],
 ) -> str:
-    normalized = _normalize_text(answer_text)
-    answer_kind = str(schema_features.get("answer_kind", "text"))
-    if answer_kind == "code":
-        entry_point = str(metadata.get("entry_point", "")).strip()
-        return f"code::{entry_point}::{hash(normalized) & 0xfffffff:x}"
-    option = _extract_option_label(answer_text)
-    if option:
-        return f"option::{option}"
-    numeric = _extract_numeric_answer(answer_text)
-    if numeric:
-        return f"numeric::{numeric}"
-    if answer_kind == "structured":
-        try:
-            parsed = json.loads(answer_text)
-            return "structured::" + json.dumps(parsed, ensure_ascii=False, sort_keys=True)
-        except Exception:
-            pass
-    compact = normalized[:96]
-    return f"text::{compact}"
+    del metadata
+    return str(answer_object.signature or "text::invalid")
 
 
 def canonicalize_candidate(
@@ -347,7 +346,10 @@ def canonicalize_candidate(
     candidate_text: str,
     provenance: Optional[Sequence[Dict[str, Any]]] = None,
     metadata: Optional[Dict[str, Any]] = None,
+    dataset_name: str = "",
     task_type: str = "",
+    answer_format: str = "",
+    task_subtype: str = "",
     answer_role_threshold: float = 0.58,
     evidence_role_threshold: float = 0.52,
 ) -> ArtifactIR:
@@ -371,6 +373,7 @@ def canonicalize_candidate(
         role_scores = _role_scores_for_unit(
             raw_unit,
             task_type=task_type,
+            metadata=metadata,
             position=index,
             total_units=total_units,
             answer_role_threshold=answer_role_threshold,
@@ -456,18 +459,44 @@ def canonicalize_candidate(
         evidence_unit_ids = [unit.unit_id for unit in units[:-1]]
     if not evidence_unit_ids and units:
         evidence_unit_ids = [units[0].unit_id]
+    if is_code and units:
+        definition_ids = [
+            unit.unit_id
+            for unit in units
+            if unit.text.lstrip().startswith(("def ", "class "))
+        ]
+        if definition_ids:
+            answer_unit_ids = definition_ids
+        evidence_candidates = [
+            unit.unit_id
+            for unit in units
+            if unit.unit_id not in set(answer_unit_ids)
+            and unit.text.lstrip().startswith(
+                ("return", "if ", "elif ", "else:", "for ", "while ", "try:", "except", "raise", "assert ")
+            )
+        ]
+        if evidence_candidates:
+            evidence_unit_ids = evidence_candidates
 
-    answer_text_value = "\n".join(unit.text for unit in units if unit.unit_id in answer_unit_ids).strip() or text
+    answer_object = parse_answer_object(
+        text,
+        dataset_name=dataset_name,
+        answer_format=answer_format,
+        task_subtype=task_subtype,
+        metadata=metadata,
+    )
     schema_features = _schema_features(
-        answer_text_value,
+        answer_object,
+        dataset_name=dataset_name,
         task_type=task_type,
+        answer_format=answer_format,
+        task_subtype=task_subtype,
         units=raw_units,
         struct_units=struct_units,
         exec_meta=exec_meta,
     )
     answer_signature = _answer_signature(
-        answer_text_value,
-        schema_features=schema_features,
+        answer_object,
         metadata=metadata,
     )
 
@@ -482,8 +511,12 @@ def canonicalize_candidate(
         evidence_unit_ids=evidence_unit_ids,
         schema_features=schema_features,
         answer_signature=answer_signature,
+        answer_object=answer_object,
         metadata={
+            "dataset_name": dataset_name,
             "task_type": task_type,
+            "answer_format": answer_format,
+            "task_subtype": task_subtype,
             "provenance_coverage": provenance_coverage,
             "render_separator": separator,
             **metadata,
