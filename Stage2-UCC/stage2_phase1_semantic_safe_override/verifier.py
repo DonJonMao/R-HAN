@@ -574,8 +574,8 @@ def _typed_executor_channel(
         value = answer_object.value if answer_object.kind == "option" else None
         valid_option = isinstance(value, int) and (max_option <= 0 or 1 <= value <= max_option)
         mcq_features = _mcq_support_features(artifact, metadata=metadata)
-        support_score = float(mcq_features.get("support_score", 0.0))
-        quality = clamp01(0.35 * (1.0 if valid_option else 0.0) + 0.65 * support_score)
+        surface_support_score = float(mcq_features.get("support_score", 0.0))
+        quality = clamp01(0.35 * (1.0 if valid_option else 0.0) + 0.65 * surface_support_score)
         return (
             {
                 "r_execution": clamp01(1.0 - quality),
@@ -588,7 +588,7 @@ def _typed_executor_channel(
                 "max_option": max_option,
                 "valid_option": valid_option,
                 "parsed_option": value,
-                "mcq_support_score": support_score,
+                "mcq_surface_support_score": surface_support_score,
                 "mcq_chosen_in_answer": float(mcq_features.get("chosen_in_answer", 0.0)),
                 "mcq_chosen_in_evidence": float(mcq_features.get("chosen_in_evidence", 0.0)),
                 "mcq_competing_mentions": float(mcq_features.get("competing_mentions", 0.0)),
@@ -787,7 +787,9 @@ def _answer_consistency(
             contradiction_score=contradiction_score,
             residual_vector=residual_vector,
         )
-        support_score = float((executor_feedback or {}).get("mcq_support_score", mcq_features.get("support_score", 0.0)))
+        typed_support_score = float(mcq_features.get("support_score", 0.0))
+        surface_support_score = float((executor_feedback or {}).get("mcq_surface_support_score", typed_support_score))
+        support_score = clamp01(0.8 * typed_support_score + 0.2 * surface_support_score)
         chosen_in_answer = float((executor_feedback or {}).get("mcq_chosen_in_answer", mcq_features.get("chosen_in_answer", 0.0)))
         chosen_in_evidence = clamp01(float((executor_feedback or {}).get("mcq_chosen_in_evidence", mcq_features.get("chosen_in_evidence", 0.0))) / 2.0)
         competing_mentions = clamp01(float((executor_feedback or {}).get("mcq_competing_mentions", mcq_features.get("competing_mentions", 0.0))) / 3.0)
@@ -830,7 +832,9 @@ def _typed_support_score(
             contradiction_score=contradiction_score,
             residual_vector=residual_vector,
         )
-        return clamp01(float((executor_feedback or {}).get("mcq_support_score", mcq_features.get("support_score", 0.0))))
+        typed_score = float(mcq_features.get("support_score", 0.0))
+        surface_score = float((executor_feedback or {}).get("mcq_surface_support_score", typed_score))
+        return clamp01(0.8 * typed_score + 0.2 * surface_score)
     support_quality = clamp01(1.0 - float(residual_vector.get("r_support", 1.0)))
     parse_quality = clamp01(1.0 - float(residual_vector.get("r_parse", 1.0)))
     constraint_quality = clamp01(1.0 - float(residual_vector.get("r_constraint", 1.0)))
