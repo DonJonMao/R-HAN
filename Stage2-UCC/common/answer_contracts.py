@@ -7,7 +7,13 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from mas_treesearch.evaluator import MultiFidelityEvaluator
+from common.parsing_utils import (
+    extract_last_number,
+    extract_python_code,
+    extract_sequence_numbers,
+    normalize_yes_no_output,
+    safe_json,
+)
 
 
 @dataclass(frozen=True)
@@ -34,60 +40,77 @@ def _stable_hash(value: Any) -> str:
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
 
 
-def _extract_option_value(text: str, metadata: Optional[Dict[str, Any]]) -> Optional[int]:
-    cleaned = str(text or "").strip()
+def _normalize_option_token(token: str, metadata: Optional[Dict[str, Any]]) -> Optional[int]:
     max_option = 0
     options = metadata.get("options") if isinstance(metadata, dict) else None
     if isinstance(options, list):
         max_option = len(options)
+    raw = token.strip().upper().rstrip(".")
+    if not raw:
+        return None
+    if raw.isdigit():
+        value = int(raw)
+    elif len(raw) == 1 and raw.isalpha():
+        value = ord(raw) - ord("A") + 1
+    else:
+        return None
+    if max_option > 0 and not (1 <= value <= max_option):
+        return None
+    return value
 
-    def _normalize_token(token: str) -> Optional[int]:
-        raw = token.strip().upper().rstrip(".")
-        if not raw:
-            return None
-        if raw.isdigit():
-            value = int(raw)
-        elif len(raw) == 1 and raw.isalpha():
-            value = ord(raw) - ord("A") + 1
-        else:
-            return None
-        if max_option > 0 and not (1 <= value <= max_option):
-            return None
-        return value
 
+def _extract_option_surfaces(text: str, answer_surfaces: Optional[Sequence[str]]) -> List[str]:
+    surfaces = [str(surface).strip() for surface in (answer_surfaces or ()) if str(surface).strip()]
+    if surfaces:
+        return surfaces
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return []
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    if lines:
+        return lines[-2:]
+    return [cleaned]
+
+
+def _extract_option_value(
+    text: str,
+    metadata: Optional[Dict[str, Any]],
+    answer_surfaces: Optional[Sequence[str]] = None,
+) -> Optional[int]:
+    surfaces = _extract_option_surfaces(text, answer_surfaces)
     patterns = (
-        r"(?:^|\b)(?:OPTION|ANSWER)\s*[:：-]?\s*([A-D]|\d{1,2})(?:\b|\)|\.)",
-        r"(?:^|\b)([A-D]|\d{1,2})(?:\b|\)|\.)",
+        r"(?i)(?:final answer|answer|option)\s*[:：-]?\s*([A-Z]|\d{1,2})\b",
+        r"^\s*([A-Z]|\d{1,2})\s*$",
     )
-    for pattern in patterns:
-        match = re.search(pattern, cleaned, flags=re.IGNORECASE)
-        if match:
-            value = _normalize_token(match.group(1))
+    for surface in surfaces:
+        for pattern in patterns:
+            match = re.search(pattern, surface)
+            if not match:
+                continue
+            value = _normalize_option_token(match.group(1), metadata)
             if value is not None:
                 return value
     return None
 
 
 def _extract_graph_json(text: str) -> Optional[dict]:
-    if not isinstance(text, str):
-        return None
-    return MultiFidelityEvaluator._safe_json(text)
+    return safe_json(text) if isinstance(text, str) else None
 
 
 def _sequence_from_text(text: str) -> List[int]:
-    return MultiFidelityEvaluator._extract_sequence_numbers(str(text or ""))
+    return extract_sequence_numbers(str(text or ""))
 
 
 def _graph_bool_value(text: str, parsed: Optional[dict]) -> str:
     if isinstance(parsed, dict) and "answer" in parsed:
-        return MultiFidelityEvaluator._normalize_yes_no_output(str(parsed.get("answer", "")))
-    return MultiFidelityEvaluator._normalize_yes_no_output(str(text or ""))
+        return normalize_yes_no_output(str(parsed.get("answer", "")))
+    return normalize_yes_no_output(str(text or ""))
 
 
 def _graph_scalar_value(text: str, parsed: Optional[dict], field: str) -> Optional[float]:
     if isinstance(parsed, dict) and isinstance(parsed.get(field), (int, float)):
         return float(parsed[field])
-    return MultiFidelityEvaluator._extract_last_number(str(text or ""))
+    return extract_last_number(str(text or ""))
 
 
 def _graph_sequence_value(text: str, parsed: Optional[dict], field: str) -> List[int]:
@@ -140,7 +163,7 @@ def _graph_embeddings(text: str, parsed: Optional[dict]) -> Dict[str, List[int]]
 
 
 def _parse_code_answer(text: str, metadata: Optional[Dict[str, Any]]) -> AnswerObject:
-    code = MultiFidelityEvaluator._extract_python_code(str(text or ""))
+    code = extract_python_code(str(text or ""))
     entry_point = str((metadata or {}).get("entry_point") or "").strip()
     syntax_ok = False
     tree_dump = ""
@@ -167,9 +190,44 @@ def _parse_code_answer(text: str, metadata: Optional[Dict[str, Any]]) -> AnswerO
             "entry_point_present": entry_point_present or not entry_point,
             "ast_hash": _stable_hash(tree_dump) if tree_dump else "",
             "schema_valid": True,
+            "contract_valid": True,
+            "recoverable_valid": bool(code.strip()),
         },
         signature=signature,
     )
+
+
+def _graph_contract_fields(
+    *,
+    field_name: str,
+    task_subtype: str,
+    contract_valid: bool,
+    recoverable_valid: bool,
+    recoverable_value: Any,
+) -> Dict[str, Any]:
+    return {
+        "field": field_name,
+        "task_subtype": task_subtype,
+        "schema_valid": contract_valid,
+        "contract_valid": contract_valid,
+        "recoverable_valid": recoverable_valid,
+        "recoverable_value": recoverable_value,
+        "recoverable_object": recoverable_value,
+    }
+
+
+def _resolved_answer_format(dataset_name: str, answer_format: str) -> str:
+    fmt = str(answer_format or "").strip()
+    if fmt:
+        return fmt
+    dataset = str(dataset_name or "").strip().lower()
+    if dataset in {"mmlu", "mmlu_pro", "cqa"}:
+        return "option"
+    if dataset == "nlgraph":
+        return "graph_json"
+    if dataset in {"mbpp", "humaneval"}:
+        return "python_code"
+    return ""
 
 
 def _parse_graph_answer(text: str, task_subtype: str) -> AnswerObject:
@@ -180,89 +238,157 @@ def _parse_graph_answer(text: str, task_subtype: str) -> AnswerObject:
 
     if subtype in {"connectivity", "cycle"}:
         value = _graph_bool_value(cleaned, parsed)
-        valid = value in {"yes", "no"}
+        recoverable_valid = value in {"yes", "no"}
         field_name = "answer"
-        signature = f"graph_bool::{field_name}::{value}" if valid else "graph_bool::invalid"
+        contract_valid = schema_valid and recoverable_valid and "answer" in parsed
+        signature = f"graph_bool::{field_name}::{value}" if recoverable_valid else "graph_bool::invalid"
         return AnswerObject(
             kind="graph_bool",
             value=value,
-            valid=valid,
-            fields={"field": field_name, "schema_valid": schema_valid},
+            valid=contract_valid,
+            fields=_graph_contract_fields(
+                field_name=field_name,
+                task_subtype=subtype,
+                contract_valid=contract_valid,
+                recoverable_valid=recoverable_valid,
+                recoverable_value=value,
+            ),
             signature=signature,
         )
 
     if subtype == "flow":
         value = _graph_scalar_value(cleaned, parsed, "max_flow")
-        valid = value is not None
-        signature = f"graph_scalar::max_flow::{int(value) if value is not None and float(value).is_integer() else value}" if valid else "graph_scalar::invalid"
+        recoverable_valid = value is not None
+        contract_valid = schema_valid and isinstance(parsed, dict) and isinstance(parsed.get("max_flow"), (int, float))
+        signature = (
+            f"graph_scalar::max_flow::{int(value) if value is not None and float(value).is_integer() else value}"
+            if recoverable_valid
+            else "graph_scalar::invalid"
+        )
         return AnswerObject(
             kind="graph_scalar",
             value=value,
-            valid=valid,
-            fields={"field": "max_flow", "schema_valid": schema_valid},
+            valid=contract_valid,
+            fields=_graph_contract_fields(
+                field_name="max_flow",
+                task_subtype=subtype,
+                contract_valid=contract_valid,
+                recoverable_valid=recoverable_valid,
+                recoverable_value=value,
+            ),
             signature=signature,
         )
 
     if subtype == "topology":
         order = _graph_sequence_value(cleaned, parsed, "order")
+        recoverable_valid = bool(order)
+        contract_valid = schema_valid and isinstance(parsed, dict) and isinstance(parsed.get("order"), list) and bool(order)
         return AnswerObject(
             kind="graph_sequence",
             value=order,
-            valid=bool(order),
-            fields={"field": "order", "schema_valid": schema_valid},
-            signature=f"graph_sequence::order::{_stable_hash(order)}" if order else "graph_sequence::invalid",
+            valid=contract_valid,
+            fields=_graph_contract_fields(
+                field_name="order",
+                task_subtype=subtype,
+                contract_valid=contract_valid,
+                recoverable_valid=recoverable_valid,
+                recoverable_value=order,
+            ),
+            signature=f"graph_sequence::order::{_stable_hash(order)}" if recoverable_valid else "graph_sequence::invalid",
         )
 
     if subtype == "hamilton":
         path = _graph_sequence_value(cleaned, parsed, "path")
+        recoverable_valid = bool(path)
+        contract_valid = schema_valid and isinstance(parsed, dict) and isinstance(parsed.get("path"), list) and bool(path)
         return AnswerObject(
             kind="graph_sequence",
             value=path,
-            valid=bool(path),
-            fields={"field": "path", "schema_valid": schema_valid},
-            signature=f"graph_sequence::path::{_stable_hash(path)}" if path else "graph_sequence::invalid",
+            valid=contract_valid,
+            fields=_graph_contract_fields(
+                field_name="path",
+                task_subtype=subtype,
+                contract_valid=contract_valid,
+                recoverable_valid=recoverable_valid,
+                recoverable_value=path,
+            ),
+            signature=f"graph_sequence::path::{_stable_hash(path)}" if recoverable_valid else "graph_sequence::invalid",
         )
 
     if subtype == "shortest_path":
         path = _graph_sequence_value(cleaned, parsed, "path")
         total_weight = _graph_scalar_value(cleaned, parsed, "total_weight")
-        valid = bool(path) or total_weight is not None
+        recoverable_valid = bool(path) or total_weight is not None
+        contract_valid = (
+            schema_valid
+            and isinstance(parsed, dict)
+            and isinstance(parsed.get("path"), list)
+            and isinstance(parsed.get("total_weight"), (int, float))
+        )
         value = {"path": path, "total_weight": total_weight}
         return AnswerObject(
             kind="graph_path",
             value=value,
-            valid=valid,
-            fields={"field": "path", "schema_valid": schema_valid},
-            signature=f"graph_path::{_stable_hash(value)}" if valid else "graph_path::invalid",
+            valid=contract_valid,
+            fields=_graph_contract_fields(
+                field_name="path",
+                task_subtype=subtype,
+                contract_valid=contract_valid,
+                recoverable_valid=recoverable_valid,
+                recoverable_value=value,
+            ),
+            signature=f"graph_path::{_stable_hash(value)}" if recoverable_valid else "graph_path::invalid",
         )
 
     if subtype == "matching":
         matches, count = _graph_matching_value(cleaned, parsed)
-        valid = bool(matches) or count is not None
+        recoverable_valid = bool(matches) or count is not None
+        contract_valid = schema_valid and isinstance(parsed, dict) and ("matches" in parsed or "count" in parsed)
         value = {"matches": matches, "count": count}
         return AnswerObject(
             kind="graph_matching",
             value=value,
-            valid=valid,
-            fields={"field": "matches", "schema_valid": schema_valid},
-            signature=f"graph_matching::{_stable_hash(value)}" if valid else "graph_matching::invalid",
+            valid=contract_valid,
+            fields=_graph_contract_fields(
+                field_name="matches",
+                task_subtype=subtype,
+                contract_valid=contract_valid,
+                recoverable_valid=recoverable_valid,
+                recoverable_value=value,
+            ),
+            signature=f"graph_matching::{_stable_hash(value)}" if recoverable_valid else "graph_matching::invalid",
         )
 
     if subtype == "GNN":
         embeddings = _graph_embeddings(cleaned, parsed)
+        recoverable_valid = bool(embeddings)
+        contract_valid = schema_valid and isinstance(parsed, dict) and isinstance(parsed.get("node_embeddings"), dict) and bool(embeddings)
         return AnswerObject(
             kind="node_embeddings",
             value=embeddings,
-            valid=bool(embeddings),
-            fields={"field": "node_embeddings", "schema_valid": schema_valid},
-            signature=f"node_embeddings::{_stable_hash(embeddings)}" if embeddings else "node_embeddings::invalid",
+            valid=contract_valid,
+            fields=_graph_contract_fields(
+                field_name="node_embeddings",
+                task_subtype=subtype,
+                contract_valid=contract_valid,
+                recoverable_valid=recoverable_valid,
+                recoverable_value=embeddings,
+            ),
+            signature=f"node_embeddings::{_stable_hash(embeddings)}" if recoverable_valid else "node_embeddings::invalid",
         )
 
     return AnswerObject(
         kind="graph_text",
         value=cleaned,
-        valid=bool(cleaned),
-        fields={"schema_valid": schema_valid, "task_subtype": subtype},
+        valid=schema_valid,
+        fields={
+            "schema_valid": schema_valid,
+            "contract_valid": schema_valid,
+            "recoverable_valid": bool(cleaned),
+            "recoverable_value": cleaned,
+            "recoverable_object": cleaned,
+            "task_subtype": subtype,
+        },
         signature=f"graph_text::{_stable_hash(cleaned)}" if cleaned else "graph_text::invalid",
     )
 
@@ -274,45 +400,49 @@ def parse_answer_object(
     answer_format: str,
     task_subtype: str,
     metadata: Optional[dict],
+    answer_surfaces: Optional[Sequence[str]] = None,
 ) -> AnswerObject:
     cleaned = str(text or "").strip()
-    dataset = str(dataset_name or "").strip()
-    fmt = str(answer_format or "").strip()
+    fmt = _resolved_answer_format(dataset_name, answer_format)
 
-    if fmt == "option" or dataset in {"mmlu", "mmlu_pro", "popqa", "cqa"}:
-        option = _extract_option_value(cleaned, metadata)
+    if fmt == "option":
+        option = _extract_option_value(cleaned, metadata, answer_surfaces=answer_surfaces)
         return AnswerObject(
             kind="option",
             value=option,
             valid=option is not None,
-            fields={"schema_valid": True},
+            fields={
+                "schema_valid": True,
+                "contract_valid": option is not None,
+                "recoverable_valid": option is not None,
+            },
             signature=f"option::{option}" if option is not None else "option::invalid",
         )
 
-    if fmt == "graph_json" or dataset == "nlgraph":
+    if fmt == "graph_json":
         return _parse_graph_answer(cleaned, task_subtype)
 
-    if fmt == "python_code" or dataset in {"mbpp", "humaneval"}:
+    if fmt == "python_code":
         return _parse_code_answer(cleaned, metadata)
 
     if fmt == "yes_no":
-        value = MultiFidelityEvaluator._normalize_yes_no_output(cleaned)
+        value = normalize_yes_no_output(cleaned)
         valid = value in {"yes", "no"}
         return AnswerObject(
             kind="bool",
             value=value,
             valid=valid,
-            fields={"schema_valid": True},
+            fields={"schema_valid": True, "contract_valid": valid, "recoverable_valid": valid},
             signature=f"bool::{value}" if valid else "bool::invalid",
         )
 
-    numeric = MultiFidelityEvaluator._extract_last_number(cleaned)
+    numeric = extract_last_number(cleaned)
     if numeric is not None:
         return AnswerObject(
             kind="numeric",
             value=numeric,
             valid=True,
-            fields={"schema_valid": True},
+            fields={"schema_valid": True, "contract_valid": True, "recoverable_valid": True},
             signature=f"numeric::{numeric}",
         )
 
@@ -320,7 +450,7 @@ def parse_answer_object(
         kind="text",
         value=cleaned,
         valid=bool(cleaned),
-        fields={"schema_valid": True},
+        fields={"schema_valid": True, "contract_valid": bool(cleaned), "recoverable_valid": bool(cleaned)},
         signature=f"text::{_stable_hash(cleaned)}" if cleaned else "text::invalid",
     )
 
@@ -338,41 +468,58 @@ def _sequence_constraint_set(value: Sequence[int], field: str) -> set[Tuple[int,
     return {(left, right) for left, right in zip(items, items[1:])}
 
 
+def _recoverable_valid(answer_object: AnswerObject) -> bool:
+    return bool(answer_object.valid or answer_object.fields.get("recoverable_valid", False))
+
+
+def _semantic_value(answer_object: AnswerObject) -> Any:
+    if "recoverable_value" in answer_object.fields:
+        return answer_object.fields.get("recoverable_value")
+    if "recoverable_object" in answer_object.fields:
+        return answer_object.fields.get("recoverable_object")
+    return answer_object.value
+
+
 def typed_answer_distance(left: AnswerObject, right: AnswerObject) -> float:
-    if not left.valid and not right.valid:
+    left_valid = _recoverable_valid(left)
+    right_valid = _recoverable_valid(right)
+    if not left_valid and not right_valid:
         return 0.0
-    if not left.valid or not right.valid:
+    if not left_valid or not right_valid:
         return 1.0
     if left.kind != right.kind:
         return 1.0
 
+    left_value = _semantic_value(left)
+    right_value = _semantic_value(right)
+
     if left.kind in {"option", "bool"}:
-        return 0.0 if left.value == right.value else 1.0
+        return 0.0 if left_value == right_value else 1.0
 
     if left.kind in {"numeric", "graph_scalar"}:
         try:
-            left_value = float(left.value)
-            right_value = float(right.value)
+            left_scalar = float(left_value)
+            right_scalar = float(right_value)
         except Exception:
             return 1.0
-        scale = max(1.0, abs(left_value), abs(right_value))
-        return min(1.0, abs(left_value - right_value) / scale)
+        scale = max(1.0, abs(left_scalar), abs(right_scalar))
+        return min(1.0, abs(left_scalar - right_scalar) / scale)
 
     if left.kind == "graph_sequence":
         field = str(left.fields.get("field") or right.fields.get("field") or "path")
-        left_set = _sequence_constraint_set(left.value or [], field)
-        right_set = _sequence_constraint_set(right.value or [], field)
+        left_set = _sequence_constraint_set(left_value or [], field)
+        right_set = _sequence_constraint_set(right_value or [], field)
         if not left_set and not right_set:
-            return 0.0 if list(left.value or []) == list(right.value or []) else 1.0
+            return 0.0 if list(left_value or []) == list(right_value or []) else 1.0
         overlap = len(left_set & right_set)
         union = len(left_set | right_set)
         return 1.0 - (float(overlap) / float(max(1, union)))
 
     if left.kind == "graph_path":
-        left_path = list((left.value or {}).get("path") or [])
-        right_path = list((right.value or {}).get("path") or [])
-        left_weight = (left.value or {}).get("total_weight")
-        right_weight = (right.value or {}).get("total_weight")
+        left_path = list((left_value or {}).get("path") or [])
+        right_path = list((right_value or {}).get("path") or [])
+        left_weight = (left_value or {}).get("total_weight")
+        right_weight = (right_value or {}).get("total_weight")
         path_distance = typed_answer_distance(
             AnswerObject(kind="graph_sequence", value=left_path, valid=True, fields={"field": "path"}, signature=""),
             AnswerObject(kind="graph_sequence", value=right_path, valid=True, fields={"field": "path"}, signature=""),
@@ -385,10 +532,10 @@ def typed_answer_distance(left: AnswerObject, right: AnswerObject) -> float:
         ))
 
     if left.kind == "graph_matching":
-        left_matches = {tuple(item) for item in ((left.value or {}).get("matches") or [])}
-        right_matches = {tuple(item) for item in ((right.value or {}).get("matches") or [])}
-        left_count = (left.value or {}).get("count")
-        right_count = (right.value or {}).get("count")
+        left_matches = {tuple(item) for item in ((left_value or {}).get("matches") or [])}
+        right_matches = {tuple(item) for item in ((right_value or {}).get("matches") or [])}
+        left_count = (left_value or {}).get("count")
+        right_count = (right_value or {}).get("count")
         if not left_matches and not right_matches and left_count is not None and right_count is not None:
             return 0.0 if int(left_count) == int(right_count) else 1.0
         overlap = len(left_matches & right_matches)
@@ -402,8 +549,8 @@ def typed_answer_distance(left: AnswerObject, right: AnswerObject) -> float:
         return min(1.0, 0.75 * (1.0 - float(overlap) / float(max(1, union))) + 0.25 * count_penalty)
 
     if left.kind == "node_embeddings":
-        left_emb = dict(left.value or {})
-        right_emb = dict(right.value or {})
+        left_emb = dict(left_value or {})
+        right_emb = dict(right_value or {})
         all_nodes = set(left_emb) | set(right_emb)
         if not all_nodes:
             return 0.0

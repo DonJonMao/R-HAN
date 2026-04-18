@@ -180,6 +180,11 @@ Y_i = ParseContract(
 
 - `Y_i` 就是 `answer_object`
 - 它至少包含 `kind / value / valid / fields / signature`
+- 其中 `valid` 在结构任务上表示 `contract_valid`，而不是“从自由文本里还能不能勉强恢复一个值”
+- `fields` 必须显式区分：
+  - `contract_valid`
+  - `recoverable_value` 或 `recoverable_object`
+  - `task_subtype`
 - `schema_features S_i` 必须扩成：
 
 ```text
@@ -197,6 +202,9 @@ S_i = (
 - `phase1 canonicalizer` 与 `evaluator` 必须共用同一套 `ParseContract`
 - 不能再出现 `profile` 声明了 `answer_format`，但 `phase1` 只按 `task_type` 粗分的实现
 - `MMLU-Pro / NLGraph / MBPP` 都必须落到 typed object，而不是统一退化成普通文本 surface
+- 对 `graph_json`，必须允许“contract 无效但值可恢复”的中间状态：
+  - `r_parse` 对此仍然给高惩罚
+  - `r_exec / r_const` 可以继续基于 `recoverable_value` 做可计算检查
 
 ### 4.6 answer signature
 
@@ -495,6 +503,12 @@ and a_i^cons < tau_c
 
 这层 fail-safe 不是旧的 hard anchor guard，而是防止 closed-set 任务继续大规模错翻的极薄保护层。
 
+实现规则补充：
+
+- final selection 不能只检查 frontier 排名第一的 challenger
+- 必须在所有 `admissible challengers` 中选择 `best admissible challenger`
+- 若第一名 challenger 被 overturn / consistency / catastrophic guard 挡住，selector 仍需继续检查下一名 challenger
+
 ### 4.17 阶段一训练目标
 
 阶段一的损失定义为：
@@ -516,6 +530,11 @@ L^(1) = L_verify + L_ans + L_ovr + L_rank + L_safe
 - `MMLU-Pro` 的错误 overturn 显著下降
 - `MBPP/HumanEval` 不因为过强保守而明显掉分
 - utility / overturn / safe override 三个头都能产出稳定可解释的轨迹
+
+训练补充约束：
+
+- 对 realized override 很少的任务，默认启用 replay frontier 的 `offline pair mining`
+- 不能只依赖 on-policy 最终 winner，否则 `NLGraph` 一类任务会长期缺正样本
 
 ## 5. 阶段二：Unified Local Correction
 
@@ -599,7 +618,7 @@ d_i = MLP_crit([Pool(H_i), c_i^{loc}, k_i^{pres}, r_i, omega_i, g_t])
   "preserve_units": [...],
   "expected_delta": {
     "delta_answer": "...",
-    "delta_parse": 0.0,
+    "delta_contract": 0.0,
     "delta_constraint": 0.0,
     "delta_exec": 0.0,
     "delta_preserve": 0.0
@@ -609,6 +628,7 @@ d_i = MLP_crit([Pool(H_i), c_i^{loc}, k_i^{pres}, r_i, omega_i, g_t])
 ```
 
 其中 `expected_delta.delta_answer` 必须复用阶段一的 typed `g_ans`，不能重新退化成“全文文本更顺”的自由表述。
+其中 `expected_delta.delta_contract` 明确表示答案契约是否更接近合法输出，而不是笼统的 parse 文本更像正确格式。
 
 ### 5.7 apply + delta predictor
 

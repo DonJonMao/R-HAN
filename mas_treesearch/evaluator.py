@@ -7,7 +7,23 @@ import sys
 import time
 from dataclasses import dataclass, replace
 from math import sqrt
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+_STAGE2_UCC_ROOT = Path(__file__).resolve().parents[1] / "Stage2-UCC"
+if _STAGE2_UCC_ROOT.is_dir():
+    _stage2_ucc_root = str(_STAGE2_UCC_ROOT)
+    if _stage2_ucc_root not in sys.path:
+        sys.path.insert(0, _stage2_ucc_root)
+
+from common.parsing_utils import (
+    extract_first_number,
+    extract_last_number,
+    extract_python_code,
+    extract_sequence_numbers,
+    normalize_yes_no_output,
+    safe_json,
+)
 
 from .agents import AgentPool
 from .cache import DictCache
@@ -48,17 +64,7 @@ class MultiFidelityEvaluator:
 
     @staticmethod
     def _safe_json(text: str) -> Optional[dict]:
-        try:
-            return json.loads(text)
-        except Exception:
-            pass
-        if "{" in text and "}" in text:
-            snippet = text[text.find("{") : text.rfind("}") + 1]
-            try:
-                return json.loads(snippet)
-            except Exception:
-                return None
-        return None
+        return safe_json(text)
 
     def _cached_chat(
         self,
@@ -483,11 +489,7 @@ class MultiFidelityEvaluator:
 
     @staticmethod
     def _normalize_yes_no_output(text: str) -> str:
-        cleaned = MultiFidelityEvaluator._strip_hidden_reasoning(text).strip()
-        match = re.search(r"\b(yes|no)\b", cleaned.lower())
-        if match:
-            return match.group(1)
-        return cleaned
+        return normalize_yes_no_output(text)
 
     @staticmethod
     def _extract_json_list(text: str) -> Optional[str]:
@@ -506,23 +508,11 @@ class MultiFidelityEvaluator:
 
     @staticmethod
     def _extract_first_number(text: str) -> Optional[float]:
-        match = re.search(r"-?\d+(?:\.\d+)?", text.replace(",", ""))
-        if not match:
-            return None
-        try:
-            return float(match.group(0))
-        except Exception:
-            return None
+        return extract_first_number(text)
 
     @staticmethod
     def _extract_last_number(text: str) -> Optional[float]:
-        matches = re.findall(r"-?\d+(?:\.\d+)?", text.replace(",", ""))
-        if not matches:
-            return None
-        try:
-            return float(matches[-1])
-        except Exception:
-            return None
+        return extract_last_number(text)
 
     @staticmethod
     def _gold_mcq_option(reference_answer: Optional[str], metadata: Optional[dict]) -> Optional[int]:
@@ -571,15 +561,11 @@ class MultiFidelityEvaluator:
 
     @staticmethod
     def _extract_python_code(text: str) -> str:
-        cleaned = MultiFidelityEvaluator._strip_hidden_reasoning(text).strip()
-        fenced = re.findall(r"```(?:python)?\s*(.*?)```", cleaned, flags=re.DOTALL | re.IGNORECASE)
-        if fenced:
-            cleaned = max(fenced, key=len).strip()
-        return cleaned.strip()
+        return extract_python_code(text)
 
     @staticmethod
     def _extract_sequence_numbers(text: str) -> List[int]:
-        return [int(token) for token in re.findall(r"-?\d+", text)]
+        return extract_sequence_numbers(text)
 
     @staticmethod
     def _extract_boxed_expression(text: str) -> str:

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from stage2_phase1_semantic_safe_override.artifacts import canonicalize_candidate
 from stage2_phase1_semantic_safe_override.config import Phase1SemanticSafeOverrideConfig
 from stage2_phase1_semantic_safe_override.runtime import Phase1SemanticSafeOverrideRuntime
+from stage2_phase1_semantic_safe_override.verifier import verify_artifact
 
 
 def _runtime_stub() -> Phase1SemanticSafeOverrideRuntime:
@@ -170,7 +171,75 @@ def test_select_final_candidate_blocks_catastrophic_answer_rewrite():
     selected, reason = runtime._select_final_candidate([challenger], anchor)
 
     assert selected == anchor
-    assert reason == "phase1_semantic_safe_override_catastrophic_answer_guard"
+    assert reason == "phase1_semantic_safe_override_preserve_anchor_guard"
+
+
+def test_select_final_candidate_scans_all_admissible_challengers_not_only_top1():
+    runtime = _runtime_stub()
+    anchor = {
+        "digest": "anchor",
+        "phase1_safe_utility": 0.80,
+        "phase1_confidence_score": 0.80,
+        "phase1_residual_mean": 0.20,
+        "phase1_answer_delta": 0.0,
+        "phase1_answer_consistency_score": 0.92,
+    }
+    blocked_top1 = {
+        "digest": "blocked_top1",
+        "phase1_safe_utility": 0.93,
+        "phase1_safe_override_score": 0.90,
+        "phase1_overturn_risk": 0.71,
+        "phase1_confidence_score": 0.88,
+        "phase1_residual_mean": 0.15,
+        "phase1_answer_delta": 0.18,
+        "phase1_answer_consistency_score": 0.87,
+    }
+    admissible_second = {
+        "digest": "admissible_second",
+        "phase1_safe_utility": 0.87,
+        "phase1_safe_override_score": 0.76,
+        "phase1_overturn_risk": 0.24,
+        "phase1_confidence_score": 0.82,
+        "phase1_residual_mean": 0.17,
+        "phase1_answer_delta": 0.12,
+        "phase1_answer_consistency_score": 0.84,
+    }
+
+    selected, reason = runtime._select_final_candidate([blocked_top1, admissible_second], anchor)
+
+    assert selected == admissible_second
+    assert reason == "phase1_semantic_safe_override_override_frontier"
+
+
+def test_utility_features_do_not_encode_stage1_anchor_identity():
+    runtime = _runtime_stub()
+    artifact = canonicalize_candidate(
+        candidate_text="Answer: B",
+        metadata={"options": ["alpha", "beta", "gamma", "delta"]},
+        dataset_name="mmlu_pro",
+        task_type="mcq",
+        answer_format="option",
+    )
+    state = verify_artifact(
+        artifact,
+        question_text="1) A\n2) B\n3) C\n4) D\nReturn only the final answer.",
+        metadata={"options": ["alpha", "beta", "gamma", "delta"]},
+        dataset_name="mmlu_pro",
+        task_type="mcq",
+        answer_format="option",
+        task_subtype="",
+        candidate_entry={"stage1_anchor": True},
+    )
+
+    features = runtime._utility_features(
+        entry={"stage1_anchor": True, "occurrence_count": 1.0, "sink_support": 0.0, "reviewer_mean_trust": 0.5},
+        verifier_state=state,
+        artifact=artifact,
+        total_turns=1,
+        dataset_profile=SimpleNamespace(name="mmlu_pro", task_type="mcq", answer_format="option"),
+    )
+
+    assert "stage1_anchor" not in features
 
 
 def test_phase1_config_exposes_safe_override_fields():

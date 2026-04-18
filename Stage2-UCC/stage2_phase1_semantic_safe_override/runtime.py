@@ -277,8 +277,7 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
             "progress_score": float(verifier_state.progress_score),
             "answer_consistency": float(verifier_state.answer_consistency_score),
             "answer_valid": 1.0 if artifact.answer_object.valid else 0.0,
-            "schema_valid": 1.0 if bool(artifact.answer_object.fields.get("schema_valid", True)) else 0.0,
-            "stage1_anchor": 1.0 if entry.get("stage1_anchor") else 0.0,
+            "schema_valid": 1.0 if bool(artifact.answer_object.fields.get("contract_valid", artifact.answer_object.fields.get("schema_valid", True))) else 0.0,
             "occurrence_log": float(entry.get("occurrence_count", 0.0)),
             "sink_support": float(entry.get("sink_support", 0.0)),
             "reviewer_mean_trust": float(entry.get("reviewer_mean_trust", 0.5)),
@@ -302,7 +301,6 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
         support_mean = _mean(verifier_state.support_map.values())
         residual_mean = mean_residual(verifier_state)
         provenance_coverage = float(artifact.metadata.get("provenance_coverage", 0.0))
-        anchor_bonus = 0.05 if entry.get("stage1_anchor") else 0.0
         return clamp01(
             0.36 * (1.0 - residual_mean)
             + 0.18 * verifier_state.confidence_score
@@ -310,7 +308,6 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
             + 0.12 * support_mean
             + 0.10 * provenance_coverage
             + 0.08 * verifier_state.anchor_similarity
-            + anchor_bonus
         )
 
     def _safe_override_features(
@@ -555,6 +552,7 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
                 "anchor_residual": float(mean_residual(anchor_state)) if isinstance(anchor_state, VerifierState) else 0.0,
                 "confidence_gap": float(state.confidence_score) - float(anchor_state.confidence_score) if isinstance(anchor_state, VerifierState) else 0.0,
                 "answer_consistency": float(state.answer_consistency_score),
+                "support_gap": float(state.answer_consistency_score) - float(anchor_state.answer_consistency_score) if isinstance(anchor_state, VerifierState) else 0.0,
                 "preserve_risk": float(state.preserve_risk),
             }
             predicted_risk, _ = self._overturn_model.predict(risk_features)
@@ -755,6 +753,8 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
             self._phase1_last_residual_mean = float(anchor.get("phase1_residual_mean", 0.5))
             return anchor, "phase1_semantic_safe_override_anchor_wins_frontier"
         anchor_safe_utility = float(anchor.get("phase1_safe_utility", 0.0))
+        anchor_confidence = float(anchor.get("phase1_confidence_score", 0.0))
+        anchor_residual = float(anchor.get("phase1_residual_mean", 1.0))
         challengers.sort(
             key=lambda entry: (
                 float(entry.get("phase1_safe_utility", 0.0)) - anchor_safe_utility,
@@ -767,31 +767,44 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
             ),
             reverse=True,
         )
-        best = challengers[0]
-        best_safe_utility = float(best.get("phase1_safe_utility", 0.0))
-        pairwise_value = best_safe_utility - anchor_safe_utility
-        if pairwise_value <= 0.0:
-            self._phase1_last_residual_mean = float(anchor.get("phase1_residual_mean", 0.5))
+        qualified: List[Dict[str, Any]] = []
+        any_pairwise_better = False
+        for challenger in challengers:
+            challenger_safe_utility = float(challenger.get("phase1_safe_utility", 0.0))
+            if challenger_safe_utility <= anchor_safe_utility:
+                continue
+            any_pairwise_better = True
+            if self._is_catastrophic_answer_rewrite(challenger, anchor):
+                continue
+            if float(challenger.get("phase1_safe_override_score", 0.0)) < float(self.config.safe_override_threshold):
+                continue
+            if float(challenger.get("phase1_overturn_risk", 1.0)) >= float(self.config.overturn_threshold):
+                continue
+            if float(challenger.get("phase1_answer_consistency_score", 0.0)) < float(self.config.catastrophic_consistency_threshold):
+                continue
+            challenger_confidence = float(challenger.get("phase1_confidence_score", 0.0))
+            challenger_residual = float(challenger.get("phase1_residual_mean", 1.0))
+            if not (challenger_confidence >= anchor_confidence or challenger_residual + 0.05 < anchor_residual):
+                continue
+            qualified.append(challenger)
+        if qualified:
+            selected = max(
+                qualified,
+                key=lambda entry: (
+                    float(entry.get("phase1_safe_utility", 0.0)),
+                    float(entry.get("phase1_safe_override_score", 0.0)),
+                    -float(entry.get("phase1_overturn_risk", 1.0)),
+                    float(entry.get("phase1_answer_consistency_score", 0.0)),
+                    float(entry.get("phase1_confidence_score", 0.0)),
+                    -float(entry.get("phase1_residual_mean", 1.0)),
+                    str(entry.get("digest", "")),
+                ),
+            )
+            self._phase1_last_residual_mean = float(selected.get("phase1_residual_mean", anchor_residual))
+            return selected, "phase1_semantic_safe_override_override_frontier"
+        if not any_pairwise_better:
+            self._phase1_last_residual_mean = anchor_residual
             return anchor, "phase1_semantic_safe_override_anchor_wins_frontier"
-        if self._is_catastrophic_answer_rewrite(best, anchor):
-            self._phase1_last_residual_mean = float(anchor.get("phase1_residual_mean", 0.5))
-            return anchor, "phase1_semantic_safe_override_catastrophic_answer_guard"
-        best_overturn = float(best.get("phase1_overturn_risk", 1.0))
-        best_safe_override_score = float(best.get("phase1_safe_override_score", 0.0))
-        best_answer_consistency = float(best.get("phase1_answer_consistency_score", 0.0))
-        best_confidence = float(best.get("phase1_confidence_score", 0.0))
-        anchor_confidence = float(anchor.get("phase1_confidence_score", 0.0))
-        best_residual = float(best.get("phase1_residual_mean", 1.0))
-        anchor_residual = float(anchor.get("phase1_residual_mean", 1.0))
-        if (
-            best_safe_utility > anchor_safe_utility
-            and best_safe_override_score >= float(self.config.safe_override_threshold)
-            and best_overturn < float(self.config.overturn_threshold)
-            and best_answer_consistency >= float(self.config.catastrophic_consistency_threshold)
-            and (best_confidence >= anchor_confidence or best_residual + 0.05 < anchor_residual)
-        ):
-            self._phase1_last_residual_mean = best_residual
-            return best, "phase1_semantic_safe_override_override_frontier"
         self._phase1_last_residual_mean = anchor_residual
         return anchor, "phase1_semantic_safe_override_preserve_anchor_guard"
 
@@ -1123,6 +1136,7 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
                     "anchor_residual": float(anchor.get("phase1_residual_mean", 1.0)) if isinstance(anchor, dict) else 1.0,
                     "confidence_gap": float(state.confidence_score) - float(anchor.get("phase1_confidence_score", 0.0) if isinstance(anchor, dict) else 0.0),
                     "answer_consistency": float(state.answer_consistency_score),
+                    "support_gap": float(state.answer_consistency_score) - float(anchor.get("phase1_answer_consistency_score", 0.0) if isinstance(anchor, dict) else 0.0),
                     "preserve_risk": float(state.preserve_risk),
                 }
                 pairwise_target = challenger_labels.get(digest, 0.0)

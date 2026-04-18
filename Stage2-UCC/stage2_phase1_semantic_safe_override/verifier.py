@@ -105,45 +105,67 @@ def _option_count(question_text: str, metadata: Optional[Dict[str, Any]]) -> int
     return max(numbers) if numbers else 0
 
 
+def _contract_valid(answer_object: AnswerObject) -> bool:
+    return bool(answer_object.fields.get("contract_valid", answer_object.valid))
+
+
+def _recoverable_valid(answer_object: AnswerObject) -> bool:
+    return bool(answer_object.fields.get("recoverable_valid", answer_object.valid))
+
+
+def _semantic_value(answer_object: AnswerObject) -> Any:
+    if "recoverable_object" in answer_object.fields:
+        return answer_object.fields.get("recoverable_object")
+    if "recoverable_value" in answer_object.fields:
+        return answer_object.fields.get("recoverable_value")
+    return answer_object.value
+
+
 def _answer_parse_residual(answer_object: AnswerObject) -> float:
-    schema_valid = bool(answer_object.fields.get("schema_valid", True))
-    if schema_valid:
-        return 0.0 if answer_object.valid else 1.0
-    if answer_object.valid:
-        return 0.45
+    contract_valid = _contract_valid(answer_object)
+    recoverable_valid = _recoverable_valid(answer_object)
+    if contract_valid:
+        return 0.0
+    if recoverable_valid:
+        return 0.85
     return 1.0
 
 
 def _answer_completeness_residual(answer_object: AnswerObject) -> float:
-    if not answer_object.valid:
+    contract_valid = _contract_valid(answer_object)
+    recoverable_valid = _recoverable_valid(answer_object)
+    semantic_value = _semantic_value(answer_object)
+    if answer_object.kind in {"graph_bool", "graph_scalar", "graph_sequence", "graph_path", "graph_matching", "node_embeddings", "graph_text"} and not contract_valid:
+        return 0.85 if recoverable_valid else 1.0
+    if not recoverable_valid:
         return 1.0
     if answer_object.kind in {"option", "bool", "numeric", "graph_scalar", "graph_sequence"}:
         return 0.0
     if answer_object.kind == "graph_path":
-        path = list((answer_object.value or {}).get("path") or [])
-        total_weight = (answer_object.value or {}).get("total_weight")
+        path = list((semantic_value or {}).get("path") or [])
+        total_weight = (semantic_value or {}).get("total_weight")
         if path and total_weight is not None:
             return 0.0
         if path or total_weight is not None:
             return 0.35
         return 1.0
     if answer_object.kind == "graph_matching":
-        matches = list((answer_object.value or {}).get("matches") or [])
-        count = (answer_object.value or {}).get("count")
+        matches = list((semantic_value or {}).get("matches") or [])
+        count = (semantic_value or {}).get("count")
         if matches and count is not None:
             return 0.0
         if matches or count is not None:
             return 0.30
         return 1.0
     if answer_object.kind == "node_embeddings":
-        return 0.0 if dict(answer_object.value or {}) else 1.0
+        return 0.0 if dict(semantic_value or {}) else 1.0
     if answer_object.kind == "code":
-        if not str(answer_object.value or "").strip():
+        if not str(semantic_value or "").strip():
             return 1.0
         if bool(answer_object.fields.get("entry_point")) and not bool(answer_object.fields.get("entry_point_present")):
             return 0.45
         return 0.0
-    return 0.0 if str(answer_object.value or "").strip() else 1.0
+    return 0.0 if str(semantic_value or "").strip() else 1.0
 
 
 def _support_map(
@@ -152,10 +174,9 @@ def _support_map(
 ) -> Dict[str, float]:
     provenance = artifact.provenance
     base_coverage = clamp01(float(artifact.metadata.get("provenance_coverage", 0.0)))
-    stage1_anchor = bool((candidate_entry or {}).get("stage1_anchor", False))
     reviewer_bonus = clamp01(float((candidate_entry or {}).get("reviewer_mean_trust", 0.5)))
     answer_valid_bonus = 0.10 if bool(artifact.answer_object.valid) else 0.0
-    schema_bonus = 0.10 if bool(artifact.answer_object.fields.get("schema_valid", True)) else 0.0
+    schema_bonus = 0.10 if _contract_valid(artifact.answer_object) else 0.0
     supports: Dict[str, float] = {}
     answer_ids = set(artifact.answer_unit_ids)
     evidence_ids = set(artifact.evidence_unit_ids)
@@ -165,8 +186,6 @@ def _support_map(
             score += 0.18
         if unit.unit_id in answer_ids:
             score += 0.14
-        if stage1_anchor:
-            score += 0.18
         if provenance:
             score += 0.08
         if len(unit.text.strip()) >= 4:
@@ -420,6 +439,86 @@ def _max_matching_count(interests: Dict[int, List[int]]) -> int:
     return matches
 
 
+def _option_surface_features(
+    answer_object: AnswerObject,
+    *,
+    metadata: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if answer_object.kind != "option" or not isinstance(answer_object.value, int):
+        return {"value": None, "letter": "", "option_text": ""}
+    value = int(answer_object.value)
+    options = metadata.get("options") if isinstance(metadata, dict) and isinstance(metadata.get("options"), list) else []
+    option_text = ""
+    if 1 <= value <= len(options):
+        option_text = str(options[value - 1] or "").strip().lower()
+    letter = chr(ord("A") + value - 1) if 1 <= value <= 26 else ""
+    return {"value": value, "letter": letter, "option_text": option_text}
+
+
+def _count_option_mentions(blob: str, *, value: Optional[int], letter: str, option_text: str) -> int:
+    if not blob:
+        return 0
+    count = 0
+    if value is not None:
+        count += len(re.findall(rf"\b{re.escape(str(value))}\b", blob))
+    if letter:
+        count += len(re.findall(rf"\b{re.escape(letter.lower())}\b", blob))
+    if option_text:
+        count += len(re.findall(rf"\b{re.escape(option_text)}\b", blob))
+    return count
+
+
+def _mcq_support_features(
+    artifact: ArtifactIR,
+    *,
+    metadata: Optional[Dict[str, Any]],
+    contradiction_score: float = 0.0,
+    residual_vector: Optional[Dict[str, float]] = None,
+) -> Dict[str, float]:
+    answer_object = artifact.answer_object
+    answer_blob = answer_text(artifact).lower()
+    evidence_blob = "\n".join(unit.text for unit in evidence_units(artifact) if unit.text.strip()).lower()
+    features = _option_surface_features(answer_object, metadata=metadata)
+    chosen_value = features["value"]
+    chosen_letter = features["letter"]
+    chosen_text = features["option_text"]
+    chosen_in_answer = 1.0 if _count_option_mentions(answer_blob, value=chosen_value, letter=chosen_letter, option_text=chosen_text) > 0 else 0.0
+    chosen_in_evidence = float(_count_option_mentions(evidence_blob, value=chosen_value, letter=chosen_letter, option_text=chosen_text))
+
+    competing_mentions = 0.0
+    options = metadata.get("options") if isinstance(metadata, dict) and isinstance(metadata.get("options"), list) else []
+    if options and isinstance(chosen_value, int):
+        for index, option in enumerate(options, start=1):
+            if index == chosen_value:
+                continue
+            option_letter = chr(ord("A") + index - 1) if 1 <= index <= 26 else ""
+            competing_mentions += float(
+                _count_option_mentions(
+                    evidence_blob,
+                    value=index,
+                    letter=option_letter,
+                    option_text=str(option or "").strip().lower(),
+                )
+            )
+
+    parse_ok = 1.0 - float((residual_vector or {}).get("r_parse", 0.0))
+    completeness_ok = 1.0 - float((residual_vector or {}).get("r_completeness", 0.0))
+    support_score = clamp01(
+        0.26 * chosen_in_answer
+        + 0.30 * clamp01(chosen_in_evidence / 2.0)
+        + 0.16 * parse_ok
+        + 0.12 * completeness_ok
+        + 0.16 * clamp01(1.0 - contradiction_score)
+        - 0.18 * clamp01(competing_mentions / 3.0)
+    )
+    return {
+        "chosen_in_answer": chosen_in_answer,
+        "chosen_in_evidence": chosen_in_evidence,
+        "competing_mentions": competing_mentions,
+        "support_score": support_score,
+    }
+
+
 def _typed_executor_channel(
     artifact: ArtifactIR,
     *,
@@ -473,7 +572,9 @@ def _typed_executor_channel(
         max_option = _option_count(question_text, metadata)
         value = answer_object.value if answer_object.kind == "option" else None
         valid_option = isinstance(value, int) and (max_option <= 0 or 1 <= value <= max_option)
-        quality = 1.0 if valid_option else 0.0
+        mcq_features = _mcq_support_features(artifact, metadata=metadata)
+        support_score = float(mcq_features.get("support_score", 0.0))
+        quality = clamp01(0.55 * (1.0 if valid_option else 0.0) + 0.45 * support_score)
         return (
             {
                 "r_execution": 0.0,
@@ -486,6 +587,10 @@ def _typed_executor_channel(
                 "max_option": max_option,
                 "valid_option": valid_option,
                 "parsed_option": value,
+                "mcq_support_score": support_score,
+                "mcq_chosen_in_answer": float(mcq_features.get("chosen_in_answer", 0.0)),
+                "mcq_chosen_in_evidence": float(mcq_features.get("chosen_in_evidence", 0.0)),
+                "mcq_competing_mentions": float(mcq_features.get("competing_mentions", 0.0)),
             },
         )
 
@@ -509,7 +614,7 @@ def _typed_executor_channel(
         if start is None or end is None:
             return {"r_execution": 1.0, "r_constraint": 1.0}, 0.0, {**feedback, "query_parse_ok": False}
         expected = "yes" if _path_exists(weighted_edges, start, end) else "no"
-        predicted = str(answer_object.value or "").lower()
+        predicted = str(_semantic_value(answer_object) or "").lower()
         correct = predicted == expected
         return (
             {"r_execution": 0.0 if correct else 1.0, "r_constraint": 0.0 if answer_object.valid else 1.0},
@@ -519,7 +624,7 @@ def _typed_executor_channel(
 
     if subtype == "cycle":
         expected = "yes" if _has_cycle_undirected(weighted_edges) else "no"
-        predicted = str(answer_object.value or "").lower()
+        predicted = str(_semantic_value(answer_object) or "").lower()
         correct = predicted == expected
         return (
             {"r_execution": 0.0 if correct else 1.0, "r_constraint": 0.0 if answer_object.valid else 1.0},
@@ -533,7 +638,7 @@ def _typed_executor_channel(
         if not capacities or source is None or sink is None:
             return {"r_execution": 1.0, "r_constraint": 1.0}, 0.0, {**feedback, "query_parse_ok": False}
         expected = float(_max_flow(capacities, source, sink))
-        predicted = answer_object.value if answer_object.kind == "graph_scalar" else None
+        predicted = _semantic_value(answer_object) if answer_object.kind == "graph_scalar" else None
         if predicted is None:
             return {"r_execution": 1.0, "r_constraint": 0.75}, 0.0, {**feedback, "expected": expected, "predicted": None}
         diff = typed_answer_distance(
@@ -547,7 +652,7 @@ def _typed_executor_channel(
         )
 
     if subtype == "topology":
-        order = list(answer_object.value or [])
+        order = list(_semantic_value(answer_object) or [])
         constraints = _parse_topology_constraints(question_text)
         if not order or not constraints:
             return {"r_execution": 1.0, "r_constraint": 1.0}, 0.0, {**feedback, "format_ok": False}
@@ -562,7 +667,7 @@ def _typed_executor_channel(
         )
 
     if subtype == "hamilton":
-        path = list(answer_object.value or [])
+        path = list(_semantic_value(answer_object) or [])
         expected_nodes = _node_count(question_text, weighted_edges)
         if not path:
             return {"r_execution": 1.0, "r_constraint": 1.0}, 0.0, {**feedback, "format_ok": False}
@@ -577,7 +682,7 @@ def _typed_executor_channel(
         )
 
     if subtype == "shortest_path":
-        path_payload = dict(answer_object.value or {})
+        path_payload = dict(_semantic_value(answer_object) or {})
         path = list(path_payload.get("path") or [])
         predicted_weight = path_payload.get("total_weight")
         start, end = _parse_shortest_path_query(question_text)
@@ -597,7 +702,7 @@ def _typed_executor_channel(
         )
 
     if subtype == "matching":
-        payload = dict(answer_object.value or {})
+        payload = dict(_semantic_value(answer_object) or {})
         matches = [tuple(item) for item in payload.get("matches") or []]
         count = payload.get("count")
         interests = _parse_matching_interests(question_text)
@@ -620,7 +725,7 @@ def _typed_executor_channel(
 
     if subtype == "GNN":
         expected_embeddings = _compute_gnn_one_step(question_text)
-        predicted_embeddings = dict(answer_object.value or {})
+        predicted_embeddings = dict(_semantic_value(answer_object) or {})
         if not expected_embeddings:
             return {"r_execution": 1.0, "r_constraint": 1.0}, 0.0, {**feedback, "gnn_parse_ok": False}
         total = len(expected_embeddings)
@@ -642,9 +747,11 @@ def _answer_consistency(
     support_map: Dict[str, float],
     contradiction_score: float,
     residual_vector: Dict[str, float],
+    metadata: Optional[Dict[str, Any]],
+    executor_feedback: Optional[Dict[str, Any]] = None,
 ) -> float:
     answer_object = artifact.answer_object
-    if not answer_object.valid:
+    if not _recoverable_valid(answer_object):
         return 0.0
     answer_ids = set(artifact.answer_unit_ids)
     evidence_ids = set(artifact.evidence_unit_ids)
@@ -673,13 +780,28 @@ def _answer_consistency(
     )
 
     if answer_object.kind == "option":
-        option_token = str(answer_object.value)
-        option_letter = chr(ord("A") + int(option_token) - 1) if option_token.isdigit() and 1 <= int(option_token) <= 26 else ""
-        evidence_blob = evidence_text.lower()
-        if option_token and re.search(rf"\b{re.escape(option_token)}\b", evidence_blob):
-            score += 0.08
-        if option_letter and re.search(rf"\b{re.escape(option_letter.lower())}\b", evidence_blob):
-            score += 0.08
+        mcq_features = _mcq_support_features(
+            artifact,
+            metadata=metadata,
+            contradiction_score=contradiction_score,
+            residual_vector=residual_vector,
+        )
+        support_score = float((executor_feedback or {}).get("mcq_support_score", mcq_features.get("support_score", 0.0)))
+        chosen_in_answer = float((executor_feedback or {}).get("mcq_chosen_in_answer", mcq_features.get("chosen_in_answer", 0.0)))
+        chosen_in_evidence = clamp01(float((executor_feedback or {}).get("mcq_chosen_in_evidence", mcq_features.get("chosen_in_evidence", 0.0))) / 2.0)
+        competing_mentions = clamp01(float((executor_feedback or {}).get("mcq_competing_mentions", mcq_features.get("competing_mentions", 0.0))) / 3.0)
+        score = (
+            0.10
+            + 0.22 * support_score
+            + 0.18 * chosen_in_answer
+            + 0.16 * chosen_in_evidence
+            + 0.12 * parse_ok
+            + 0.10 * completeness_ok
+            + 0.06 * execution_ok
+            + 0.06 * constraint_ok
+            + 0.08 * answer_support
+            - 0.12 * competing_mentions
+        )
     if answer_object.kind in {"graph_bool", "graph_scalar", "graph_sequence", "graph_path", "graph_matching", "node_embeddings"}:
         score += 0.08 * parse_ok + 0.10 * constraint_ok + 0.10 * execution_ok
     if answer_object.kind == "code":
@@ -863,6 +985,8 @@ def verify_artifact(
         support_map=support_map,
         contradiction_score=contradiction_score,
         residual_vector=residual_vector,
+        metadata=metadata,
+        executor_feedback=executor_feedback,
     )
     confidence_score = clamp01(
         0.42 * (1.0 - _mean(list(residual_vector.values())))
@@ -921,13 +1045,16 @@ def compute_overturn_risk(
     anchor_residual = mean_residual(anchor_state)
     residual_gap = candidate_residual - anchor_residual
     confidence_gap = float(verifier_state.confidence_score) - float(anchor_state.confidence_score)
+    support_gap = float(verifier_state.answer_consistency_score) - float(anchor_state.answer_consistency_score)
     risk = (
-        0.34 * float(verifier_state.answer_delta)
+        0.30 * float(verifier_state.answer_delta)
         + 0.18 * clamp01(residual_gap + 0.5)
-        + 0.12 * clamp01(-confidence_gap + 0.5)
+        + 0.10 * clamp01(-confidence_gap + 0.5)
         + 0.18 * float(verifier_state.preserve_risk)
-        + 0.18 * clamp01(1.0 - verifier_state.answer_consistency_score)
+        + 0.14 * clamp01(1.0 - verifier_state.answer_consistency_score)
     )
+    if artifact.answer_object.kind == "option":
+        risk += 0.10 * clamp01(-support_gap + 0.5)
     if artifact.answer_signature == anchor_artifact.answer_signature and artifact.answer_signature:
         risk *= 0.25
     if not artifact.answer_object.valid:

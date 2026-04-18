@@ -204,11 +204,11 @@ def _normalize_text(text: str) -> str:
 
 
 def _extract_option_label(text: str) -> str:
-    match = re.search(r"(?:^|\b)(?:answer\s*[:：]\s*|option\s*)([A-D])(?:\b|\)|\.)", text.strip(), re.IGNORECASE)
+    match = re.search(r"(?:^|\b)(?:final answer|answer|option)\s*[:：-]?\s*([A-Z]|\d{1,2})(?:\b|\)|\.)", text.strip(), re.IGNORECASE)
     if match:
         return match.group(1).upper()
     stripped = text.strip().upper()
-    if re.fullmatch(r"[A-D]", stripped):
+    if re.fullmatch(r"(?:[A-Z]|\d{1,2})", stripped):
         return stripped
     return ""
 
@@ -484,6 +484,7 @@ def canonicalize_candidate(
         answer_format=answer_format,
         task_subtype=task_subtype,
         metadata=metadata,
+        answer_surfaces=[unit.text for unit in units if unit.unit_id in set(answer_unit_ids)],
     )
     schema_features = _schema_features(
         answer_object,
