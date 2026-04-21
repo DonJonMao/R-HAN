@@ -11,6 +11,7 @@ from stage2_gcr_plus.code_repair import (
     build_failure_card,
     build_locus_card,
     build_preserve_card,
+    evaluate_code_candidate,
 )
 from stage2_gcr_plus.runtime_v44 import GraphConstraintEval, ReasoningEval, Stage2RuntimeV44
 from mas_treesearch.evaluator import MultiFidelityEvaluator
@@ -268,6 +269,35 @@ def test_local_edit_artifact_replaces_only_editable_region():
     assert patched is not None
     assert "def solve(nums):" in patched
     assert "x = nums[0] if nums else None" in patched
+
+
+def test_evaluate_code_candidate_humaneval_collects_per_assert_verdicts():
+    candidate = """```python
+def double(x):
+    return x * 2 - (1 if x == 2 else 0)
+```"""
+    metadata = {
+        "entry_point": "double",
+        "test": "\n".join(
+            [
+                "def check(candidate):",
+                "    assert candidate(1) == 2",
+                "    assert candidate(2) == 4",
+            ]
+        ),
+    }
+
+    feedback = evaluate_code_candidate(candidate, metadata)
+
+    assert feedback.syntax_ok is True
+    assert feedback.entry_point_ok is True
+    assert feedback.passed == 1
+    assert feedback.total == 2
+    assert feedback.failure_kind == "visible_test_failure"
+    assert len(feedback.test_verdicts) == 2
+    assert feedback.test_verdicts[0]["passed"] is True
+    assert feedback.test_verdicts[1]["passed"] is False
+    assert "candidate(2) == 4" in feedback.test_verdicts[1]["expr"]
 
 
 def test_preserve_card_tracks_concrete_passing_tests():

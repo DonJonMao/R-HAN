@@ -80,6 +80,63 @@ def _extract_marker_payload(stdout: str, marker: str) -> Optional[Dict[str, Any]
     return None
 
 
+_HUMANEVAL_RESULTS_VAR = "__V44_HUMANEVAL_RESULTS__"
+
+
+class _HumanEvalAssertInstrumenter(ast.NodeTransformer):
+    def __init__(self, results_var: str) -> None:
+        self._results_var = results_var
+        self.found_check = False
+        self.assert_count = 0
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+        if node.name != "check":
+            return self.generic_visit(node)
+        self.found_check = True
+        node = self.generic_visit(node)
+        if isinstance(node, ast.FunctionDef):
+            node.body.insert(0, ast.Global(names=[self._results_var]))
+        return node
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
+        if node.name != "check":
+            return self.generic_visit(node)
+        self.found_check = True
+        node = self.generic_visit(node)
+        if isinstance(node, ast.AsyncFunctionDef):
+            node.body.insert(0, ast.Global(names=[self._results_var]))
+        return node
+
+    def visit_Assert(self, node: ast.Assert) -> ast.AST:
+        self.assert_count += 1
+        expr_text = ast.unparse(node.test)
+        wrapped = ast.parse(
+            "\n".join(
+                [
+                    "try:",
+                    f"    {ast.unparse(node)}",
+                    f"    {self._results_var}.append({{'expr': {json.dumps(expr_text)}, 'passed': True}})",
+                    "except Exception as exc:",
+                    f"    {self._results_var}.append({{'expr': {json.dumps(expr_text)}, 'passed': False, 'error': repr(exc)}})",
+                ]
+            )
+        ).body[0]
+        return ast.copy_location(wrapped, node)
+
+
+def _instrument_humaneval_test(humaneval_test: str) -> Optional[Tuple[str, int]]:
+    try:
+        tree = ast.parse(humaneval_test)
+    except SyntaxError:
+        return None
+    instrumenter = _HumanEvalAssertInstrumenter(_HUMANEVAL_RESULTS_VAR)
+    rewritten = instrumenter.visit(tree)
+    rewritten = ast.fix_missing_locations(rewritten)
+    if not instrumenter.found_check or instrumenter.assert_count <= 0:
+        return None
+    return ast.unparse(rewritten), int(instrumenter.assert_count)
+
+
 def evaluate_code_candidate(
     candidate_text: str,
     metadata: Optional[dict],
@@ -159,6 +216,7 @@ def evaluate_code_candidate(
         "import bisect",
         candidate_code,
     ]
+    expected_total = max(1, len(mbpp_tests))
 
     if mbpp_tests:
         tests = [str(expr) for expr in mbpp_tests]
@@ -178,18 +236,37 @@ def evaluate_code_candidate(
             )
         script_lines.append(f"print('{marker}' + json.dumps({{'results': results}}))")
     elif isinstance(humaneval_test, str) and humaneval_test.strip() and entry_point:
-        escaped = json.dumps(humaneval_test)
-        script_lines.extend(
-            [
-                f"_test_code = {escaped}",
-                "try:",
-                "    exec(_test_code, globals(), globals())",
-                f"    check({entry_point})",
-                f"    print('{marker}' + json.dumps({{'passed': True}}))",
-                "except Exception as exc:",
-                f"    print('{marker}' + json.dumps({{'passed': False, 'error': repr(exc)}}))",
-            ]
-        )
+        instrumented = _instrument_humaneval_test(humaneval_test)
+        if instrumented is not None:
+            instrumented_test, assert_count = instrumented
+            expected_total = max(1, assert_count)
+            escaped = json.dumps(instrumented_test)
+            script_lines.extend(
+                [
+                    f"{_HUMANEVAL_RESULTS_VAR} = []",
+                    f"_test_code = {escaped}",
+                    "try:",
+                    "    exec(_test_code, globals(), globals())",
+                    f"    check({entry_point})",
+                    "except Exception as exc:",
+                    f"    {_HUMANEVAL_RESULTS_VAR}.append({{'expr': '__check__', 'passed': False, 'error': repr(exc)}})",
+                    f"print('{marker}' + json.dumps({{'results': {_HUMANEVAL_RESULTS_VAR}}}))",
+                ]
+            )
+        else:
+            expected_total = 1
+            escaped = json.dumps(humaneval_test)
+            script_lines.extend(
+                [
+                    f"_test_code = {escaped}",
+                    "try:",
+                    "    exec(_test_code, globals(), globals())",
+                    f"    check({entry_point})",
+                    f"    print('{marker}' + json.dumps({{'passed': True}}))",
+                    "except Exception as exc:",
+                    f"    print('{marker}' + json.dumps({{'passed': False, 'error': repr(exc)}}))",
+                ]
+            )
     else:
         return CodeRepairEval(
             code_text=candidate_code,
@@ -215,7 +292,7 @@ def evaluate_code_candidate(
             syntax_ok=True,
             entry_point_ok=True,
             passed=0,
-            total=max(1, len(mbpp_tests)),
+            total=expected_total,
             failure_kind="timeout",
             failing_examples=(f"timeout>{timeout_s:.1f}s",),
         )
@@ -229,7 +306,7 @@ def evaluate_code_candidate(
             syntax_ok=True,
             entry_point_ok=True,
             passed=0,
-            total=max(1, len(mbpp_tests)),
+            total=expected_total,
             failure_kind="execution_error",
             failing_examples=((stderr or stdout or "execution_error"),),
             stdout=stdout,
