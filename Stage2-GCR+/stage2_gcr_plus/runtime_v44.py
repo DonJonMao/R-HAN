@@ -98,6 +98,35 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         self._v4_4_protected_ids: set[str] = set()
         self._v4_4_champion_provenance_ids: set[str] = set()
 
+    def _activate_edges_v2(
+        self,
+        graph: UnionGraph,
+        prepared_states: Dict[str, Dict[str, object]],
+        *,
+        turn_index: int,
+    ) -> List[EdgeActivation]:
+        if (
+            self._v4_4_route_family == "code_repair"
+            and bool(getattr(self.config, "code_force_sparsemax_support", True))
+        ):
+            original_mode = str(getattr(self.config.graph, "support_set_mode", "topk"))
+            self.config.graph.support_set_mode = "sparsemax"
+            try:
+                return Stage2RuntimeV2._activate_edges_v2(
+                    self,
+                    graph,
+                    prepared_states,
+                    turn_index=turn_index,
+                )
+            finally:
+                self.config.graph.support_set_mode = original_mode
+        return Stage2RuntimeV2._activate_edges_v2(
+            self,
+            graph,
+            prepared_states,
+            turn_index=turn_index,
+        )
+
     @staticmethod
     def _graph_repair_slots() -> PromptSlots:
         return PromptSlots(
@@ -1756,6 +1785,298 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             return self._apply_budget_bucket("lean", budget_bucket)
         return self._apply_budget_bucket("bypass", budget_bucket)
 
+    def _verified_checkpoint_sort_key(
+        self,
+        entry: Dict[str, Any],
+        feedback: CodeRepairEval,
+    ) -> Tuple[Any, ...]:
+        return (
+            self._approved_branch_sort_key(entry, feedback),
+            self._stable_entry_tiebreak(entry),
+        )
+
+    def _push_verified_checkpoint(
+        self,
+        checkpoints: List[Tuple[Dict[str, Any], CodeRepairEval]],
+        *,
+        entry: Dict[str, Any],
+        feedback: CodeRepairEval,
+        checkpoint_budget: int,
+    ) -> None:
+        digest = str(entry.get("digest", ""))
+        replaced = False
+        for index, (existing_entry, existing_feedback) in enumerate(checkpoints):
+            if str(existing_entry.get("digest", "")) != digest:
+                continue
+            if self._verified_checkpoint_sort_key(entry, feedback) > self._verified_checkpoint_sort_key(existing_entry, existing_feedback):
+                checkpoints[index] = (entry, feedback)
+            replaced = True
+            break
+        if not replaced:
+            checkpoints.append((entry, feedback))
+        checkpoints.sort(
+            key=lambda item: self._verified_checkpoint_sort_key(item[0], item[1]),
+            reverse=True,
+        )
+        if checkpoint_budget > 0:
+            del checkpoints[max(1, int(checkpoint_budget)) :]
+
+    def _next_verified_checkpoint(
+        self,
+        checkpoints: Sequence[Tuple[Dict[str, Any], CodeRepairEval]],
+        *,
+        explored_digests: set[str],
+        current_digest: str,
+    ) -> Optional[Tuple[Dict[str, Any], CodeRepairEval]]:
+        for entry, feedback in checkpoints:
+            digest = str(entry.get("digest", ""))
+            if not digest or digest == current_digest or digest in explored_digests:
+                continue
+            if not self._entry_has_recovery_seed_provenance(entry):
+                continue
+            return entry, feedback
+        return None
+
+    def _select_function_rewrite_agents(self) -> List[str]:
+        selected: List[str] = []
+        for agent_id in tuple(getattr(self.config, "code_function_rewrite_agent_ids", ())):
+            if agent_id in self._by_id and agent_id not in selected:
+                selected.append(agent_id)
+        if not selected:
+            selected = list(self._select_repair_agents())
+        branch_cap = max(1, int(getattr(self.config, "code_function_rewrite_branch_cap", 2)))
+        return selected[:branch_cap]
+
+    def _should_escalate_to_function_rewrite(
+        self,
+        *,
+        feedback: CodeRepairEval,
+        locus_card: Dict[str, Any],
+        execution_mode: str,
+    ) -> bool:
+        if execution_mode != "full":
+            return False
+        if not bool(getattr(self.config, "code_function_rewrite_enabled", True)):
+            return False
+        failure_kind = str(feedback.failure_kind or "").strip()
+        if failure_kind in {"syntax_error", "entry_point_missing", "execution_error"}:
+            return True
+        scope_kind = str(locus_card.get("scope_kind", "")).strip()
+        return scope_kind == "file_span"
+
+    def _build_code_rewrite_prompt(
+        self,
+        *,
+        question_text: str,
+        metadata: Optional[dict],
+        current_entry: Dict[str, Any],
+        failure_card: Dict[str, Any],
+        locus_card: Dict[str, Any],
+        preserve_card: Dict[str, Any],
+        diagnosis: Dict[str, Any],
+        repair_source_label: str,
+    ) -> str:
+        preserve_lines = "\n".join(
+            f"- {item}"
+            for item in list(diagnosis.get("preserve_constraints", ())) or list(preserve_card.get("behavior_invariants", ()))
+        )
+        return (
+            "You are escalating from local patching to a full-program Python repair because the failure path is not safely fixable by a tiny span edit.\n\n"
+            f"Question:\n{render_question_text(question_text, metadata=metadata)}\n\n"
+            f"Recovery source: {repair_source_label}\n\n"
+            f"Failure card:\n{json.dumps(failure_card, ensure_ascii=False, indent=2)}\n\n"
+            f"Locus card:\n{json.dumps(locus_card, ensure_ascii=False, indent=2)}\n\n"
+            f"Preserve card:\n{json.dumps(preserve_card, ensure_ascii=False, indent=2)}\n\n"
+            f"Causal diagnosis:\n{json.dumps(diagnosis, ensure_ascii=False, indent=2)}\n\n"
+            f"Current code:\n{str(current_entry.get('text', '')).strip()}\n\n"
+            "Requirements:\n"
+            "- Return only executable Python code.\n"
+            "- Preserve the required entry point signature.\n"
+            "- Keep already passing visible tests and preserved helpers unless they are directly implicated.\n"
+            "- Prefer minimal semantic drift even though you may rewrite the full function or program.\n"
+            f"{preserve_lines or '- Preserve all passing behavior and frozen regions.'}\n"
+        )
+
+    def _finalize_repair_branch(
+        self,
+        *,
+        patched_code: str,
+        current_entry: Dict[str, Any],
+        before_feedback: CodeRepairEval,
+        metadata: Optional[dict],
+        repair_agent_id: str,
+        repair_round: int,
+        recovery_subgraph_node_ids: Optional[Sequence[str]],
+        recovery_subgraph_edge_ids: Optional[Sequence[str]],
+        trigger_verifier_snapshot: Optional[Dict[str, Any]],
+        repair_operator_type: str,
+        failure_card: Dict[str, Any],
+        locus_card: Dict[str, Any],
+        preserve_card: Dict[str, Any],
+        diagnosis: Dict[str, Any],
+        edit_artifact: Dict[str, Any],
+        delta_prediction: Dict[str, Any],
+        patch_error: str = "",
+    ) -> Tuple[Dict[str, Any], CodeRepairEval]:
+        verified, verified_feedback = self._prepare_verified_entry(
+            patched_code,
+            metadata=metadata,
+            parent=current_entry,
+            repair_agent_id=repair_agent_id,
+            repair_round=repair_round,
+            recovery_subgraph_node_ids=recovery_subgraph_node_ids,
+            recovery_subgraph_edge_ids=recovery_subgraph_edge_ids,
+            trigger_verifier_snapshot=trigger_verifier_snapshot,
+            repair_operator_type=repair_operator_type,
+        )
+        self._ensure_v4_4_entry_fields(verified)
+        delta_match = self._delta_prediction_match(
+            delta_prediction,
+            before_feedback=before_feedback,
+            after_feedback=verified_feedback,
+        )
+        verified["repair_patch_locus"] = str(diagnosis.get("patch_locus", {}).get("editable_region_id", ""))
+        verified["repair_preserve_constraints"] = list(diagnosis.get("preserve_constraints", ()))
+        verified["repair_plan"] = " | ".join(str(item).strip() for item in diagnosis.get("minimal_edit_plan", ()) if str(item).strip())
+        verified["repair_failure_card"] = dict(failure_card)
+        verified["repair_locus_card"] = dict(locus_card)
+        verified["repair_preserve_card"] = dict(preserve_card)
+        verified["repair_edit_artifact"] = dict(edit_artifact)
+        verified["repair_delta_prediction"] = dict(delta_prediction)
+        verified["repair_delta_match"] = float(delta_match)
+        verified["repair_self_check_repaired"] = "yes" if verified_feedback.dominates(before_feedback) else "no"
+        verified["repair_self_check_drift"] = str(delta_prediction.get("drift", ""))
+        verified["repair_self_check_risk"] = str(len(delta_prediction.get("regression_risk", ())))
+        verified["repair_self_check_rationale"] = str(delta_prediction.get("rationale", "") or patch_error)
+        verified["repair_artifact_error"] = str(patch_error or "")
+        verified["repair_trace"] = list(current_entry.get("repair_trace", ())) + [
+            self._repair_trace_record(
+                diagnosis=diagnosis,
+                edit_artifact=edit_artifact,
+                prediction=delta_prediction,
+                before_feedback=before_feedback,
+                after_feedback=verified_feedback,
+                delta_match=delta_match,
+            )
+        ]
+        return verified, verified_feedback
+
+    def _generate_function_rewrite_branches(
+        self,
+        *,
+        question_text: str,
+        metadata: Optional[dict],
+        dataset_profile: DatasetProfile,
+        current_entry: Dict[str, Any],
+        feedback: CodeRepairEval,
+        repair_round: int,
+        recovery_subgraph_node_ids: Optional[Sequence[str]] = None,
+        recovery_subgraph_edge_ids: Optional[Sequence[str]] = None,
+        trigger_verifier_snapshot: Optional[Dict[str, Any]] = None,
+        artifact_error_counts: Optional[Dict[str, int]] = None,
+    ) -> List[Tuple[Dict[str, Any], CodeRepairEval]]:
+        branches: List[Tuple[Dict[str, Any], CodeRepairEval]] = []
+        seen: set[str] = {str(current_entry.get("text", "")).strip()}
+        failure_card = build_failure_card(
+            feedback,
+            metadata=metadata,
+            current_entry=current_entry,
+            repair_round=repair_round,
+        )
+        locus_card = build_locus_card(
+            str(current_entry.get("text", "")),
+            feedback,
+            metadata=metadata,
+        )
+        preserve_card = build_preserve_card(
+            str(current_entry.get("text", "")),
+            feedback,
+            metadata=metadata,
+        )
+        diagnosis = self._diagnose_code_repair_plan(
+            question_text=question_text,
+            metadata=metadata,
+            dataset_profile=dataset_profile,
+            current_entry=current_entry,
+            failure_card=failure_card,
+            locus_card=locus_card,
+            preserve_card=preserve_card,
+        )
+        repair_source_label = str(current_entry.get("candidate_bank_source") or current_entry.get("digest", "") or "checkpoint")
+
+        for agent_id in self._select_function_rewrite_agents():
+            agent = self._by_id[agent_id]
+            system_prompt = build_system_prompt(agent, self._repair_slots(), extra_role_hint="code_rewrite")
+            user_prompt = self._build_code_rewrite_prompt(
+                question_text=question_text,
+                metadata=metadata,
+                current_entry=current_entry,
+                failure_card=failure_card,
+                locus_card=locus_card,
+                preserve_card=preserve_card,
+                diagnosis=diagnosis,
+                repair_source_label=repair_source_label,
+            )
+            raw_output = self.evaluator._cached_chat(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                runtime=self.evaluator._resolve_runtime("tier2", dataset_profile),
+            )
+            patched_code = self._sanitize_candidate(question_text, raw_output, metadata=metadata)
+            if not patched_code:
+                if artifact_error_counts is not None:
+                    artifact_error_counts["empty_function_rewrite"] = int(artifact_error_counts.get("empty_function_rewrite", 0)) + 1
+                continue
+            if patched_code in seen:
+                continue
+            seen.add(patched_code)
+            delta_prediction = self._self_check_repair_branch(
+                question_text=question_text,
+                metadata=metadata,
+                dataset_profile=dataset_profile,
+                failure_card=failure_card,
+                locus_card=locus_card,
+                preserve_card=preserve_card,
+                diagnosis=diagnosis,
+                edit_artifact={
+                    "edit_op": "full_program_rewrite",
+                    "why_this_edit": "local patch path did not provide a safe strict improvement",
+                },
+                current_entry=current_entry,
+                patched_code=patched_code,
+            )
+            verified, verified_feedback = self._finalize_repair_branch(
+                patched_code=patched_code,
+                current_entry=current_entry,
+                before_feedback=feedback,
+                metadata=metadata,
+                repair_agent_id=agent_id,
+                repair_round=repair_round,
+                recovery_subgraph_node_ids=recovery_subgraph_node_ids,
+                recovery_subgraph_edge_ids=recovery_subgraph_edge_ids,
+                trigger_verifier_snapshot=trigger_verifier_snapshot,
+                repair_operator_type="code_repair_function_rewrite",
+                failure_card=failure_card,
+                locus_card=locus_card,
+                preserve_card=preserve_card,
+                diagnosis=diagnosis,
+                edit_artifact={
+                    "edit_op": "full_program_rewrite",
+                    "rewrite_scope": "program",
+                    "why_this_edit": "local patch path did not provide a safe strict improvement",
+                },
+                delta_prediction=delta_prediction,
+                patch_error="escalated_from_local_patch",
+            )
+            branches.append((verified, verified_feedback))
+        branches.sort(
+            key=lambda item: self._approved_branch_sort_key(item[0], item[1]),
+            reverse=True,
+        )
+        return branches
+
     def _generate_repair_branches(
         self,
         *,
@@ -1848,47 +2169,24 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 current_entry=current_entry,
                 patched_code=patched_code,
             )
-            verified, verified_feedback = self._prepare_verified_entry(
-                patched_code,
+            verified, verified_feedback = self._finalize_repair_branch(
+                patched_code=patched_code,
+                current_entry=current_entry,
+                before_feedback=feedback,
                 metadata=metadata,
-                parent=current_entry,
                 repair_agent_id=agent_id,
                 repair_round=repair_round,
                 recovery_subgraph_node_ids=recovery_subgraph_node_ids,
                 recovery_subgraph_edge_ids=recovery_subgraph_edge_ids,
                 trigger_verifier_snapshot=trigger_verifier_snapshot,
                 repair_operator_type=repair_operator_type,
+                failure_card=failure_card,
+                locus_card=locus_card,
+                preserve_card=preserve_card,
+                diagnosis=diagnosis,
+                edit_artifact=edit_artifact,
+                delta_prediction=delta_prediction,
             )
-            self._ensure_v4_4_entry_fields(verified)
-            delta_match = self._delta_prediction_match(
-                delta_prediction,
-                before_feedback=feedback,
-                after_feedback=verified_feedback,
-            )
-            verified["repair_patch_locus"] = str(diagnosis.get("patch_locus", {}).get("editable_region_id", ""))
-            verified["repair_preserve_constraints"] = list(diagnosis.get("preserve_constraints", ()))
-            verified["repair_plan"] = " | ".join(str(item).strip() for item in diagnosis.get("minimal_edit_plan", ()) if str(item).strip())
-            verified["repair_failure_card"] = dict(failure_card)
-            verified["repair_locus_card"] = dict(locus_card)
-            verified["repair_preserve_card"] = dict(preserve_card)
-            verified["repair_edit_artifact"] = dict(edit_artifact)
-            verified["repair_delta_prediction"] = dict(delta_prediction)
-            verified["repair_delta_match"] = float(delta_match)
-            verified["repair_self_check_repaired"] = "yes" if verified_feedback.dominates(feedback) else "no"
-            verified["repair_self_check_drift"] = str(delta_prediction.get("drift", ""))
-            verified["repair_self_check_risk"] = str(len(delta_prediction.get("regression_risk", ())))
-            verified["repair_self_check_rationale"] = str(delta_prediction.get("rationale", "") or patch_error)
-            verified["repair_artifact_error"] = ""
-            verified["repair_trace"] = list(current_entry.get("repair_trace", ())) + [
-                self._repair_trace_record(
-                    diagnosis=diagnosis,
-                    edit_artifact=edit_artifact,
-                    prediction=delta_prediction,
-                    before_feedback=feedback,
-                    after_feedback=verified_feedback,
-                    delta_match=delta_match,
-                )
-            ]
             branches.append((verified, verified_feedback))
         branches.sort(
             key=lambda item: self._approved_branch_sort_key(item[0], item[1]),
@@ -1970,6 +2268,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             repair_branch_count = 0
             repair_improvement_count = 0
             restart_count = 0
+            rewrite_branch_count = 0
             inspector_approval_count = 0
             reinserted_recovery_count = 0
             artifact_failure_counts: Dict[str, int] = {}
@@ -1977,19 +2276,42 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             recovery_target_digest = ""
             recovery_subgraph_node_count = 0
             recovery_subgraph_edge_count = 0
+            checkpoint_budget = max(1, int(getattr(self.config, "code_checkpoint_budget", self.config.repair_seed_top_k)))
+            verified_checkpoints: List[Tuple[Dict[str, Any], CodeRepairEval]] = []
+            explored_checkpoint_digests: set[str] = set()
+
+            if anchor_pair is not None:
+                self._push_verified_checkpoint(
+                    verified_checkpoints,
+                    entry=anchor_pair[0],
+                    feedback=anchor_pair[1],
+                    checkpoint_budget=checkpoint_budget,
+                )
+            for seed_entry, seed_feedback in seed_pool:
+                self._push_verified_checkpoint(
+                    verified_checkpoints,
+                    entry=seed_entry,
+                    feedback=seed_feedback,
+                    checkpoint_budget=checkpoint_budget,
+                )
 
             while repair_rounds_run < repair_round_limit:
                 if selected_feedback.fully_passed:
                     break
-                recovery_sources = self._collect_code_recovery_sources(
-                    classes=classes,
-                    current_entry=selected_entry,
-                    current_feedback=selected_feedback,
-                    anchor_pair=anchor_pair,
-                    source_cap=recovery_source_cap,
-                )
-                if not recovery_sources:
+                if not self._entry_has_recovery_seed_provenance(selected_entry):
                     break
+                explored_checkpoint_digests.add(str(selected_entry.get("digest", "")))
+                recovery_sources = [
+                    (
+                        selected_entry,
+                        selected_feedback,
+                        (
+                            "anchor"
+                            if anchor_pair is not None and str(selected_entry.get("digest", "")) == str(anchor_pair[0].get("digest", ""))
+                            else "checkpoint"
+                        ),
+                    )
+                ]
                 repair_rounds_run += 1
                 current_checkpoint_entry = selected_entry
                 current_checkpoint_feedback = selected_feedback
@@ -2024,6 +2346,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                         artifact_error_counts=artifact_failure_counts,
                     )
                     repair_branch_count += len(source_branches)
+                    candidate_sources: List[Tuple[Dict[str, Any], CodeRepairEval]] = []
                     best_source_branch: Optional[Tuple[Dict[str, Any], CodeRepairEval]] = None
                     for branch_entry, branch_feedback in source_branches:
                         if not branch_feedback.dominates(recovery_feedback):
@@ -2050,6 +2373,39 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                                 continue
                             inspector_approval_count += 1
                             candidate_pair = (branch_entry, branch_feedback)
+                        candidate_sources.append(candidate_pair)
+                    if (
+                        not candidate_sources
+                        and self._should_escalate_to_function_rewrite(
+                            feedback=recovery_feedback,
+                            locus_card=build_locus_card(
+                                str(recovery_entry.get("text", "")),
+                                recovery_feedback,
+                                metadata=metadata,
+                            ),
+                            execution_mode=execution_mode,
+                        )
+                    ):
+                        rewrite_branches = self._generate_function_rewrite_branches(
+                            question_text=question_text,
+                            metadata=metadata,
+                            dataset_profile=dataset_profile,
+                            current_entry=recovery_entry,
+                            feedback=recovery_feedback,
+                            repair_round=repair_rounds_run,
+                            recovery_subgraph_node_ids=recovery_context["recovery_subgraph_node_ids"],
+                            recovery_subgraph_edge_ids=recovery_context["recovery_subgraph_edge_ids"],
+                            trigger_verifier_snapshot=recovery_context["trigger_verifier_snapshot"],
+                            artifact_error_counts=artifact_failure_counts,
+                        )
+                        rewrite_branch_count += len(rewrite_branches)
+                        for branch_entry, branch_feedback in rewrite_branches:
+                            if not branch_feedback.dominates(recovery_feedback):
+                                continue
+                            if not branch_feedback.dominates(current_checkpoint_feedback):
+                                continue
+                            candidate_sources.append((branch_entry, branch_feedback))
+                    for candidate_pair in candidate_sources:
                         if best_source_branch is None or self._approved_branch_sort_key(
                             candidate_pair[0],
                             candidate_pair[1],
@@ -2068,13 +2424,30 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                         branch_entry["candidate_bank_source"] = "recovery_output"
                         self._assert_recovery_entry_invariants(branch_entry)
                     full_pool.extend(list(approved))
+                    best_approved_entry, best_approved_feedback = approved[0]
+                    self._push_verified_checkpoint(
+                        verified_checkpoints,
+                        entry=best_approved_entry,
+                        feedback=best_approved_feedback,
+                        checkpoint_budget=checkpoint_budget,
+                    )
                     classes = self._collapse_code_classes(full_pool, anchor_digest=anchor_digest)
-                    selected_entry = classes[0]["representative"]
-                    selected_feedback = classes[0]["feedback"]
+                    selected_entry = best_approved_entry
+                    selected_feedback = best_approved_feedback
                     selected_reason = "v4_4_code_reinsert_recollapse"
                     if selected_feedback.dominates(current_checkpoint_feedback):
                         repair_improvement_count += 1
                         continue
+                next_checkpoint = self._next_verified_checkpoint(
+                    verified_checkpoints,
+                    explored_digests=explored_checkpoint_digests,
+                    current_digest=str(current_checkpoint_entry.get("digest", "")),
+                )
+                if execution_mode == "full" and next_checkpoint is not None:
+                    selected_entry, selected_feedback = next_checkpoint
+                    restart_count += 1
+                    selected_reason = "v4_4_code_restart_to_verified_seed"
+                    continue
                 break
 
             if not selected_feedback.dominates(anchor_pair[1]):
@@ -2099,8 +2472,10 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "v4_4_selected_failure_kind": str(selected_feedback.failure_kind),
                 "v4_4_repair_rounds_run": int(repair_rounds_run),
                 "v4_4_repair_branch_count": int(repair_branch_count),
+                "v4_4_rewrite_branch_count": int(rewrite_branch_count),
                 "v4_4_repair_improvement_count": int(repair_improvement_count),
                 "v4_4_restart_count": int(restart_count),
+                "v4_4_checkpoint_count": int(len(verified_checkpoints)),
                 "v4_4_inspector_approval_count": int(inspector_approval_count),
                 "v4_4_reinserted_recovery_count": int(reinserted_recovery_count),
                 "v4_4_repair_artifact_failure_total": int(sum(artifact_failure_counts.values())),
@@ -2168,8 +2543,10 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             "v4_4_selected_failure_kind": str(selected_feedback.failure_kind),
             "v4_4_repair_rounds_run": 0,
             "v4_4_repair_branch_count": 0,
+            "v4_4_rewrite_branch_count": 0,
             "v4_4_repair_improvement_count": 0,
             "v4_4_restart_count": 0,
+            "v4_4_checkpoint_count": 0,
             "v4_4_inspector_approval_count": 0,
             "v4_4_reinserted_recovery_count": 0,
             "v4_4_repair_artifact_failure_total": 0,

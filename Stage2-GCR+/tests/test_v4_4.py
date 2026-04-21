@@ -55,6 +55,12 @@ def _runtime_stub() -> Stage2RuntimeV44:
         repair_rounds=1,
         repair_max_failed_examples=3,
         repair_agent_ids=("coder",),
+        code_force_sparsemax_support=True,
+        code_checkpoint_budget=4,
+        code_function_rewrite_enabled=True,
+        code_function_rewrite_stagnation_rounds=1,
+        code_function_rewrite_branch_cap=2,
+        code_function_rewrite_agent_ids=("coder",),
         graph_seed_top_k=2,
         graph_repair_rounds=1,
         graph_full_branch_cap=2,
@@ -418,6 +424,43 @@ def test_sparsemax_support_set_keeps_all_positive_support_edges():
     assert metadata["src_a->dst"]["support_set_weight"] > 0.0
     assert metadata["src_b->dst"]["support_set_weight"] > 0.0
     assert metadata["src_c->dst"]["support_set_weight"] == 0.0
+
+
+def test_code_route_forces_sparsemax_support_mode_even_if_config_defaults_to_topk():
+    runtime = _runtime_stub()
+    runtime._v4_4_route_family = "code_repair"
+    runtime.config.graph.support_set_mode = "topk"
+    score_by_src = {"src_a": 0.9, "src_b": 0.8, "src_c": 0.1}
+    runtime.gnn = SimpleNamespace(
+        edge_gate=lambda src_latent, dst_latent, edge_features, global_state=None: torch.tensor(edge_features[0])
+    )
+    runtime._edge_feature_vector = lambda edge, turn_index: [score_by_src[edge.src]]  # type: ignore[attr-defined]
+    graph = UnionGraph(
+        nodes={
+            "src_a": UnionNode("src_a", "a", "solver", "task", [], 1, 1.0),
+            "src_b": UnionNode("src_b", "b", "solver", "task", [], 1, 1.0),
+            "src_c": UnionNode("src_c", "c", "solver", "task", [], 1, 1.0),
+            "dst": UnionNode("dst", "d", "verifier", "task", [], 1, 1.0),
+        },
+        edges=[
+            UnionEdge("src_a", "dst", "task", [], 1, 1.0, 0.9, 0.9, 0.5, 0.5),
+            UnionEdge("src_b", "dst", "task", [], 1, 1.0, 0.8, 0.8, 0.5, 0.5),
+            UnionEdge("src_c", "dst", "task", [], 1, 1.0, 0.1, 0.1, 0.5, 0.5),
+        ],
+        source_topology_signatures=[],
+        root_node_ids=[],
+        sink_node_ids=["dst"],
+    )
+    prepared_states = {node_id: {"local_latent": torch.zeros(1, 1)} for node_id in graph.nodes}
+
+    activations = runtime._activate_edges_v2(graph, prepared_states, turn_index=0)
+    active_ids = {item.edge_id for item in activations if item.active}
+    metadata = {item.edge_id: item.metadata for item in activations}
+
+    assert active_ids == {"src_a->dst", "src_b->dst"}
+    assert metadata["src_a->dst"]["support_set_mode"] == "sparsemax"
+    assert metadata["src_b->dst"]["support_set_mode"] == "sparsemax"
+    assert runtime.config.graph.support_set_mode == "topk"
 
 
 def test_sparse_activate_filters_roles_and_keeps_focus_neighbourhood():
@@ -1293,6 +1336,220 @@ def test_code_recovery_loop_reinserts_best_improving_branch():
     assert reason == "v4_4_code_reinsert_recollapse"
     assert extra["v4_4_repair_rounds_run"] == 1
     assert extra["v4_4_reinserted_recovery_count"] == 1
+
+
+def test_code_recovery_full_mode_restarts_to_next_verified_seed():
+    runtime = _runtime_stub()
+    runtime.config.repair_rounds = 2
+    runtime.config.repair_seed_top_k = 3
+    runtime.config.code_checkpoint_budget = 4
+    runtime._quality_score = lambda entry: float(entry.get("score", 0.0))  # type: ignore[attr-defined]
+    runtime._candidate_source_label = lambda entry: str(entry.get("source", "stage2"))  # type: ignore[attr-defined]
+
+    anchor_entry = {
+        "digest": "anchor",
+        "text": "anchor",
+        "stage1_anchor": True,
+        "origin_node_id": "solver",
+        "origin_turn_index": 0,
+        "origin_role": "solver",
+        "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
+        "score": 0.1,
+        "source": "anchor",
+    }
+    seed_a = {
+        "digest": "seed_a",
+        "text": "seed_a",
+        "origin_node_id": "solver",
+        "origin_turn_index": 0,
+        "origin_role": "solver",
+        "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
+        "score": 0.3,
+        "source": "stage2",
+    }
+    seed_b = {
+        "digest": "seed_b",
+        "text": "seed_b",
+        "origin_node_id": "solver",
+        "origin_turn_index": 0,
+        "origin_role": "solver",
+        "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
+        "score": 0.2,
+        "source": "stage2",
+    }
+    anchor_pair = (anchor_entry, _code_eval(passed=1, total=3, failure_kind="visible_test_failure"))
+    seed_a_pair = (seed_a, _code_eval(passed=2, total=3, failure_kind="visible_test_failure"))
+    seed_b_pair = (seed_b, _code_eval(passed=2, total=3, failure_kind="visible_test_failure"))
+    runtime._verify_code_pool = lambda **kwargs: ([anchor_pair, seed_a_pair, seed_b_pair], anchor_pair)  # type: ignore[attr-defined]
+
+    def collapse(pool, anchor_digest):
+        digests = {entry["digest"] for entry, _ in pool}
+        classes = [
+            {
+                "key": ("seed_a",),
+                "representative": dict(seed_a),
+                "feedback": _code_eval(passed=2, total=3, failure_kind="visible_test_failure"),
+                "size": 1,
+                "contains_anchor": False,
+                "repair_locus": "visible_test_failure",
+            },
+            {
+                "key": ("seed_b",),
+                "representative": dict(seed_b),
+                "feedback": _code_eval(passed=2, total=3, failure_kind="visible_test_failure"),
+                "size": 1,
+                "contains_anchor": False,
+                "repair_locus": "visible_test_failure",
+            },
+            {
+                "key": ("anchor",),
+                "representative": dict(anchor_entry),
+                "feedback": _code_eval(passed=1, total=3, failure_kind="visible_test_failure"),
+                "size": 1,
+                "contains_anchor": True,
+                "repair_locus": "visible_test_failure",
+            },
+        ]
+        if "repair_after_restart" in digests:
+            classes.insert(
+                0,
+                {
+                    "key": ("repair_after_restart",),
+                    "representative": _recovery_branch_entry("repair_after_restart"),
+                    "feedback": _code_eval(passed=3, total=3),
+                    "size": 1,
+                    "contains_anchor": False,
+                    "repair_locus": "stable",
+                },
+            )
+        return classes
+
+    runtime._collapse_code_classes = collapse  # type: ignore[attr-defined]
+    runtime._build_code_recovery_context = lambda **kwargs: {  # type: ignore[attr-defined]
+        "recovery_subgraph_node_ids": ["solver", "sink"],
+        "recovery_subgraph_edge_ids": ["e1"],
+        "trigger_verifier_snapshot": {"labels": ["challenge"], "failure_kind": "visible_test_failure", "passed": 2, "total": 3},
+    }
+
+    def generate_branches(**kwargs):
+        current_digest = kwargs["current_entry"]["digest"]
+        if current_digest == "seed_a":
+            return []
+        if current_digest == "seed_b":
+            return [(_recovery_branch_entry("repair_after_restart"), _code_eval(passed=3, total=3))]
+        return []
+
+    runtime._generate_repair_branches = generate_branches  # type: ignore[attr-defined]
+    runtime._inspect_code_promotion = lambda **kwargs: (True, "ok")  # type: ignore[attr-defined]
+
+    selected, reason, extra = runtime._select_code_repair_against_anchor_v44(
+        graph=_code_recovery_graph(),
+        question_text="q",
+        metadata={"entry_point": "solve", "test_list": ["assert solve(1)==2"]},
+        dataset_profile=SimpleNamespace(task_type="code_generation", name="mbpp"),
+        candidates=[{"digest": "seed_a", "text": "seed_a"}, {"digest": "seed_b", "text": "seed_b"}],
+        anchor={"digest": "anchor", "text": "anchor", "stage1_anchor": True},
+        budget_bucket="normal",
+        turn_traces=[],
+    )
+
+    assert selected["digest"] == "repair_after_restart"
+    assert reason == "v4_4_code_reinsert_recollapse"
+    assert extra["v4_4_restart_count"] == 1
+    assert extra["v4_4_checkpoint_count"] >= 3
+
+
+def test_code_recovery_full_mode_can_escalate_to_function_rewrite():
+    runtime = _runtime_stub()
+    runtime.config.repair_rounds = 1
+    runtime._quality_score = lambda entry: float(entry.get("score", 0.0))  # type: ignore[attr-defined]
+    runtime._candidate_source_label = lambda entry: str(entry.get("source", "stage2"))  # type: ignore[attr-defined]
+
+    anchor_entry = {
+        "digest": "anchor",
+        "text": "anchor",
+        "stage1_anchor": True,
+        "origin_node_id": "solver",
+        "origin_turn_index": 0,
+        "origin_role": "solver",
+        "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
+        "score": 0.1,
+        "source": "anchor",
+    }
+    challenger_entry = {
+        "digest": "challenger",
+        "text": "challenger",
+        "origin_node_id": "solver",
+        "origin_turn_index": 0,
+        "origin_role": "solver",
+        "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
+        "score": 0.2,
+        "source": "stage2",
+    }
+    anchor_pair = (anchor_entry, _code_eval(passed=1, total=3, failure_kind="visible_test_failure"))
+    challenger_pair = (challenger_entry, _code_eval(passed=2, total=3, failure_kind="visible_test_failure"))
+    runtime._verify_code_pool = lambda **kwargs: ([anchor_pair, challenger_pair], anchor_pair)  # type: ignore[attr-defined]
+
+    def collapse(pool, anchor_digest):
+        digests = {entry["digest"] for entry, _ in pool}
+        classes = [
+            {
+                "key": ("challenger",),
+                "representative": dict(challenger_entry),
+                "feedback": _code_eval(passed=2, total=3, failure_kind="visible_test_failure"),
+                "size": 1,
+                "contains_anchor": False,
+                "repair_locus": "visible_test_failure",
+            },
+            {
+                "key": ("anchor",),
+                "representative": dict(anchor_entry),
+                "feedback": _code_eval(passed=1, total=3, failure_kind="visible_test_failure"),
+                "size": 1,
+                "contains_anchor": True,
+                "repair_locus": "visible_test_failure",
+            },
+        ]
+        if "rewrite_win" in digests:
+            classes.insert(
+                0,
+                {
+                    "key": ("rewrite_win",),
+                    "representative": _recovery_branch_entry("rewrite_win"),
+                    "feedback": _code_eval(passed=3, total=3),
+                    "size": 1,
+                    "contains_anchor": False,
+                    "repair_locus": "stable",
+                },
+            )
+        return classes
+
+    runtime._collapse_code_classes = collapse  # type: ignore[attr-defined]
+    runtime._build_code_recovery_context = lambda **kwargs: {  # type: ignore[attr-defined]
+        "recovery_subgraph_node_ids": ["solver", "sink"],
+        "recovery_subgraph_edge_ids": ["e1"],
+        "trigger_verifier_snapshot": {"labels": ["challenge"], "failure_kind": "visible_test_failure", "passed": 2, "total": 3},
+    }
+    runtime._generate_repair_branches = lambda **kwargs: []  # type: ignore[attr-defined]
+    runtime._should_escalate_to_function_rewrite = lambda **kwargs: True  # type: ignore[attr-defined]
+    runtime._generate_function_rewrite_branches = lambda **kwargs: [  # type: ignore[attr-defined]
+        (_recovery_branch_entry("rewrite_win"), _code_eval(passed=3, total=3)),
+    ]
+
+    selected, reason, extra = runtime._select_code_repair_against_anchor_v44(
+        graph=_code_recovery_graph(),
+        question_text="q",
+        metadata={"entry_point": "solve", "test_list": ["assert solve(1)==2"]},
+        dataset_profile=SimpleNamespace(task_type="code_generation", name="mbpp"),
+        candidates=[{"digest": "challenger", "text": "challenger"}],
+        anchor={"digest": "anchor", "text": "anchor", "stage1_anchor": True},
+        budget_bucket="normal",
+        turn_traces=[],
+    )
+
+    assert selected["digest"] == "rewrite_win"
+    assert reason == "v4_4_code_reinsert_recollapse"
+    assert extra["v4_4_rewrite_branch_count"] == 1
 
 
 def test_lean_code_recovery_caps_remain_phase3a_shallow():
