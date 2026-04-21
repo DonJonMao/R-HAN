@@ -24,6 +24,12 @@ class Stage2V44Config(Stage2V43Config):
 
     lean_hypothesis_cap: int = 2
     full_hypothesis_cap: int = 3
+    code_force_sparsemax_support: bool = True
+    code_checkpoint_budget: int = 4
+    code_function_rewrite_enabled: bool = True
+    code_function_rewrite_stagnation_rounds: int = 1
+    code_function_rewrite_branch_cap: int = 2
+    code_function_rewrite_agent_ids: tuple[str, ...] = ("coder", "planner")
 
     graph_seed_top_k: int = 3
     graph_repair_rounds: int = 1
