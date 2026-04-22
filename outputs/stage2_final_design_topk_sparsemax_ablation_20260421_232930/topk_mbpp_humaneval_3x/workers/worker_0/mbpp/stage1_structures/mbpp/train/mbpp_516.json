@@ -1,0 +1,794 @@
+{
+  "question_text": "Write a function to sort a list of elements using radix sort.\n\nImplement the Python function `radix_sort`.\n\nVisible test examples:\nassert radix_sort([15, 79, 25, 68, 37]) == [15, 25, 37, 68, 79]\nassert radix_sort([9, 11, 8, 7, 3, 2]) == [2, 3, 7, 8, 9, 11]\n\nReturn only executable Python code without Markdown fences.",
+  "union_graph": {
+    "nodes": {
+      "generator@planner": {
+        "node_id": "generator@planner",
+        "agent_id": "planner",
+        "role": "generator",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic",
+          "critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math",
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "avg_graph_score": 1.7622420354652562,
+        "root_frequency": 1.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          1.0,
+          1.7622420354652562,
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "stepwise",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "off",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "critic@coder": {
+        "node_id": "critic@coder",
+        "agent_id": "coder",
+        "role": "critic",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.7837064325628873,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 1.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.7837064325628873,
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "strict",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "reviser@skeptic": {
+        "node_id": "reviser@skeptic",
+        "agent_id": "skeptic",
+        "role": "reviser",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.7837064325628873,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.3333333333333333,
+        "topo_level_mean": 2.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.7837064325628873,
+          0.0,
+          0.3333333333333333,
+          2.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "light",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "critic@math": {
+        "node_id": "critic@math",
+        "agent_id": "math",
+        "role": "critic",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.7194456391133546,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 1.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.7194456391133546,
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "strict",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "reviser@coder": {
+        "node_id": "reviser@coder",
+        "agent_id": "coder",
+        "role": "reviser",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.7194456391133546,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.3333333333333333,
+        "topo_level_mean": 2.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.7194456391133546,
+          0.0,
+          0.3333333333333333,
+          2.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "light",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "critic@verifier": {
+        "node_id": "critic@verifier",
+        "agent_id": "verifier",
+        "role": "critic",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.7835740347195266,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 1.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.7835740347195266,
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "strict",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "reviser@summarizer": {
+        "node_id": "reviser@summarizer",
+        "agent_id": "summarizer",
+        "role": "reviser",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.7835740347195266,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.3333333333333333,
+        "topo_level_mean": 2.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.7835740347195266,
+          0.0,
+          0.3333333333333333,
+          2.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "light",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "super_source": {
+        "node_id": "super_source",
+        "agent_id": "super_source",
+        "role": "super_source",
+        "node_type": "global",
+        "source_graph_ids": [
+          "critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic",
+          "critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math",
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "avg_graph_score": 0.0,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [],
+        "metadata": {}
+      },
+      "global_controller": {
+        "node_id": "global_controller",
+        "agent_id": "global_controller",
+        "role": "global_controller",
+        "node_type": "global",
+        "source_graph_ids": [
+          "critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic",
+          "critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math",
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "avg_graph_score": 0.0,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [],
+        "metadata": {}
+      },
+      "super_sink": {
+        "node_id": "super_sink",
+        "agent_id": "super_sink",
+        "role": "super_sink",
+        "node_type": "global",
+        "source_graph_ids": [
+          "critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic",
+          "critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math",
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "avg_graph_score": 0.0,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [],
+        "metadata": {}
+      }
+    },
+    "edges": [
+      {
+        "src": "generator@planner",
+        "dst": "critic@coder",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.7837064325628873,
+        "best_parent_score": 1.7837064325628873,
+        "initial_keep_logit": 0.9234079531792441,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "generator@planner",
+        "dst": "reviser@skeptic",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.7837064325628873,
+        "best_parent_score": 1.7837064325628873,
+        "initial_keep_logit": 0.9234079531792441,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 2.0,
+        "latency_prior": 1.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "critic@coder",
+        "dst": "reviser@skeptic",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.7837064325628873,
+        "best_parent_score": 1.7837064325628873,
+        "initial_keep_logit": 0.9234079531792441,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "generator@planner",
+        "dst": "critic@math",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.7194456391133546,
+        "best_parent_score": 1.7194456391133546,
+        "initial_keep_logit": 0.9105557944893377,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "generator@planner",
+        "dst": "reviser@coder",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.7194456391133546,
+        "best_parent_score": 1.7194456391133546,
+        "initial_keep_logit": 0.9105557944893377,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 2.0,
+        "latency_prior": 1.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "critic@math",
+        "dst": "reviser@coder",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.7194456391133546,
+        "best_parent_score": 1.7194456391133546,
+        "initial_keep_logit": 0.9105557944893377,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "generator@planner",
+        "dst": "critic@verifier",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.7835740347195266,
+        "best_parent_score": 1.7835740347195266,
+        "initial_keep_logit": 0.923381473610572,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "generator@planner",
+        "dst": "reviser@summarizer",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.7835740347195266,
+        "best_parent_score": 1.7835740347195266,
+        "initial_keep_logit": 0.923381473610572,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 2.0,
+        "latency_prior": 1.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "critic@verifier",
+        "dst": "reviser@summarizer",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.7835740347195266,
+        "best_parent_score": 1.7835740347195266,
+        "initial_keep_logit": 0.923381473610572,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "super_source",
+        "dst": "generator@planner",
+        "edge_type": "source",
+        "source_graph_ids": [
+          "critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic",
+          "critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math",
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "global_controller",
+        "dst": "generator@planner",
+        "edge_type": "controller",
+        "source_graph_ids": [
+          "critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic",
+          "critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math",
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@coder",
+        "dst": "global_controller",
+        "edge_type": "feedback",
+        "source_graph_ids": [
+          "critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic",
+          "critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math",
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@coder",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic",
+          "critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math",
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@skeptic",
+        "dst": "global_controller",
+        "edge_type": "feedback",
+        "source_graph_ids": [
+          "critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic",
+          "critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math",
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@skeptic",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic",
+          "critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math",
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@summarizer",
+        "dst": "global_controller",
+        "edge_type": "feedback",
+        "source_graph_ids": [
+          "critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic",
+          "critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math",
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@summarizer",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic",
+          "critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math",
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "global_controller",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic",
+          "critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math",
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      }
+    ],
+    "source_topology_signatures": [
+      "critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic",
+      "critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math",
+      "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+    ],
+    "root_node_ids": [
+      "generator@planner"
+    ],
+    "sink_node_ids": [
+      "reviser@coder",
+      "reviser@skeptic",
+      "reviser@summarizer"
+    ],
+    "metadata": {
+      "graph_count": 3,
+      "task_node_count": 7
+    }
+  },
+  "stage1_signature": "structure|critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic||critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math||critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer",
+  "stage1_output": "def radix_sort(arr):\n    if not arr:\n        return arr\n    max_num = max(arr)\n    max_digits = 0\n    temp = max_num\n    while temp > 0:\n        temp //= 10\n        max_digits += 1\n    for d in range(max_digits):\n        buckets = [[] for _ in range(10)]\n        for num in arr:\n            digit = (num // (10 ** d)) % 10\n            buckets[digit].append(num)\n        arr = []\n        for bucket in buckets:\n            arr.extend(bucket)\n    return arr",
+  "dataset_name": "mbpp",
+  "stage1_summary": {
+    "tier": "tier2",
+    "mean_reward": 1.7837064325628873,
+    "reward_std": 0.010759469456970705,
+    "mean_task_score": 1.0,
+    "mean_success": 1.0,
+    "mean_latency": 0.5386533718556166,
+    "mean_token_cost": 0.00205,
+    "mean_safety_penalty": 0.0,
+    "evaluations": [
+      {
+        "task_score": 1.0,
+        "success": 1.0,
+        "latency": 1.0766268447041512,
+        "token_cost": 0.00205,
+        "safety_penalty": 0.0,
+        "raw_output": "def radix_sort(arr):\n    if not arr:\n        return arr\n    max_num = max(arr)\n    max_digits = 0\n    temp = max_num\n    while temp > 0:\n        temp //= 10\n        max_digits += 1\n    for d in range(max_digits):\n        buckets = [[] for _ in range(10)]\n        for num in arr:\n            digit = (num // (10 ** d)) % 10\n            buckets[digit].append(num)\n        arr = []\n        for bucket in buckets:\n            arr.extend(bucket)\n    return arr",
+        "trace": [
+          {
+            "role": "generator",
+            "agent_id": "planner",
+            "content": "<think>\n好的，我需要编写一个radix_sort函数来对列表进行排序。首先，我得回忆一下基数排序的原理。基数排序是按位数从最低位到最高位依次排序，通常使用计数排序作为子程序。\n\n首先，我需要确定列表中的最大数，这样才能知道需要处理多少位。比如，如果最大数是三位数，那就要处理个位、十位、百位。\n\n接下来，我需要为每一位进行排序。对于每一位，我需要将数字分成10个桶，每个桶对应一个数字位（0-9）。然后将数字分配到对应的桶中，再按顺序收集回来。\n\n但如何处理不同位数的数字呢？比如，像15这样的两位数，在处理十位的时候，可能需要补零？或者可能需要找到最大数的位数，然后循环处理每一位。\n\n那具体步骤应该是这样的：首先找到最大数的位数，然后从最低位开始，依次处理每一位。对于每一位，使用计数排序的方法，将数字分配到对应的桶中，然后合并。\n\n那如何实现呢？首先，我需要一个辅助函数，比如counting_sort_by_digit，它接受一个列表和当前处理的位数（比如个位、十位等），然后进行排序。\n\n比如，对于当前位d，每个数字的当前位可以通过（num // (10**d)) % 10得到。然后根据这个值将数字分配到对应的桶中。\n\n然后，每次处理完一位后，将所有桶中的数字合并，作为下一轮的输入。\n\n那主函数radix_sort的步骤应该是：\n\n1. 找到列表中的最大值max_num。\n2. 确定最大值的位数，比如通过log10或者循环除以10直到为0。\n3. 对每一位（从最低位到最高位）进行计数排序。\n\n那如何处理不同位数的数字？比如，当处理到更高位时，那些位数较少的数字会被视为前面补零吗？比如，数字3在处理十位时，会被视为03，所以十位是0？\n\n是的，这样处理是正确的。比如，当处理十位时，所有数字都会被当作两位数处理，不足的前面补零。\n\n那具体实现时，如何确定处理多少位？比如，最大数是15，那么最大位数是2位。所以循环两次，分别处理个位和十位。\n\n那如何找到最大数的位数？可以用数学方法，比如不断除以10直到为0，或者用字符串转换。但可能更高效的是用数学方法。\n\n比如，初始位数为0，max_num为最大值。然后循环，当max_num >0时，max_num = max_num //10，位数加一。这样得到的位数就是最大数的位数。\n\n或者，可以用math模块中的log10函数，但需要注意处理0的情况。\n\n不过，可能更简单的是，先找到最大值，然后循环处理每一位，直到最大值变为0。\n\n那现在，编写radix_sort函数：\n\n首先处理特殊情况，比如空列表或者单元素列表，直接返回原列表。\n\n然后，找到最大值max_num。\n\n然后，对于每一位d（从0到max_digits-1），进行计数排序。\n\n那如何实现计数排序？比如，对于当前位d，每个数字的当前位是digit = (num // (10**d)) %10。然后创建10个桶，每个桶存储对应digit的数字。然后将所有桶中的数字合并，作为下一轮的输入。\n\n那在Python中，"
+          },
+          {
+            "role": "critic",
+            "agent_id": "coder",
+            "content": "<think>\n好的，我需要写一个radix_sort函数。首先，基数排序需要处理每一位数字，从最低位到最高位。那我得先找到列表中的最大值，确定需要处理多少位。\n\n比如，对于例子中的[15,79,25,68,37]，最大值是79，两位数，所以需要处理两位。那每一位都要进行计数排序。\n\n那如何实现计数排序？对于每一位，比如个位，每个数字的当前位是(num // 1) %10。然后将数字分配到对应的桶里，比如0-9的桶。然后收集所有桶中的数字，作为下一轮的输入。\n\n那函数的大致步骤是：\n\n1. 处理空列表或单元素的情况，直接返回。\n2. 找到最大值max_num。\n3. 确定最大位数，比如通过循环除以10直到为0。\n4. 对每一位进行计数排序：\n   a. 创建10个桶，每个桶存储对应digit的数字。\n   b. 遍历当前列表中的每个数字，计算当前位的digit，放入对应的桶。\n   c. 合并所有桶中的数字，作为新的列表。\n5. 返回最终排序后的列表。\n\n那如何处理不同位数的数字？比如，当处理十位时，数字如3会被视为03，所以十位是0。这在计算时会自动处理，因为当d=1时，(num // 10) %10会得到十位的数字，而像3这样的数，(3//10)是0，所以digit是0。\n\n那编写代码时，需要注意：\n\n- 如何处理max_num为0的情况？比如，如果列表中有0，或者所有数都是0。这时候最大值是0，位数是1，处理一次即可。\n- 如何处理负数？但题目中的测试用例没有负数，可能假设输入都是非负整数。\n- 如何处理空列表？直接返回空列表。\n\n那现在，编写代码：\n\n首先，函数radix_sort接受一个列表，返回排序后的列表。\n\n然后，找到最大值max_num。如果列表为空，返回原列表。\n\n然后，确定位数。比如，初始位数为0，max_num大于0时，循环除以10，直到为0，统计位数。\n\n然后，对每一位进行处理。比如，从d=0到d=位数-1。\n\n在每次处理时，创建10个桶，每个桶是一个列表。然后遍历当前列表中的每个数字，计算当前位的digit，将数字放入对应的桶中。然后合并所有桶中的数字，作为下一轮的输入。\n\n那在Python中，可以用列表推导式或者循环来实现。\n\n比如，对于当前位d，每个数字的digit是 (num // (10**d)) %10。然后，将数字分配到对应的桶中。\n\n然后，合并所有桶中的数字，得到新的列表。\n\n那代码的大致结构：\n\ndef radix_sort(arr):\n    if not arr:\n        return arr\n    max_num = max(arr)\n    # 计算最大位数\n    max_digits = 0\n    temp = max_num\n    while temp > 0:\n        temp //= 10\n        max_digits +=1\n    # 处理每一位\n    for d in range(max_digits):\n        buckets = [[] for _ in range(10)]\n        for num in arr:\n            digit = (num // (10**d)) %10\n            buckets[digit].append(num"
+          },
+          {
+            "role": "reviser",
+            "agent_id": "skeptic",
+            "content": "<think>\n</think>\n\ndef radix_sort(arr):\n    if not arr:\n        return arr\n    max_num = max(arr)\n    max_digits = 0\n    temp = max_num\n    while temp > 0:\n        temp //= 10\n        max_digits += 1\n    for d in range(max_digits):\n        buckets = [[] for _ in range(10)]\n        for num in arr:\n            digit = (num // (10 ** d)) % 10\n            buckets[digit].append(num)\n        arr = []\n        for bucket in buckets:\n            arr.extend(bucket)\n    return arr"
+          }
+        ],
+        "custom_metrics": {
+          "num_roles": 3.0
+        },
+        "debug_info": {
+          "dataset_specific": {
+            "used_dataset_specific": true,
+            "passed": 3,
+            "total": 3,
+            "stderr": "",
+            "syntax_ok": true,
+            "entry_defined": true,
+            "exec_error": ""
+          }
+        }
+      },
+      {
+        "task_score": 1.0,
+        "success": 1.0,
+        "latency": 0.0006798990070819855,
+        "token_cost": 0.00205,
+        "safety_penalty": 0.0,
+        "raw_output": "def radix_sort(arr):\n    if not arr:\n        return arr\n    max_num = max(arr)\n    max_digits = 0\n    temp = max_num\n    while temp > 0:\n        temp //= 10\n        max_digits += 1\n    for d in range(max_digits):\n        buckets = [[] for _ in range(10)]\n        for num in arr:\n            digit = (num // (10 ** d)) % 10\n            buckets[digit].append(num)\n        arr = []\n        for bucket in buckets:\n            arr.extend(bucket)\n    return arr",
+        "trace": [
+          {
+            "role": "generator",
+            "agent_id": "planner",
+            "content": "<think>\n好的，我需要编写一个radix_sort函数来对列表进行排序。首先，我得回忆一下基数排序的原理。基数排序是按位数从最低位到最高位依次排序，通常使用计数排序作为子程序。\n\n首先，我需要确定列表中的最大数，这样才能知道需要处理多少位。比如，如果最大数是三位数，那就要处理个位、十位、百位。\n\n接下来，我需要为每一位进行排序。对于每一位，我需要将数字分成10个桶，每个桶对应一个数字位（0-9）。然后将数字分配到对应的桶中，再按顺序收集回来。\n\n但如何处理不同位数的数字呢？比如，像15这样的两位数，在处理十位的时候，可能需要补零？或者可能需要找到最大数的位数，然后循环处理每一位。\n\n那具体步骤应该是这样的：首先找到最大数的位数，然后从最低位开始，依次处理每一位。对于每一位，使用计数排序的方法，将数字分配到对应的桶中，然后合并。\n\n那如何实现呢？首先，我需要一个辅助函数，比如counting_sort_by_digit，它接受一个列表和当前处理的位数（比如个位、十位等），然后进行排序。\n\n比如，对于当前位d，每个数字的当前位可以通过（num // (10**d)) % 10得到。然后根据这个值将数字分配到对应的桶中。\n\n然后，每次处理完一位后，将所有桶中的数字合并，作为下一轮的输入。\n\n那主函数radix_sort的步骤应该是：\n\n1. 找到列表中的最大值max_num。\n2. 确定最大值的位数，比如通过log10或者循环除以10直到为0。\n3. 对每一位（从最低位到最高位）进行计数排序。\n\n那如何处理不同位数的数字？比如，当处理到更高位时，那些位数较少的数字会被视为前面补零吗？比如，数字3在处理十位时，会被视为03，所以十位是0？\n\n是的，这样处理是正确的。比如，当处理十位时，所有数字都会被当作两位数处理，不足的前面补零。\n\n那具体实现时，如何确定处理多少位？比如，最大数是15，那么最大位数是2位。所以循环两次，分别处理个位和十位。\n\n那如何找到最大数的位数？可以用数学方法，比如不断除以10直到为0，或者用字符串转换。但可能更高效的是用数学方法。\n\n比如，初始位数为0，max_num为最大值。然后循环，当max_num >0时，max_num = max_num //10，位数加一。这样得到的位数就是最大数的位数。\n\n或者，可以用math模块中的log10函数，但需要注意处理0的情况。\n\n不过，可能更简单的是，先找到最大值，然后循环处理每一位，直到最大值变为0。\n\n那现在，编写radix_sort函数：\n\n首先处理特殊情况，比如空列表或者单元素列表，直接返回原列表。\n\n然后，找到最大值max_num。\n\n然后，对于每一位d（从0到max_digits-1），进行计数排序。\n\n那如何实现计数排序？比如，对于当前位d，每个数字的当前位是digit = (num // (10**d)) %10。然后创建10个桶，每个桶存储对应digit的数字。然后将所有桶中的数字合并，作为下一轮的输入。\n\n那在Python中，"
+          },
+          {
+            "role": "critic",
+            "agent_id": "coder",
+            "content": "<think>\n好的，我需要写一个radix_sort函数。首先，基数排序需要处理每一位数字，从最低位到最高位。那我得先找到列表中的最大值，确定需要处理多少位。\n\n比如，对于例子中的[15,79,25,68,37]，最大值是79，两位数，所以需要处理两位。那每一位都要进行计数排序。\n\n那如何实现计数排序？对于每一位，比如个位，每个数字的当前位是(num // 1) %10。然后将数字分配到对应的桶里，比如0-9的桶。然后收集所有桶中的数字，作为下一轮的输入。\n\n那函数的大致步骤是：\n\n1. 处理空列表或单元素的情况，直接返回。\n2. 找到最大值max_num。\n3. 确定最大位数，比如通过循环除以10直到为0。\n4. 对每一位进行计数排序：\n   a. 创建10个桶，每个桶存储对应digit的数字。\n   b. 遍历当前列表中的每个数字，计算当前位的digit，放入对应的桶。\n   c. 合并所有桶中的数字，作为新的列表。\n5. 返回最终排序后的列表。\n\n那如何处理不同位数的数字？比如，当处理十位时，数字如3会被视为03，所以十位是0。这在计算时会自动处理，因为当d=1时，(num // 10) %10会得到十位的数字，而像3这样的数，(3//10)是0，所以digit是0。\n\n那编写代码时，需要注意：\n\n- 如何处理max_num为0的情况？比如，如果列表中有0，或者所有数都是0。这时候最大值是0，位数是1，处理一次即可。\n- 如何处理负数？但题目中的测试用例没有负数，可能假设输入都是非负整数。\n- 如何处理空列表？直接返回空列表。\n\n那现在，编写代码：\n\n首先，函数radix_sort接受一个列表，返回排序后的列表。\n\n然后，找到最大值max_num。如果列表为空，返回原列表。\n\n然后，确定位数。比如，初始位数为0，max_num大于0时，循环除以10，直到为0，统计位数。\n\n然后，对每一位进行处理。比如，从d=0到d=位数-1。\n\n在每次处理时，创建10个桶，每个桶是一个列表。然后遍历当前列表中的每个数字，计算当前位的digit，将数字放入对应的桶中。然后合并所有桶中的数字，作为下一轮的输入。\n\n那在Python中，可以用列表推导式或者循环来实现。\n\n比如，对于当前位d，每个数字的digit是 (num // (10**d)) %10。然后，将数字分配到对应的桶中。\n\n然后，合并所有桶中的数字，得到新的列表。\n\n那代码的大致结构：\n\ndef radix_sort(arr):\n    if not arr:\n        return arr\n    max_num = max(arr)\n    # 计算最大位数\n    max_digits = 0\n    temp = max_num\n    while temp > 0:\n        temp //= 10\n        max_digits +=1\n    # 处理每一位\n    for d in range(max_digits):\n        buckets = [[] for _ in range(10)]\n        for num in arr:\n            digit = (num // (10**d)) %10\n            buckets[digit].append(num"
+          },
+          {
+            "role": "reviser",
+            "agent_id": "skeptic",
+            "content": "<think>\n</think>\n\ndef radix_sort(arr):\n    if not arr:\n        return arr\n    max_num = max(arr)\n    max_digits = 0\n    temp = max_num\n    while temp > 0:\n        temp //= 10\n        max_digits += 1\n    for d in range(max_digits):\n        buckets = [[] for _ in range(10)]\n        for num in arr:\n            digit = (num // (10 ** d)) % 10\n            buckets[digit].append(num)\n        arr = []\n        for bucket in buckets:\n            arr.extend(bucket)\n    return arr"
+          }
+        ],
+        "custom_metrics": {
+          "num_roles": 3.0
+        },
+        "debug_info": {
+          "dataset_specific": {
+            "used_dataset_specific": true,
+            "passed": 3,
+            "total": 3,
+            "stderr": "",
+            "syntax_ok": true,
+            "entry_defined": true,
+            "exec_error": ""
+          }
+        }
+      }
+    ]
+  },
+  "structure_summary": {
+    "mode": "structure_only",
+    "signature": "structure|critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic||critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math||critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer",
+    "selected_topology_signatures": [
+      "critique_revise|critic:coder,generator:planner,reviser:skeptic|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>skeptic,planner>coder,planner>skeptic",
+      "critique_revise|critic:math,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>coder,planner>coder,planner>math",
+      "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+    ],
+    "selected_topology_scores": [
+      0.7722239815413545,
+      0.7693076426163086,
+      0.7722184457551262
+    ],
+    "metrics": {
+      "coverage": 0.6249999999999999,
+      "complementarity": 0.7699999999999999,
+      "redundancy_quality": 0.2857142857142857,
+      "structural_faithfulness": 0.7708333333333333,
+      "runtime_affordability": 0.9083333333333334,
+      "topology_quality": 0.6949999999999998,
+      "diversity_quality": 0.5859714285714285,
+      "deployability": 0.9083333333333334,
+      "execution_probe": 0.9707500388404385,
+      "total_reward": 0.7499466875552554,
+      "metadata": {
+        "template_count": 1,
+        "task_node_count": 7,
+        "task_edge_count": 9,
+        "root_count": 1,
+        "sink_count": 3
+      }
+    },
+    "metadata": {
+      "templates": [
+        "critique_revise"
+      ],
+      "graph_count": 3,
+      "root_node_ids": [
+        "generator@planner"
+      ],
+      "sink_node_ids": [
+        "reviser@coder",
+        "reviser@skeptic",
+        "reviser@summarizer"
+      ]
+    }
+  },
+  "metadata": {
+    "source": "live_stage1_search_cached"
+  }
+}
