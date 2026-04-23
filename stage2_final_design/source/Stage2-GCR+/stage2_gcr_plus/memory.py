@@ -20,6 +20,7 @@ from mas_stage2.types import (
 PHYSICAL_MEMORY_BUCKETS = ("self_output", "feedback", "class_summary", "repair_trace")
 FEEDBACK_STABLE_TYPES = frozenset({"pass", "preserve", "keep", "approve"})
 FEEDBACK_FAILURE_TYPES = frozenset({"challenge", "reject", "conflict", "revise"})
+SPARSEMAX_EPSILON = 1e-8
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -55,6 +56,44 @@ def _average_embedding(records: Sequence[MemoryRecord]) -> List[float]:
     if any(len(vector) != width for vector in vectors):
         return list(vectors[0])
     return [sum(vector[index] for vector in vectors) / float(len(vectors)) for index in range(width)]
+
+
+def _sparsemax(scores: Sequence[float]) -> List[float]:
+    """Project scores onto the probability simplex with sparse support."""
+    values = [float(score) for score in scores]
+    if not values:
+        return []
+    if len(values) == 1:
+        return [1.0]
+    sorted_values = sorted(values, reverse=True)
+    cumulative = 0.0
+    support_size = 0
+    for index, value in enumerate(sorted_values, start=1):
+        cumulative += value
+        if 1.0 + index * value > cumulative:
+            support_size = index
+    if support_size <= 0:
+        winner = max(range(len(values)), key=lambda idx: (values[idx], -idx))
+        return [1.0 if idx == winner else 0.0 for idx in range(len(values))]
+    tau = (sum(sorted_values[:support_size]) - 1.0) / float(support_size)
+    weights = [max(score - tau, 0.0) for score in values]
+    total = sum(weights)
+    if total <= 0.0:
+        winner = max(range(len(values)), key=lambda idx: (values[idx], -idx))
+        return [1.0 if idx == winner else 0.0 for idx in range(len(values))]
+    return [weight / total for weight in weights]
+
+
+def _standardize_scores(scores: Sequence[float]) -> List[float]:
+    values = [float(score) for score in scores]
+    if len(values) <= 1:
+        return values
+    mean = sum(values) / float(len(values))
+    variance = sum((score - mean) ** 2 for score in values) / float(len(values))
+    scale = variance ** 0.5
+    if scale <= 1e-8:
+        return [0.0 for _ in values]
+    return [(score - mean) / (scale + 1e-8) for score in values]
 
 
 def _summary_view_record(records: Sequence[MemoryRecord], view_name: str) -> Optional[MemoryRecord]:
@@ -281,7 +320,8 @@ class RoleAwareMemorySelector:
         record: MemoryRecord,
         *,
         current_turn: int,
-    ) -> tuple[float, Dict[str, float], float]:
+        slot_name: str,
+    ) -> tuple[float, Dict[str, float], float, float, float]:
         query_similarity = cosine(query_vec, record.embedding)
         features = selector_features(
             node,
@@ -290,7 +330,19 @@ class RoleAwareMemorySelector:
             current_turn=current_turn,
             query_similarity=query_similarity,
         )
-        return query_similarity, features, query_similarity
+        features["query_similarity"] = float(query_similarity)
+        features[f"slot={slot_name}"] = 1.0
+        features[f"slot_head::{slot_name}::bias"] = 1.0
+        features[f"slot_head::{slot_name}::query_similarity"] = float(query_similarity)
+        learned_delta = 0.0
+        if self.learned_model is not None:
+            learned_delta = float(self.learned_model.bias) - 0.5
+            learned_delta += sum(
+                float(self.learned_model.weights.get(name, 0.0)) * float(value)
+                for name, value in features.items()
+            )
+        score = float(query_similarity) + float(self.learned_weight) * learned_delta
+        return float(score), features, query_similarity, learned_delta, float(query_similarity)
 
     def select(
         self,
@@ -305,28 +357,9 @@ class RoleAwareMemorySelector:
             return []
         selected_ids: List[str] = []
         selected: List[SelectedMemoryItem] = []
-        scored_lookup: Dict[str, tuple[Dict[str, float], float]] = {}
+        slot_supports: List[Tuple[str, List[SelectedMemoryItem]]] = []
 
-        def add_record(record: MemoryRecord, rationale: str, score: float) -> None:
-            if record.record_id in selected_ids or len(selected) >= self.config.max_selected_records:
-                return
-            selected_ids.append(record.record_id)
-            features, similarity_score = scored_lookup.get(record.record_id, ({}, score))
-            selected.append(
-                SelectedMemoryItem(
-                    record_id=record.record_id,
-                    score=score,
-                    rationale=rationale,
-                    metadata={
-                        "features": dict(features),
-                        "slot_similarity": float(similarity_score),
-                    },
-                )
-            )
-
-        for slot_name, slot_cap in self._node_slot_plan(node):
-            if len(selected) >= self.config.max_selected_records:
-                break
+        for slot_name, legacy_cap in self._node_slot_plan(node):
             slot_records = self._records_for_slot(records, slot_name)
             if not slot_records:
                 continue
@@ -337,22 +370,82 @@ class RoleAwareMemorySelector:
                 current_turn=current_turn,
                 slot_name=slot_name,
             )
-            scored: List[Tuple[float, MemoryRecord]] = []
+            scored: List[Tuple[float, MemoryRecord, Dict[str, float], float, float, float]] = []
             for record in slot_records:
-                score, features, similarity_score = self._score_record(
+                score, features, similarity_score, learned_score, heuristic_score = self._score_record(
                     query_vec,
                     node,
                     controller_state,
                     record,
                     current_turn=current_turn,
+                    slot_name=slot_name,
                 )
-                scored_lookup[record.record_id] = (features, similarity_score)
-                scored.append((score, record))
-            scored.sort(key=lambda item: (item[0], item[1].turn_index, item[1].record_id), reverse=True)
-            for score, record in scored[: max(1, slot_cap)]:
+                scored.append((score, record, features, similarity_score, learned_score, heuristic_score))
+            if not scored:
+                continue
+            normalized_scores = _standardize_scores([item[0] for item in scored])
+            weights = _sparsemax(normalized_scores)
+            support: List[Tuple[float, float, MemoryRecord, Dict[str, float], float, float, float, float]] = []
+            for normalized_score, weight, (score, record, features, similarity_score, learned_score, heuristic_score) in zip(normalized_scores, weights, scored):
+                if weight <= SPARSEMAX_EPSILON:
+                    continue
+                support.append((float(weight), score, record, features, similarity_score, learned_score, heuristic_score, float(normalized_score)))
+            if not support:
+                best = max(scored, key=lambda item: (item[0], item[1].turn_index, item[1].record_id))
+                score, record, features, similarity_score, learned_score, heuristic_score = best
+                support.append((1.0, score, record, features, similarity_score, learned_score, heuristic_score, 0.0))
+            support.sort(key=lambda item: (item[0], item[1], item[2].turn_index, item[2].record_id), reverse=True)
+            slot_items: List[SelectedMemoryItem] = []
+            for rank, (weight, raw_logit, record, features, similarity_score, learned_delta, heuristic_score, normalized_score) in enumerate(support):
+                slot_items.append(
+                    SelectedMemoryItem(
+                        record_id=record.record_id,
+                        score=weight,
+                        rationale=f"slot:{slot_name}",
+                        metadata={
+                            "features": dict(features),
+                            "slot_name": slot_name,
+                            "slot_schema_cap": int(legacy_cap),
+                            "legacy_slot_cap": int(legacy_cap),
+                            "raw_logit": float(raw_logit),
+                            "normalized_logit": float(normalized_score),
+                            "query_similarity": float(similarity_score),
+                            "slot_similarity": float(similarity_score),
+                            "support_weight": float(weight),
+                            "slot_sparsemax_weight": float(weight),
+                            "support_rank_in_slot": int(rank),
+                            "slot_learned_delta": float(learned_delta),
+                            "slot_heuristic_score": float(heuristic_score),
+                        },
+                    )
+                )
+            slot_supports.append((slot_name, slot_items))
+        round_index = 0
+        while len(selected) < self.config.max_selected_records:
+            changed = False
+            for _slot_name, slot_items in slot_supports:
+                if round_index >= len(slot_items):
+                    continue
+                item = slot_items[round_index]
+                if item.record_id in selected_ids:
+                    continue
+                metadata = dict(item.metadata)
+                metadata["selection_order"] = len(selected)
+                selected.append(
+                    SelectedMemoryItem(
+                        record_id=item.record_id,
+                        score=item.score,
+                        rationale=item.rationale,
+                        metadata=metadata,
+                    )
+                )
+                selected_ids.append(item.record_id)
+                changed = True
                 if len(selected) >= self.config.max_selected_records:
                     break
-                add_record(record, f"slot:{slot_name}", score)
+            if not changed:
+                break
+            round_index += 1
         return selected
 
 
@@ -373,15 +466,21 @@ class LocalMemoryComposer:
         failure_signals: List[str] = []
         stable_signals: List[str] = []
         excerpts: List[str] = []
-        ranked_items = sorted(selected_items, key=lambda item: (item.score, item.record_id), reverse=True)
-        for item in ranked_items:
+        ordered_items = sorted(
+            selected_items,
+            key=lambda item: (int(item.metadata.get("selection_order", 0)), item.record_id),
+        )
+        for item in ordered_items:
             record = records_by_id[item.record_id]
             excerpt = _truncate(record.text, self.config.max_record_chars)
-            excerpts.append(f"[{record.record_type}|{record.feedback_type}] {excerpt}")
+            support_weight = float(item.metadata.get("support_weight", item.score))
+            slot_name = str(item.metadata.get("slot_name", "unknown_slot"))
+            weighted_excerpt = f"[{slot_name} | alpha={support_weight:.3f}] {excerpt}"
+            excerpts.append(f"[{slot_name}|alpha={support_weight:.3f}|{record.record_type}|{record.feedback_type}] {excerpt}")
             if record.feedback_type in FEEDBACK_FAILURE_TYPES:
-                failure_signals.append(excerpt)
+                failure_signals.append(weighted_excerpt)
             elif record.feedback_type in FEEDBACK_STABLE_TYPES:
-                stable_signals.append(excerpt)
+                stable_signals.append(weighted_excerpt)
         parts: List[str] = [
             f"Role={node.role}.",
             f"Global state: {_truncate(controller_state.summary, self.config.max_record_chars // 2)}",
@@ -399,12 +498,18 @@ class LocalMemoryComposer:
         return LocalLatentMemory(
             node_id=node.node_id,
             turn_index=current_turn,
-            selected_items=list(ranked_items),
+            selected_items=list(ordered_items),
             summary=summary,
             latent_vector=self.embedder.embed(summary),
             stable_signals=stable_signals[:2],
             failure_signals=failure_signals[:2],
-            metadata={"selected_record_ids": [item.record_id for item in ranked_items]},
+            metadata={
+                "selected_record_ids": [item.record_id for item in ordered_items],
+                "slot_support_weights": {
+                    item.record_id: float(item.metadata.get("support_weight", item.score))
+                    for item in ordered_items
+                },
+            },
         )
 
 

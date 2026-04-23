@@ -5,8 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 from mas_stage2.config import Stage2MemoryConfig
-from stage2_gcr_plus.memory import PrivateEpisodeMemoryStore, RoleAwareMemorySelector
-from mas_stage2.types import MemoryRecord
+from stage2_gcr_plus.memory import LocalMemoryComposer, PrivateEpisodeMemoryStore, RoleAwareMemorySelector
+from mas_stage2.types import MemoryRecord, SelectedMemoryItem
 from mas_treesearch.types import UnionNode
 
 
@@ -117,6 +117,94 @@ def test_runtime_node_type_metadata_overrides_role_only_slot_plan():
     assert "slot:feedback" in rationales
     assert "slot:checker_verdict_summary" not in rationales
     assert node.metadata["runtime_node_type_source"] == "runtime_annotation"
+
+
+def test_role_aware_selector_uses_slot_sparsemax_support_set_not_slot_cap_topr():
+    selector = RoleAwareMemorySelector(Stage2MemoryConfig(max_selected_records=4), _Embedder())
+    node = UnionNode("solver", "solver_agent", "solver", "task", [], 1, 1.0, metadata={"runtime_node_type": "proposal"})
+    records = [
+        _record(record_id="feedback-a", owner_node_id="solver", record_type="feedback", feedback_type="neutral"),
+        _record(record_id="feedback-b", owner_node_id="solver", record_type="feedback", feedback_type="neutral"),
+    ]
+
+    selected = selector.select(
+        node,
+        "question",
+        SimpleNamespace(summary="global", uncertainty=0.1, mode="lean", role_weights={}),
+        records,
+        current_turn=1,
+    )
+
+    feedback_items = [item for item in selected if item.rationale == "slot:feedback"]
+    feedback_ids = {item.record_id for item in feedback_items}
+
+    assert feedback_ids == {"feedback-a", "feedback-b"}
+    assert all(item.metadata["slot_name"] == "feedback" for item in feedback_items)
+    assert all(item.metadata["slot_schema_cap"] == 1 for item in feedback_items)
+    assert all(item.metadata["slot_sparsemax_weight"] > 0.0 for item in feedback_items)
+    assert all(item.metadata["features"]["slot=feedback"] == 1.0 for item in feedback_items)
+    assert all("selection_order" in item.metadata for item in feedback_items)
+
+
+def test_role_aware_selector_round_robins_across_slots_before_global_budget():
+    selector = RoleAwareMemorySelector(Stage2MemoryConfig(max_selected_records=2), _Embedder())
+    node = UnionNode("solver", "solver_agent", "solver", "task", [], 1, 1.0, metadata={"runtime_node_type": "proposal"})
+    records = [
+        _record(record_id="self-a", owner_node_id="solver", record_type="self_output"),
+        _record(record_id="self-b", owner_node_id="solver", record_type="self_output"),
+        _record(record_id="pass", owner_node_id="solver", record_type="feedback", feedback_type="pass"),
+    ]
+
+    selected = selector.select(
+        node,
+        "question",
+        SimpleNamespace(summary="global", uncertainty=0.1, mode="lean", role_weights={}),
+        records,
+        current_turn=1,
+    )
+
+    selected_ids = [item.record_id for item in selected]
+    rationales = [item.rationale for item in selected]
+
+    assert len(selected) == 2
+    assert rationales == ["slot:self_output", "slot:feedback"]
+    assert selected_ids[1] == "pass"
+    assert [item.metadata["selection_order"] for item in selected] == [0, 1]
+
+
+def test_local_memory_composer_preserves_selection_order_instead_of_global_score_sort():
+    composer = LocalMemoryComposer(Stage2MemoryConfig(max_selected_records=4), _Embedder())
+    node = UnionNode("solver", "solver_agent", "solver", "task", [], 1, 1.0, metadata={})
+    records_by_id = {
+        "low-score-first": _record(record_id="low-score-first", record_type="feedback", feedback_type="pass"),
+        "high-score-second": _record(record_id="high-score-second", record_type="feedback", feedback_type="reject"),
+    }
+    selected = [
+        SelectedMemoryItem(
+            record_id="low-score-first",
+            score=0.1,
+            rationale="slot:feedback",
+            metadata={"slot_name": "feedback", "support_weight": 0.1, "selection_order": 0},
+        ),
+        SelectedMemoryItem(
+            record_id="high-score-second",
+            score=0.9,
+            rationale="slot:failure_view",
+            metadata={"slot_name": "failure_view", "support_weight": 0.9, "selection_order": 1},
+        ),
+    ]
+
+    latent = composer.compose(
+        node,
+        records_by_id,
+        selected,
+        SimpleNamespace(summary="global", uncertainty=0.1, mode="lean", role_weights={}),
+        current_turn=1,
+    )
+
+    assert [item.record_id for item in latent.selected_items] == ["low-score-first", "high-score-second"]
+    assert latent.metadata["selected_record_ids"] == ["low-score-first", "high-score-second"]
+    assert "[feedback | alpha=0.100]" in latent.summary
 
 
 def test_role_aware_selector_marks_compat_fallback_when_runtime_type_missing():
