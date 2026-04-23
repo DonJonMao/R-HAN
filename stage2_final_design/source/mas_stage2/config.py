@@ -16,6 +16,9 @@ class Stage2MemoryConfig:
     keep_latest_feedback: bool = True
     include_failure_memory: bool = True
     include_success_memory: bool = True
+    slot_mask_mode: str = "soft"
+    slot_mask_core_policy: str = "always_on"
+    slot_mask_min_gate: float = 0.0
 
 
 @dataclass
@@ -41,9 +44,12 @@ class Stage2ReplayConfig:
 class Stage2LearningConfig:
     enabled: bool = True
     selector_model_weight: float = 0.18
+    slot_gate_model_weight: float = 1.0
     edge_model_weight: float = 0.22
     controller_model_weight: float = 0.16
     selector_learning_rate: float = 0.03
+    slot_gate_learning_rate: float = 0.025
+    slot_gate_pairwise_margin: float = 0.05
     edge_learning_rate: float = 0.03
     controller_learning_rate: float = 0.025
     positive_feedback_bonus: float = 0.14

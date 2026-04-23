@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from mas_stage2.config import Stage2MemoryConfig
+from mas_stage2.learning import OnlineLinearModel
 from stage2_gcr_plus.memory import LocalMemoryComposer, PrivateEpisodeMemoryStore, RoleAwareMemorySelector
 from mas_stage2.types import MemoryRecord, SelectedMemoryItem
 from mas_treesearch.types import UnionNode
@@ -170,6 +171,68 @@ def test_role_aware_selector_round_robins_across_slots_before_global_budget():
     assert rationales == ["slot:self_output", "slot:feedback"]
     assert selected_ids[1] == "pass"
     assert [item.metadata["selection_order"] for item in selected] == [0, 1]
+
+
+def test_role_aware_selector_applies_soft_slot_gate_without_hard_pruning_optional_slot():
+    gate_model = OnlineLinearModel()
+    gate_model.bias = 0.25
+    selector = RoleAwareMemorySelector(
+        Stage2MemoryConfig(max_selected_records=4, slot_mask_mode="soft"),
+        _Embedder(),
+        slot_gate_model=gate_model,
+        slot_gate_weight=1.0,
+    )
+    node = UnionNode("sink", "sink_agent", "aggregator", "task", [], 1, 1.0, metadata={"runtime_node_type": "sink"})
+    records = [
+        _record(record_id="class", owner_node_id="sink", record_type="class_summary"),
+        _record(record_id="pass", owner_node_id="sink", record_type="feedback", feedback_type="pass"),
+        _record(record_id="repair", owner_node_id="sink", record_type="repair_trace"),
+    ]
+
+    selected = selector.select(
+        node,
+        "question",
+        SimpleNamespace(summary="global", uncertainty=0.8, mode="lean", role_weights={}, metadata={"challenge_count": 2}),
+        records,
+        current_turn=2,
+    )
+
+    by_slot = {item.metadata["slot_name"]: item for item in selected}
+
+    assert by_slot["class_summary"].metadata["slot_core"] is True
+    assert by_slot["class_summary"].metadata["slot_gate_weight"] == 1.0
+    assert by_slot["recovery_summary"].metadata["slot_core"] is False
+    assert 0.0 < by_slot["recovery_summary"].metadata["slot_gate_weight"] < 1.0
+    assert by_slot["recovery_summary"].metadata["effective_weight"] == pytest.approx(
+        by_slot["recovery_summary"].metadata["slot_gate_weight"]
+        * by_slot["recovery_summary"].metadata["slot_support_weight"]
+    )
+    assert "slot_gate_features" in by_slot["recovery_summary"].metadata
+    assert "mode::lean" not in by_slot["recovery_summary"].metadata["slot_gate_features"]
+
+
+def test_fixed_slot_mask_mode_keeps_optional_slots_at_full_gate():
+    gate_model = OnlineLinearModel()
+    gate_model.bias = 0.1
+    selector = RoleAwareMemorySelector(
+        Stage2MemoryConfig(max_selected_records=4, slot_mask_mode="fixed"),
+        _Embedder(),
+        slot_gate_model=gate_model,
+        slot_gate_weight=1.0,
+    )
+    node = UnionNode("sink", "sink_agent", "aggregator", "task", [], 1, 1.0, metadata={"runtime_node_type": "sink"})
+    records = [_record(record_id="repair", owner_node_id="sink", record_type="repair_trace")]
+
+    selected = selector.select(
+        node,
+        "question",
+        SimpleNamespace(summary="global", uncertainty=0.8, mode="lean", role_weights={}, metadata={}),
+        records,
+        current_turn=2,
+    )
+
+    recovery_item = next(item for item in selected if item.metadata["slot_name"] == "recovery_summary")
+    assert recovery_item.metadata["slot_gate_weight"] == 1.0
 
 
 def test_local_memory_composer_preserves_selection_order_instead_of_global_score_sort():

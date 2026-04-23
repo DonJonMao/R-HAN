@@ -82,6 +82,46 @@ def selector_features(
     }
 
 
+def slot_features(
+    node: UnionNode,
+    controller_state: ControllerState,
+    *,
+    current_turn: int,
+    slot_name: str,
+    runtime_node_type: str,
+    candidate_count: int,
+    stable_count: int,
+    failure_count: int,
+    core_slot: bool,
+    learnable_slot: bool,
+) -> Dict[str, float]:
+    """Slot-level features for deciding whether a typed memory slot should speak."""
+    metadata = dict(node.metadata or {})
+    controller_metadata = dict(getattr(controller_state, "metadata", {}) or {})
+    return {
+        "bias": 1.0,
+        f"runtime_node_type::{runtime_node_type}": 1.0,
+        f"slot::{slot_name}": 1.0,
+        f"node_role::{node.role}": 1.0,
+        "turn_index": float(current_turn),
+        "uncertainty": float(controller_state.uncertainty),
+        "role_weight": float(controller_state.role_weights.get(str(node.role), 1.0)),
+        "support_count": float(controller_metadata.get("support_count", 0.0)),
+        "challenge_count": float(controller_metadata.get("challenge_count", 0.0)),
+        "uncertain_count": float(controller_metadata.get("uncertain_count", 0.0)),
+        "active_edge_ratio": float(controller_metadata.get("active_edge_ratio", 0.0)),
+        "candidate_count": float(candidate_count),
+        "has_candidates": 1.0 if candidate_count > 0 else 0.0,
+        "recent_stable_evidence": float(stable_count),
+        "recent_failure_evidence": float(failure_count),
+        "core_slot": 1.0 if core_slot else 0.0,
+        "learnable_slot": 1.0 if learnable_slot else 0.0,
+        "is_sink_runtime": 1.0 if bool(metadata.get("is_sink_runtime", False)) else 0.0,
+        "in_recovery_chain": 1.0 if bool(metadata.get("in_recovery_chain", False)) else 0.0,
+        "sink_distance": float(metadata.get("sink_distance", 0.0) or 0.0),
+    }
+
+
 def edge_features(
     edge: UnionEdge,
     *,

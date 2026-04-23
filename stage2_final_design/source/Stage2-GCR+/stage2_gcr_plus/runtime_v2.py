@@ -184,7 +184,8 @@ class Stage2RuntimeV2(Stage2Runtime):
         node: UnionNode,
         question_text: str,
         controller_state: ControllerState,
-        records: Sequence[MemoryRecord],
+        selected_items,
+        records_by_id: Dict[str, MemoryRecord],
     ) -> List[str]:
         texts = [
             f"role={node.role}",
@@ -192,9 +193,18 @@ class Stage2RuntimeV2(Stage2Runtime):
             f"turn={controller_state.turn_index + 1}",
             f"global_state={_truncate(controller_state.summary, 240)}",
         ]
-        if records:
-            for record in records:
-                texts.append(f"[{record.record_type}|{record.feedback_type}] {_truncate(record.text, self.v2_config.memory.max_record_chars)}")
+        if selected_items:
+            for item in selected_items:
+                record = records_by_id.get(item.record_id)
+                if record is None:
+                    continue
+                slot_name = str(item.metadata.get("slot_name", "unknown_slot"))
+                gate = float(item.metadata.get("slot_gate_weight", 1.0))
+                support = float(item.metadata.get("slot_support_weight", item.score))
+                texts.append(
+                    f"[slot={slot_name}|gate={gate:.3f}|support={support:.3f}|{record.record_type}|{record.feedback_type}] "
+                    f"{_truncate(record.text, self.v2_config.memory.max_record_chars)}"
+                )
         else:
             texts.append("no_private_memory")
         return texts
@@ -207,9 +217,8 @@ class Stage2RuntimeV2(Stage2Runtime):
         selected_items,
         records_by_id: Dict[str, MemoryRecord],
     ) -> torch.Tensor:
-        raw_records = [records_by_id[item.record_id] for item in selected_items if item.record_id in records_by_id]
         input_ids, attention_mask = tokenize_texts(
-            self._composer_texts(node, question_text, controller_state, raw_records),
+            self._composer_texts(node, question_text, controller_state, selected_items, records_by_id),
             vocab_size=self.v2_config.composer_vocab_size,
             max_length=self.v2_config.composer_max_input_length,
         )
@@ -489,12 +498,20 @@ class Stage2RuntimeV2(Stage2Runtime):
             record = records_by_id.get(item.record_id)
             if record is None:
                 continue
+            slot_name = str(item.metadata.get("slot_name", "unknown_slot"))
+            gate = float(item.metadata.get("slot_gate_weight", 1.0))
+            support = float(item.metadata.get("slot_support_weight", item.score))
             local_candidates.append(
                 {
                     "record_id": item.record_id,
-                    "text": f"[{record.record_type}|{record.feedback_type}] {_truncate(record.text, self.v2_config.memory.max_record_chars)}",
+                    "text": (
+                        f"[slot={slot_name}|gate={gate:.3f}|support={support:.3f}|"
+                        f"{record.record_type}|{record.feedback_type}] "
+                        f"{_truncate(record.text, self.v2_config.memory.max_record_chars)}"
+                    ),
                     "embedding": record.embedding,
                     "feedback_type": record.feedback_type,
+                    "slot_name": slot_name,
                 }
             )
         neighbour_candidates = [
@@ -573,7 +590,8 @@ class Stage2RuntimeV2(Stage2Runtime):
         for item in selected_items[:2]:
             record = records_by_id.get(item.record_id)
             if record is not None:
-                carried_lines.append(f"[{record.feedback_type}] {_truncate(record.text, self.v2_config.memory.max_export_chars)}")
+                slot_name = str(item.metadata.get("slot_name", "unknown_slot"))
+                carried_lines.append(f"[slot={slot_name}|{record.feedback_type}] {_truncate(record.text, self.v2_config.memory.max_export_chars)}")
         summary_lines = [f"{node.role} update:"]
         if carried_lines:
             summary_lines.append(f"Memory carry: {carried_lines[0]}")

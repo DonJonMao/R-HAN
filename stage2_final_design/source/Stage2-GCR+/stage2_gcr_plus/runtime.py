@@ -60,6 +60,8 @@ class Stage2Runtime:
         self._by_id = agent_pool.by_id()
         self._memory_store = PrivateEpisodeMemoryStore(config.memory)
         self._selector_model = OnlineLinearModel(learning_rate=config.learning.selector_learning_rate)
+        self._slot_gate_model = OnlineLinearModel(learning_rate=config.learning.slot_gate_learning_rate)
+        self._slot_gate_model.bias = 1.0
         self._edge_model = OnlineLinearModel(learning_rate=config.learning.edge_learning_rate)
         self._controller_model = OnlineLinearModel(learning_rate=config.learning.controller_learning_rate)
         self._selector = RoleAwareMemorySelector(
@@ -67,6 +69,8 @@ class Stage2Runtime:
             embedder,
             learned_model=self._selector_model,
             learned_weight=config.learning.selector_model_weight,
+            slot_gate_model=self._slot_gate_model,
+            slot_gate_weight=config.learning.slot_gate_model_weight,
         )
         self._composer = LocalMemoryComposer(config.memory, embedder)
         self._exporter = ExportMessageBuilder(config.memory, embedder)
@@ -190,6 +194,7 @@ class Stage2Runtime:
     def state_dict(self) -> dict:
         return {
             "selector_model": self._selector_model.state_dict(),
+            "slot_gate_model": self._slot_gate_model.state_dict(),
             "edge_model": self._edge_model.state_dict(),
             "controller_model": self._controller_model.state_dict(),
         }
@@ -198,6 +203,9 @@ class Stage2Runtime:
         selector_state = state.get("selector_model")
         if isinstance(selector_state, dict):
             self._selector_model.load_state_dict(selector_state)
+        slot_gate_state = state.get("slot_gate_model")
+        if isinstance(slot_gate_state, dict):
+            self._slot_gate_model.load_state_dict(slot_gate_state)
         edge_state = state.get("edge_model")
         if isinstance(edge_state, dict):
             self._edge_model.load_state_dict(edge_state)
@@ -1041,6 +1049,7 @@ class Stage2Runtime:
             return {"enabled": 0.0, "selector_updates": 0.0, "edge_updates": 0.0, "controller_updates": 0.0}
         base_target = self._summary_target(summary, reward_target)
         selector_updates = 0
+        slot_gate_updates = 0
         edge_updates = 0
         controller_updates = 0
         total_turns = max(1, len(result.turn_traces))
@@ -1062,6 +1071,19 @@ class Stage2Runtime:
                     if isinstance(features, dict) and features:
                         self._selector_model.update({str(name): float(value) for name, value in features.items()}, local_target)
                         selector_updates += 1
+                updated_slots = set()
+                for item in node_trace.selected_records:
+                    payload = dict(item.metadata) if isinstance(item.metadata, dict) else {}
+                    slot_name = str(payload.get("slot_name", ""))
+                    if not slot_name or slot_name in updated_slots:
+                        continue
+                    if bool(payload.get("slot_core", False)):
+                        continue
+                    gate_features = payload.get("slot_gate_features")
+                    if isinstance(gate_features, dict) and gate_features:
+                        self._slot_gate_model.update({str(name): float(value) for name, value in gate_features.items()}, local_target)
+                        updated_slots.add(slot_name)
+                        slot_gate_updates += 1
                 role_feats = controller_features(
                     node_trace.role,
                     dataset_profile,
@@ -1093,9 +1115,11 @@ class Stage2Runtime:
             "enabled": 1.0,
             "base_target": float(base_target),
             "selector_updates": float(selector_updates),
+            "slot_gate_updates": float(slot_gate_updates),
             "edge_updates": float(edge_updates),
             "controller_updates": float(controller_updates),
             "selector_steps": float(self._selector_model.steps),
+            "slot_gate_steps": float(self._slot_gate_model.steps),
             "edge_steps": float(self._edge_model.steps),
             "controller_steps": float(self._controller_model.steps),
         }

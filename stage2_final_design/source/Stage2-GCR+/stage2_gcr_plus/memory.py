@@ -8,7 +8,7 @@ from mas_treesearch.gating import cosine
 from mas_treesearch.types import UnionNode
 
 from mas_stage2.config import Stage2MemoryConfig
-from mas_stage2.learning import OnlineLinearModel, selector_features
+from mas_stage2.learning import OnlineLinearModel, selector_features, slot_features
 from mas_stage2.types import (
     ControllerState,
     ExportedMemoryMessage,
@@ -190,6 +190,14 @@ class PrivateEpisodeMemoryStore:
         raise ValueError(f"Unsupported memory view: {view_name}")
 
 
+@dataclass(frozen=True)
+class SlotSpec:
+    name: str
+    legacy_cap: int
+    core: bool
+    learnable: bool = True
+
+
 class RoleAwareMemorySelector:
     def __init__(
         self,
@@ -198,35 +206,39 @@ class RoleAwareMemorySelector:
         *,
         learned_model: Optional[OnlineLinearModel] = None,
         learned_weight: float = 0.0,
+        slot_gate_model: Optional[OnlineLinearModel] = None,
+        slot_gate_weight: float = 1.0,
     ):
         self.config = config
         self.embedder = embedder
         self.learned_model = learned_model
         self.learned_weight = learned_weight
+        self.slot_gate_model = slot_gate_model
+        self.slot_gate_weight = slot_gate_weight
 
     @staticmethod
-    def _proposal_slots() -> List[Tuple[str, int]]:
+    def _proposal_slots() -> List[SlotSpec]:
         return [
-            ("self_output", 1),
-            ("feedback", 1),
-            ("failure_view", 1),
-            ("stable_view", 1),
+            SlotSpec("self_output", 1, core=True),
+            SlotSpec("feedback", 1, core=True),
+            SlotSpec("failure_view", 1, core=False),
+            SlotSpec("stable_view", 1, core=False),
         ]
 
     @staticmethod
-    def _checker_slots() -> List[Tuple[str, int]]:
+    def _checker_slots() -> List[SlotSpec]:
         return [
-            ("class_summary", 2),
-            ("feedback", 1),
-            ("failure_view", 1),
+            SlotSpec("class_summary", 2, core=True),
+            SlotSpec("feedback", 1, core=True),
+            SlotSpec("failure_view", 1, core=False),
         ]
 
     @staticmethod
-    def _aggregator_slots() -> List[Tuple[str, int]]:
+    def _aggregator_slots() -> List[SlotSpec]:
         return [
-            ("class_summary", 1),
-            ("checker_verdict_summary", 1),
-            ("recovery_summary", 1),
+            SlotSpec("class_summary", 1, core=True),
+            SlotSpec("checker_verdict_summary", 1, core=True),
+            SlotSpec("recovery_summary", 1, core=False),
         ]
 
     @staticmethod
@@ -243,7 +255,8 @@ class RoleAwareMemorySelector:
         metadata = dict(node.metadata or {})
         runtime_node_type = str(metadata.get("runtime_node_type", "")).strip().lower()
         if runtime_node_type in {"sink", "checker", "aggregator", "proposal"}:
-            metadata["runtime_node_type_source"] = "runtime_annotation"
+            if metadata.get("runtime_node_type_source") != "compat_fallback":
+                metadata["runtime_node_type_source"] = "runtime_annotation"
             node.metadata = metadata
             return runtime_node_type
         if bool(metadata.get("is_sink_runtime", False)):
@@ -257,7 +270,7 @@ class RoleAwareMemorySelector:
         return fallback
 
     @classmethod
-    def _node_slot_plan(cls, node: UnionNode) -> List[Tuple[str, int]]:
+    def _node_slot_plan(cls, node: UnionNode) -> List[SlotSpec]:
         runtime_node_type = cls._resolved_runtime_node_type(node)
         if runtime_node_type == "sink":
             return cls._aggregator_slots()
@@ -287,6 +300,49 @@ class RoleAwareMemorySelector:
             )
             return [summary] if summary is not None else []
         raise ValueError(f"Unsupported memory slot: {slot_name}")
+
+    @staticmethod
+    def _slot_evidence_counts(records: Sequence[MemoryRecord]) -> tuple[int, int]:
+        stable = sum(1 for record in records if record.feedback_type in FEEDBACK_STABLE_TYPES)
+        failure = sum(1 for record in records if record.feedback_type in FEEDBACK_FAILURE_TYPES)
+        return stable, failure
+
+    def _slot_gate(
+        self,
+        node: UnionNode,
+        controller_state: ControllerState,
+        spec: SlotSpec,
+        *,
+        current_turn: int,
+        runtime_node_type: str,
+        candidate_count: int,
+        stable_count: int,
+        failure_count: int,
+    ) -> tuple[float, Dict[str, float]]:
+        features = slot_features(
+            node,
+            controller_state,
+            current_turn=current_turn,
+            slot_name=spec.name,
+            runtime_node_type=runtime_node_type,
+            candidate_count=candidate_count,
+            stable_count=stable_count,
+            failure_count=failure_count,
+            core_slot=spec.core,
+            learnable_slot=spec.learnable,
+        )
+        if spec.core and str(self.config.slot_mask_core_policy) == "always_on":
+            return 1.0, features
+        if str(self.config.slot_mask_mode).lower() != "soft" or not spec.learnable:
+            return 1.0, features
+        if self.slot_gate_model is None:
+            return 1.0, features
+        predicted, _ = self.slot_gate_model.predict(features)
+        gate = float(predicted)
+        if self.slot_gate_weight < 1.0:
+            gate = 1.0 + float(self.slot_gate_weight) * (gate - 1.0)
+        gate = max(float(self.config.slot_mask_min_gate), min(1.0, gate))
+        return gate, features
 
     def _slot_query_vector(
         self,
@@ -357,10 +413,23 @@ class RoleAwareMemorySelector:
             return []
         selected_ids: List[str] = []
         selected: List[SelectedMemoryItem] = []
-        slot_supports: List[Tuple[str, List[SelectedMemoryItem]]] = []
+        slot_supports: List[Tuple[float, int, str, List[SelectedMemoryItem]]] = []
 
-        for slot_name, legacy_cap in self._node_slot_plan(node):
+        runtime_node_type = self._resolved_runtime_node_type(node)
+        for slot_index, spec in enumerate(self._node_slot_plan(node)):
+            slot_name = spec.name
             slot_records = self._records_for_slot(records, slot_name)
+            stable_count, failure_count = self._slot_evidence_counts(slot_records)
+            slot_gate, gate_features = self._slot_gate(
+                node,
+                controller_state,
+                spec,
+                current_turn=current_turn,
+                runtime_node_type=runtime_node_type,
+                candidate_count=len(slot_records),
+                stable_count=stable_count,
+                failure_count=failure_count,
+            )
             if not slot_records:
                 continue
             query_vec = self._slot_query_vector(
@@ -396,40 +465,56 @@ class RoleAwareMemorySelector:
                 support.append((1.0, score, record, features, similarity_score, learned_score, heuristic_score, 0.0))
             support.sort(key=lambda item: (item[0], item[1], item[2].turn_index, item[2].record_id), reverse=True)
             slot_items: List[SelectedMemoryItem] = []
+            support_size = len(support)
             for rank, (weight, raw_logit, record, features, similarity_score, learned_delta, heuristic_score, normalized_score) in enumerate(support):
+                effective_weight = float(slot_gate) * float(weight)
                 slot_items.append(
                     SelectedMemoryItem(
                         record_id=record.record_id,
-                        score=weight,
+                        score=effective_weight,
                         rationale=f"slot:{slot_name}",
                         metadata={
                             "features": dict(features),
+                            "slot_gate_features": dict(gate_features),
                             "slot_name": slot_name,
-                            "slot_schema_cap": int(legacy_cap),
-                            "legacy_slot_cap": int(legacy_cap),
+                            "runtime_node_type": runtime_node_type,
+                            "slot_schema_cap": int(spec.legacy_cap),
+                            "legacy_slot_cap": int(spec.legacy_cap),
+                            "slot_core": bool(spec.core),
+                            "slot_learnable": bool(spec.learnable),
+                            "slot_candidate_count": int(len(slot_records)),
+                            "slot_support_size": int(support_size),
+                            "slot_gate_weight": float(slot_gate),
                             "raw_logit": float(raw_logit),
                             "normalized_logit": float(normalized_score),
                             "query_similarity": float(similarity_score),
                             "slot_similarity": float(similarity_score),
                             "support_weight": float(weight),
+                            "slot_support_weight": float(weight),
+                            "effective_weight": float(effective_weight),
                             "slot_sparsemax_weight": float(weight),
                             "support_rank_in_slot": int(rank),
+                            "slot_rank": int(rank),
                             "slot_learned_delta": float(learned_delta),
                             "slot_heuristic_score": float(heuristic_score),
                         },
                     )
                 )
-            slot_supports.append((slot_name, slot_items))
+            slot_supports.append((float(slot_gate), slot_index, slot_name, slot_items))
+        slot_supports.sort(key=lambda item: (-item[0], item[1], item[2]))
+        slot_merge_order = {slot_name: index for index, (_gate, _slot_index, slot_name, _items) in enumerate(slot_supports)}
         round_index = 0
         while len(selected) < self.config.max_selected_records:
             changed = False
-            for _slot_name, slot_items in slot_supports:
+            for slot_gate, _slot_index, slot_name, slot_items in slot_supports:
                 if round_index >= len(slot_items):
                     continue
                 item = slot_items[round_index]
                 if item.record_id in selected_ids:
                     continue
                 metadata = dict(item.metadata)
+                metadata["slot_merge_order"] = int(slot_merge_order.get(slot_name, 0))
+                metadata["selection_round"] = int(round_index)
                 metadata["selection_order"] = len(selected)
                 selected.append(
                     SelectedMemoryItem(
@@ -505,6 +590,23 @@ class LocalMemoryComposer:
             failure_signals=failure_signals[:2],
             metadata={
                 "selected_record_ids": [item.record_id for item in ordered_items],
+                "active_slot_names": list(dict.fromkeys(str(item.metadata.get("slot_name", "")) for item in ordered_items)),
+                "slot_gate_weights": {
+                    str(item.metadata.get("slot_name", "")): float(item.metadata.get("slot_gate_weight", 1.0))
+                    for item in ordered_items
+                },
+                "slot_support_sizes": {
+                    str(item.metadata.get("slot_name", "")): int(item.metadata.get("slot_support_size", 0))
+                    for item in ordered_items
+                },
+                "slot_candidate_counts": {
+                    str(item.metadata.get("slot_name", "")): int(item.metadata.get("slot_candidate_count", 0))
+                    for item in ordered_items
+                },
+                "slot_merge_order": {
+                    str(item.metadata.get("slot_name", "")): int(item.metadata.get("slot_merge_order", 0))
+                    for item in ordered_items
+                },
                 "slot_support_weights": {
                     item.record_id: float(item.metadata.get("support_weight", item.score))
                     for item in ordered_items
