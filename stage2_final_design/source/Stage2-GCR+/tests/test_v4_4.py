@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import torch
+
 from mas_stage2.types import ControllerState, EdgeActivation, TurnTrace, Stage2RunResult
 from stage2_gcr_plus.code_repair import CodeRepairEval
 from stage2_gcr_plus.runtime_v44 import GraphConstraintEval, ReasoningEval, Stage2RuntimeV44
@@ -46,12 +48,25 @@ def _runtime_stub() -> Stage2RuntimeV44:
         graph_repair_agent_ids=("coder",),
         inspector_agent_id="verifier",
     )
+    runtime.config.graph = SimpleNamespace(
+        turn_count=5,
+        min_incoming_edges=1,
+        soft_prune_top_k=3,
+        hard_prune_after_turn=4,
+        soft_prune_threshold=0.38,
+        support_set_mode="sparsemax",
+    )
     runtime._v4_4_route_family = "adversarial"
     runtime._v4_4_execution_mode_hint = "lean"
     runtime._v4_4_focus_node_ids = set()
     runtime._v4_4_sink_guard_ids = set()
     runtime._v4_4_protected_ids = set()
     runtime._v4_4_champion_provenance_ids = set()
+    runtime.global_node = None
+    runtime.gnn = None
+    runtime._current_learn = False
+    runtime._pending_policy_log_probs = []
+    runtime._pending_policy_entropies = []
     return runtime
 
 
@@ -451,6 +466,43 @@ def test_collapse_graph_classes_prefers_anchor_on_typed_tie():
 
     assert classes[0]["representative"]["digest"] == "anchor"
     assert classes[0]["contains_anchor"] is True
+
+
+def test_sparsemax_support_set_keeps_all_positive_support_edges():
+    runtime = _runtime_stub()
+    runtime.config.graph.support_set_mode = "sparsemax"
+    score_by_src = {"src_a": 0.9, "src_b": 0.8, "src_c": 0.1}
+    runtime.gnn = SimpleNamespace(
+        edge_gate=lambda src_latent, dst_latent, edge_features, global_state=None: torch.tensor(edge_features[0])
+    )
+    runtime._edge_feature_vector = lambda edge, turn_index: [score_by_src[edge.src]]  # type: ignore[attr-defined]
+    graph = UnionGraph(
+        nodes={
+            "src_a": UnionNode("src_a", "a", "solver", "task", [], 1, 1.0),
+            "src_b": UnionNode("src_b", "b", "solver", "task", [], 1, 1.0),
+            "src_c": UnionNode("src_c", "c", "solver", "task", [], 1, 1.0),
+            "dst": UnionNode("dst", "d", "verifier", "task", [], 1, 1.0),
+        },
+        edges=[
+            UnionEdge("src_a", "dst", "task", [], 1, 1.0, 0.9, 0.9, 0.5, 0.5),
+            UnionEdge("src_b", "dst", "task", [], 1, 1.0, 0.8, 0.8, 0.5, 0.5),
+            UnionEdge("src_c", "dst", "task", [], 1, 1.0, 0.1, 0.1, 0.5, 0.5),
+        ],
+        source_topology_signatures=[],
+        root_node_ids=[],
+        sink_node_ids=["dst"],
+    )
+    prepared_states = {node_id: {"local_latent": torch.zeros(1, 1)} for node_id in graph.nodes}
+
+    activations = runtime._activate_edges_v2(graph, prepared_states, turn_index=0)
+    active_ids = {item.edge_id for item in activations if item.active}
+    metadata = {item.edge_id: item.metadata for item in activations}
+
+    assert active_ids == {"src_a->dst", "src_b->dst"}
+    assert metadata["src_a->dst"]["support_set_mode"] == "sparsemax"
+    assert metadata["src_a->dst"]["support_set_weight"] > 0.0
+    assert metadata["src_b->dst"]["support_set_weight"] > 0.0
+    assert metadata["src_c->dst"]["support_set_weight"] == 0.0
 
 
 def test_best_code_recovery_target_prefers_recoverable_champion():
