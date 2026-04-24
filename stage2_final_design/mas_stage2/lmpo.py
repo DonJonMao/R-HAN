@@ -58,18 +58,20 @@ class LMPOTrainer:
         entropy_terms: Sequence[torch.Tensor] | None = None,
         auxiliary_losses: Sequence[torch.Tensor] | None = None,
     ) -> torch.Tensor | None:
-        if not self.config.enabled or not log_probs:
+        if not self.config.enabled:
             return None
-        self.baseline = self.config.baseline_momentum * self.baseline + (1 - self.config.baseline_momentum) * float(reward)
-        advantage = float(reward) - self.baseline
-        stacked_log_probs = torch.stack([term.reshape(()) for term in log_probs]).sum()
-        loss = -advantage * stacked_log_probs
-        if entropy_terms:
-            entropy = torch.stack([term.reshape(()) for term in entropy_terms]).sum()
-            loss = loss - self.config.entropy_coef * entropy
+        loss: torch.Tensor | None = None
+        if log_probs:
+            self.baseline = self.config.baseline_momentum * self.baseline + (1 - self.config.baseline_momentum) * float(reward)
+            advantage = float(reward) - self.baseline
+            stacked_log_probs = torch.stack([term.reshape(()) for term in log_probs]).sum()
+            loss = -advantage * stacked_log_probs
+            if entropy_terms:
+                entropy = torch.stack([term.reshape(()) for term in entropy_terms]).sum()
+                loss = loss - self.config.entropy_coef * entropy
         if auxiliary_losses:
             aux = torch.stack([term.reshape(()) for term in auxiliary_losses]).sum()
-            loss = loss + aux
+            loss = aux if loss is None else loss + aux
         return loss
 
     def update_from_policy(

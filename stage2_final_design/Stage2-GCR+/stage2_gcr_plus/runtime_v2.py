@@ -119,6 +119,7 @@ class Stage2RuntimeV2(Stage2Runtime):
         self._global_text_summary = ""
         self._pending_policy_log_probs: List[torch.Tensor] = []
         self._pending_policy_entropies: List[torch.Tensor] = []
+        self._pending_edge_gate_records: List[Dict[str, object]] = []
         self._current_learn = False
 
     def state_dict(self) -> dict:
@@ -217,13 +218,29 @@ class Stage2RuntimeV2(Stage2Runtime):
         selected_items,
         records_by_id: Dict[str, MemoryRecord],
     ) -> torch.Tensor:
-        input_ids, attention_mask = tokenize_texts(
-            self._composer_texts(node, question_text, controller_state, selected_items, records_by_id),
-            vocab_size=self.v2_config.composer_vocab_size,
-            max_length=self.v2_config.composer_max_input_length,
-        )
-        latent = self.composer(input_ids, attention_mask).squeeze(0)
+        texts = self._composer_texts(node, question_text, controller_state, selected_items, records_by_id)
+        input_embeddings, attention_mask = self._composer_embedding_tensor(texts)
+        latent = self.composer.forward_embeddings(input_embeddings, attention_mask).squeeze(0)
         return latent
+
+    def _composer_embedding_tensor(self, texts: Sequence[str]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Embed composer text chunks via the shared Qwen3/vLLM embedder."""
+
+        max_items = max(1, int(self.v2_config.composer_max_input_length))
+        clipped_texts = [str(text) for text in texts[:max_items]] or ["no_private_memory"]
+        hidden_dim = self.v2_config.resolved_hidden_dim(self.embed_dim)
+        vectors: List[List[float]] = []
+        for text in clipped_texts:
+            vector = list(self.embedder.embed(text))
+            if len(vector) < hidden_dim:
+                vector = vector + [0.0] * (hidden_dim - len(vector))
+            elif len(vector) > hidden_dim:
+                vector = vector[:hidden_dim]
+            vectors.append(vector)
+        device = next(self.composer.parameters()).device
+        input_embeddings = torch.tensor(vectors, dtype=torch.float32, device=device).unsqueeze(0)
+        attention_mask = torch.ones(1, len(vectors), dtype=torch.bool, device=device)
+        return input_embeddings, attention_mask
 
     def _aggregate_v2_neighbors(
         self,
@@ -453,14 +470,27 @@ class Stage2RuntimeV2(Stage2Runtime):
         activations: List[EdgeActivation] = []
         for edge in task_edges:
             edge_id = self._edge_id(edge)
-            score = float(score_lookup.get(edge_id, torch.tensor(0.0)).detach().cpu().item())
+            gate_tensor = score_lookup.get(edge_id, torch.tensor(0.0))
+            score = float(gate_tensor.detach().cpu().item())
+            active = edge_id in active_ids
+            if self._current_learn and self.gnn is not None and isinstance(gate_tensor, torch.Tensor):
+                self._pending_edge_gate_records.append(
+                    {
+                        "turn_index": int(turn_index),
+                        "edge_id": edge_id,
+                        "src": edge.src,
+                        "dst": edge.dst,
+                        "active": bool(active),
+                        "gate": gate_tensor.reshape(()),
+                    }
+                )
             activations.append(
                 EdgeActivation(
                     edge_id=edge_id,
                     src=edge.src,
                     dst=edge.dst,
                     score=score,
-                    active=edge_id in active_ids,
+                    active=active,
                     reason=f"graph_gate={score:.3f},turn={turn_index + 1}",
                     metadata={
                         "edge_features": list(feature_lookup.get(edge_id, [])),
@@ -892,6 +922,7 @@ class Stage2RuntimeV2(Stage2Runtime):
         self._memory_store = PrivateEpisodeMemoryStore(self.config.memory)
         self._pending_policy_log_probs = []
         self._pending_policy_entropies = []
+        self._pending_edge_gate_records = []
         self._current_learn = bool(learn)
         self._global_text_summary = ""
         if self.global_node is not None:
@@ -1034,11 +1065,87 @@ class Stage2RuntimeV2(Stage2Runtime):
                     if enabled
                 ],
                 "policy_terms": len(self._pending_policy_log_probs),
+                "edge_gate_aux_records": len(self._pending_edge_gate_records),
             },
         )
         if replay_dir:
             self.save_replay_bundle(result, replay_dir, question_text=question_text, metadata=metadata)
         return result
+
+    @staticmethod
+    def _edge_feedback_labels(result: Stage2RunResult) -> Dict[Tuple[int, str], float]:
+        """Build node-turn weak labels from verifier feedback events."""
+
+        positive = {"pass", "preserve"}
+        negative = {"challenge", "reject", "conflict", "revise"}
+        counts: Dict[Tuple[int, str], List[float]] = {}
+        for turn_trace in result.turn_traces:
+            for event in turn_trace.feedback_events:
+                key = (int(event.turn_index), str(event.target_node_id))
+                bucket = counts.setdefault(key, [0.0, 0.0])
+                confidence = max(0.0, min(1.0, float(event.confidence)))
+                if event.event_type in positive:
+                    bucket[0] += max(0.1, confidence)
+                elif event.event_type in negative:
+                    bucket[1] += max(0.1, confidence)
+        labels: Dict[Tuple[int, str], float] = {}
+        for key, (pos, neg) in counts.items():
+            if pos > neg:
+                labels[key] = 1.0
+            elif neg > pos:
+                labels[key] = 0.0
+        return labels
+
+    def _edge_gate_auxiliary_loss(
+        self,
+        result: Stage2RunResult,
+    ) -> Tuple[Optional[torch.Tensor], Dict[str, float]]:
+        """Weakly supervise active sparse edges from downstream feedback.
+
+        The label is attached to the edge destination in the same turn: if the
+        destination receives pass/preserve feedback, its active incoming edges
+        are treated as useful; challenge/reject/conflict/revise marks them as
+        risky.  This trains edge_gate_mlp directly without touching the memory
+        selector or slot gate models.
+        """
+
+        stats = {
+            "edge_aux_records": float(len(self._pending_edge_gate_records)),
+            "edge_aux_terms": 0.0,
+            "edge_aux_positive_labels": 0.0,
+            "edge_aux_negative_labels": 0.0,
+            "edge_aux_loss": 0.0,
+        }
+        if not bool(getattr(self.v2_config, "edge_gate_aux_enabled", True)):
+            return None, stats
+        labels = self._edge_feedback_labels(result)
+        if not labels:
+            return None, stats
+        terms: List[torch.Tensor] = []
+        for record in self._pending_edge_gate_records:
+            if not bool(record.get("active", False)):
+                continue
+            key = (int(record.get("turn_index", -1)), str(record.get("dst", "")))
+            label = labels.get(key)
+            if label is None:
+                continue
+            gate = record.get("gate")
+            if not isinstance(gate, torch.Tensor):
+                continue
+            gate = torch.clamp(gate.reshape(()), 1e-5, 1.0 - 1e-5)
+            target = torch.tensor(float(label), dtype=gate.dtype, device=gate.device)
+            terms.append(F.binary_cross_entropy(gate, target))
+            if label >= 0.5:
+                stats["edge_aux_positive_labels"] += 1.0
+            else:
+                stats["edge_aux_negative_labels"] += 1.0
+        if not terms:
+            return None, stats
+        weight = max(0.0, float(getattr(self.v2_config, "edge_gate_aux_loss_weight", 0.35)))
+        loss = torch.stack(terms).mean() * weight
+        stats["edge_aux_terms"] = float(len(terms))
+        stats["edge_aux_loss"] = float(loss.detach().cpu().item())
+        return loss, stats
 
     def learn_from_run(
         self,
@@ -1050,11 +1157,17 @@ class Stage2RuntimeV2(Stage2Runtime):
         reward_target: Optional[float] = None,
     ) -> Dict[str, float]:
         target = self._summary_target(summary, reward_target)
+        edge_aux_loss, edge_aux_stats = self._edge_gate_auxiliary_loss(result)
+        auxiliary_losses = [edge_aux_loss] if edge_aux_loss is not None else None
         policy_stats = self.lmpo_trainer.update_from_policy(
             self._pending_policy_log_probs,
             target,
             entropy_terms=self._pending_policy_entropies,
+            auxiliary_losses=auxiliary_losses,
         )
         self._pending_policy_log_probs = []
         self._pending_policy_entropies = []
-        return {f"lmpo_{key}": float(value) for key, value in policy_stats.items()}
+        self._pending_edge_gate_records = []
+        stats = {f"lmpo_{key}": float(value) for key, value in policy_stats.items()}
+        stats.update(edge_aux_stats)
+        return stats

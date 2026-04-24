@@ -227,6 +227,56 @@ class SimpleMemoryComposer(nn.Module):
 
         self.norm = nn.LayerNorm(config.hidden_dim)
 
+    def _compose_from_embeddings(
+        self,
+        input_embeddings: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Compress already-embedded text chunks into latent memory.
+
+        The production runtime feeds this path with cached Qwen3/vLLM
+        embeddings, so the composer no longer needs hash-token IDs on the hot
+        path.  The token-id ``forward`` method is retained for old checkpoints
+        and unit tests that still exercise the standalone composer.
+        """
+
+        if input_embeddings.dim() != 3:
+            raise ValueError("input_embeddings must have shape (batch, sequence, hidden_dim)")
+        if input_embeddings.size(-1) != self.config.hidden_dim:
+            raise ValueError(
+                f"embedding dim {input_embeddings.size(-1)} does not match composer hidden_dim {self.config.hidden_dim}"
+            )
+
+        seq_len = min(int(input_embeddings.size(1)), int(self.config.max_input_length))
+        if seq_len <= 0:
+            raise ValueError("input_embeddings must contain at least one sequence item")
+        x = input_embeddings[:, :seq_len, :]
+        if attention_mask is None:
+            attention_mask = torch.ones(x.size(0), seq_len, dtype=torch.bool, device=x.device)
+        else:
+            attention_mask = attention_mask[:, :seq_len].to(device=x.device, dtype=torch.bool)
+
+        x = x + self.pos_encoding[:, :seq_len, :].to(device=x.device, dtype=x.dtype)
+        encoded = self.encoder(x, src_key_padding_mask=~attention_mask)
+
+        queries = self.latent_queries.to(device=x.device, dtype=x.dtype).expand(x.size(0), -1, -1)
+        latent_memory, _ = self.cross_attn(
+            query=queries,
+            key=encoded,
+            value=encoded,
+            key_padding_mask=~attention_mask,
+        )
+        return self.norm(latent_memory + queries)
+
+    def forward_embeddings(
+        self,
+        input_embeddings: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Compress dense semantic embeddings directly."""
+
+        return self._compose_from_embeddings(input_embeddings, attention_mask)
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -240,29 +290,8 @@ class SimpleMemoryComposer(nn.Module):
         Returns:
             latent_memory: (B, L', D)
         """
-        # Embed
         x = self.embedding(input_ids)  # (B, L, D)
-
-        # Add positional encoding
-        seq_len = x.size(1)
-        x = x + self.pos_encoding[:, :seq_len, :]
-
-        # Encode
-        encoded = self.encoder(x, src_key_padding_mask=~attention_mask if attention_mask is not None else None)
-
-        # Cross-attention to fixed length
-        queries = self.latent_queries.expand(x.size(0), -1, -1)
-        latent_memory, _ = self.cross_attn(
-            query=queries,
-            key=encoded,
-            value=encoded,
-            key_padding_mask=~attention_mask if attention_mask is not None else None
-        )
-
-        # Residual + Norm
-        latent_memory = self.norm(latent_memory + queries)
-
-        return latent_memory
+        return self._compose_from_embeddings(x, attention_mask)
 
     def freeze(self):
         for param in self.parameters():

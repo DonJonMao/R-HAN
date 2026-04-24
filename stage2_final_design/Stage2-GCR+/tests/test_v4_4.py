@@ -4,7 +4,9 @@ from types import SimpleNamespace
 
 import torch
 
-from mas_stage2.types import ControllerState, EdgeActivation, TurnTrace, Stage2RunResult
+from mas_stage2.composer import MemoryComposerConfig, SimpleMemoryComposer
+from mas_stage2.lmpo import LMPOConfig, LMPOTrainer
+from mas_stage2.types import ControllerState, EdgeActivation, FeedbackEvent, TurnTrace, Stage2RunResult
 from stage2_gcr_plus.code_repair import CodeRepairEval
 from stage2_gcr_plus.runtime_v44 import GraphConstraintEval, ReasoningEval, Stage2RuntimeV44
 from mas_treesearch.evaluator import MultiFidelityEvaluator
@@ -69,6 +71,8 @@ def _runtime_stub() -> Stage2RuntimeV44:
     runtime._current_learn = False
     runtime._pending_policy_log_probs = []
     runtime._pending_policy_entropies = []
+    runtime._pending_edge_gate_records = []
+    runtime.v2_config = SimpleNamespace(edge_gate_aux_enabled=True, edge_gate_aux_loss_weight=1.0)
     return runtime
 
 
@@ -90,6 +94,71 @@ def _recovery_branch_entry(digest: str = "repair") -> dict:
         "trigger_verifier_snapshot": {"labels": ["challenge"]},
         "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
     }
+
+
+def test_simple_memory_composer_accepts_dense_qwen_embeddings():
+    composer = SimpleMemoryComposer(
+        MemoryComposerConfig(hidden_dim=8, latent_length=2, encoder_layers=1, dropout=0.0, max_input_length=4),
+        vocab_size=32,
+    )
+    input_embeddings = torch.randn(1, 3, 8)
+    attention_mask = torch.ones(1, 3, dtype=torch.bool)
+
+    latent = composer.forward_embeddings(input_embeddings, attention_mask)
+
+    assert latent.shape == (1, 2, 8)
+
+
+def test_lmpo_updates_from_auxiliary_loss_without_policy_logprob():
+    module = torch.nn.Linear(1, 1)
+    trainer = LMPOTrainer(module, LMPOConfig(learning_rate=0.01, enabled=True))
+    aux_loss = module(torch.ones(1, 1)).sum()
+
+    stats = trainer.update_from_policy([], 0.0, auxiliary_losses=[aux_loss])
+
+    assert stats["policy_updates"] == 1.0
+    assert "last_loss" in stats
+
+
+def test_edge_gate_auxiliary_loss_uses_active_downstream_feedback():
+    runtime = _runtime_stub()
+    gate = torch.tensor(0.2, requires_grad=True)
+    runtime._pending_edge_gate_records = [
+        {
+            "turn_index": 0,
+            "edge_id": "solver->sink",
+            "src": "solver",
+            "dst": "sink",
+            "active": True,
+            "gate": gate,
+        }
+    ]
+    state = ControllerState(0, "lean", "focus", 0.1, {}, "summary")
+    event = FeedbackEvent(
+        event_id="f1",
+        turn_index=0,
+        source_node_id="verifier",
+        target_node_id="sink",
+        source_kind="verifier",
+        event_type="pass",
+        confidence=0.9,
+        detail="sink output preserved",
+    )
+    result = Stage2RunResult(
+        final_answer="",
+        final_controller_state=state,
+        turn_traces=[TurnTrace(0, state, [], [], [event], {})],
+        memory_record_counts={},
+        signature="sig",
+    )
+
+    loss, stats = runtime._edge_gate_auxiliary_loss(result)
+
+    assert loss is not None
+    assert stats["edge_aux_terms"] == 1.0
+    assert stats["edge_aux_positive_labels"] == 1.0
+    loss.backward()
+    assert gate.grad is not None
 
 
 def _code_recovery_graph() -> UnionGraph:

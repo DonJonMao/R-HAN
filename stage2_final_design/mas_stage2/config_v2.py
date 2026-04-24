@@ -56,6 +56,10 @@ class Stage2V2Config:
     global_summary_max_nodes: int = 2
     latent_bridge_trainable: bool = True
 
+    # === Edge sparsity weak supervision ===
+    edge_gate_aux_enabled: bool = True
+    edge_gate_aux_loss_weight: float = 0.35
+
     # === Runtime ===
     fallback_to_v1: bool = False
 
