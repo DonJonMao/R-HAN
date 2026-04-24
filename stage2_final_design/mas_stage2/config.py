@@ -29,6 +29,8 @@ class Stage2GraphConfig:
     hard_prune_after_turn: int = 4
     min_incoming_edges: int = 1
     support_set_mode: str = "sparsemax"
+    edge_support_logit_temperature: float = 2.0
+    edge_support_probability_epsilon: float = 1e-4
     controller_role_boost: float = 0.18
     challenge_penalty: float = 0.22
     support_bonus: float = 0.16

@@ -9,6 +9,6 @@ gcr_text = str(GCR_ROOT)
 if GCR_ROOT.exists() and gcr_text not in sys.path:
     sys.path.insert(0, gcr_text)
 
-from stage2_gcr_plus.runtime_v41 import Stage2RuntimeV41
+from stage2_gcr_plus.config import Stage2V44Config
 
-__all__ = ["Stage2RuntimeV41"]
+__all__ = ["Stage2V44Config"]

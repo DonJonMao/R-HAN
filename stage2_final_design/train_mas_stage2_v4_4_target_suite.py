@@ -731,6 +731,7 @@ def main() -> None:
     parser.add_argument("--soft-prune-top-k", type=int, default=3)
     parser.add_argument("--soft-prune-threshold", type=float, default=0.38)
     parser.add_argument("--hard-prune-after-turn", type=int, default=4)
+    parser.add_argument("--edge-support-logit-temperature", type=float, default=2.0)
     parser.add_argument("--periodic-every", type=int, default=50)
     parser.add_argument("--periodic-size", type=int, default=20)
     parser.add_argument("--max-train", type=int, default=-1)
@@ -767,6 +768,7 @@ def main() -> None:
     stage2_config.graph.soft_prune_top_k = args.soft_prune_top_k
     stage2_config.graph.soft_prune_threshold = args.soft_prune_threshold
     stage2_config.graph.hard_prune_after_turn = args.hard_prune_after_turn
+    stage2_config.graph.edge_support_logit_temperature = args.edge_support_logit_temperature
 
     suite_report = _load_json_dict(output_root / "suite_report.json") if args.resume else None
     if suite_report is None:

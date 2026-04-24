@@ -368,6 +368,17 @@ class Stage2RuntimeV2(Stage2Runtime):
         tau = (cumulative[support_size - 1] - 1.0) / float(support_size)
         return torch.clamp(scores - tau, min=0.0)
 
+    def _edge_support_logits(self, gate_tensor: torch.Tensor) -> torch.Tensor:
+        gates = gate_tensor.reshape(-1)
+        if gates.numel() == 0:
+            return gates
+        eps = float(getattr(self.config.graph, "edge_support_probability_epsilon", 1e-4))
+        eps = min(0.49, max(1e-8, eps))
+        temperature = float(getattr(self.config.graph, "edge_support_logit_temperature", 1.0))
+        temperature = max(1e-6, temperature)
+        support_logits = torch.logit(torch.clamp(gates, eps, 1.0 - eps)) * temperature
+        return support_logits - torch.mean(support_logits)
+
     def _activate_edges_v2(
         self,
         graph: UnionGraph,
@@ -383,6 +394,7 @@ class Stage2RuntimeV2(Stage2Runtime):
         score_lookup: Dict[str, torch.Tensor] = {}
         feature_lookup: Dict[str, List[float]] = {}
         sparse_support_lookup: Dict[str, float] = {}
+        sparse_support_logit_lookup: Dict[str, float] = {}
         for edge in task_edges:
             src_state = prepared_states.get(edge.src)
             dst_state = prepared_states.get(edge.dst)
@@ -413,12 +425,15 @@ class Stage2RuntimeV2(Stage2Runtime):
             keep_k = self._turn_keep_k(len(items), turn_index=turn_index)
             score_tensor = torch.stack([item[0].reshape(()) for item in items])
             if support_set_mode == "sparsemax":
-                sparse_support = self._sparsemax_support(score_tensor)
+                support_logits = self._edge_support_logits(score_tensor)
+                sparse_support = self._sparsemax_support(support_logits)
                 chosen_indices = [index for index, weight in enumerate(sparse_support.tolist()) if float(weight) > 0.0]
                 if len(chosen_indices) < self.config.graph.min_incoming_edges:
                     chosen_indices = list(range(min(len(items), max(1, self.config.graph.min_incoming_edges))))
                 for index, weight in enumerate(sparse_support.tolist()):
-                    sparse_support_lookup[self._edge_id(items[index][1])] = float(weight)
+                    edge_id = self._edge_id(items[index][1])
+                    sparse_support_lookup[edge_id] = float(weight)
+                    sparse_support_logit_lookup[edge_id] = float(support_logits[index].detach().cpu().item())
             elif self._current_learn:
                 chosen_indices, log_prob, entropy = self._choose_indices(score_tensor, max_items=keep_k, sample=True)
                 if log_prob is not None:
@@ -451,6 +466,7 @@ class Stage2RuntimeV2(Stage2Runtime):
                         "edge_features": list(feature_lookup.get(edge_id, [])),
                         "graph_gate": score,
                         "support_set_mode": support_set_mode,
+                        "support_set_logit": float(sparse_support_logit_lookup.get(edge_id, 0.0)),
                         "support_set_weight": float(sparse_support_lookup.get(edge_id, 0.0)),
                         "turn_index": turn_index,
                     },
