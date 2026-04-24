@@ -208,13 +208,29 @@ class Stage2RuntimeV2(Stage2Runtime):
         records_by_id: Dict[str, MemoryRecord],
     ) -> torch.Tensor:
         raw_records = [records_by_id[item.record_id] for item in selected_items if item.record_id in records_by_id]
-        input_ids, attention_mask = tokenize_texts(
-            self._composer_texts(node, question_text, controller_state, raw_records),
-            vocab_size=self.v2_config.composer_vocab_size,
-            max_length=self.v2_config.composer_max_input_length,
-        )
-        latent = self.composer(input_ids, attention_mask).squeeze(0)
+        texts = self._composer_texts(node, question_text, controller_state, raw_records)
+        input_embeddings, attention_mask = self._composer_embedding_tensor(texts)
+        latent = self.composer.forward_embeddings(input_embeddings, attention_mask).squeeze(0)
         return latent
+
+    def _composer_embedding_tensor(self, texts: Sequence[str]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Embed composer text chunks via the shared Qwen3/vLLM embedder."""
+
+        max_items = max(1, int(self.v2_config.composer_max_input_length))
+        clipped_texts = [str(text) for text in texts[:max_items]] or ["no_private_memory"]
+        hidden_dim = self.v2_config.resolved_hidden_dim(self.embed_dim)
+        vectors: List[List[float]] = []
+        for text in clipped_texts:
+            vector = list(self.embedder.embed(text))
+            if len(vector) < hidden_dim:
+                vector = vector + [0.0] * (hidden_dim - len(vector))
+            elif len(vector) > hidden_dim:
+                vector = vector[:hidden_dim]
+            vectors.append(vector)
+        device = next(self.composer.parameters()).device
+        input_embeddings = torch.tensor(vectors, dtype=torch.float32, device=device).unsqueeze(0)
+        attention_mask = torch.ones(1, len(vectors), dtype=torch.bool, device=device)
+        return input_embeddings, attention_mask
 
     def _aggregate_v2_neighbors(
         self,

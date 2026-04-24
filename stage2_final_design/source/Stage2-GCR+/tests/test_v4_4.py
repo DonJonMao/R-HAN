@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import torch
+
+from mas_stage2.composer import MemoryComposerConfig, SimpleMemoryComposer
 from mas_stage2.types import ControllerState, EdgeActivation, TurnTrace, Stage2RunResult
 from stage2_gcr_plus.code_repair import CodeRepairEval
 from stage2_gcr_plus.runtime_v44 import GraphConstraintEval, ReasoningEval, Stage2RuntimeV44
@@ -73,6 +76,19 @@ def _recovery_branch_entry(digest: str = "repair") -> dict:
         "trigger_verifier_snapshot": {"labels": ["challenge"]},
         "provenance": [{"node_id": "solver", "turn_index": 0, "role": "solver"}],
     }
+
+
+def test_simple_memory_composer_accepts_dense_qwen_embeddings():
+    composer = SimpleMemoryComposer(
+        MemoryComposerConfig(hidden_dim=8, latent_length=2, encoder_layers=1, dropout=0.0, max_input_length=4),
+        vocab_size=32,
+    )
+    input_embeddings = torch.randn(1, 3, 8)
+    attention_mask = torch.ones(1, 3, dtype=torch.bool)
+
+    latent = composer.forward_embeddings(input_embeddings, attention_mask)
+
+    assert latent.shape == (1, 2, 8)
 
 
 def _code_recovery_graph() -> UnionGraph:
