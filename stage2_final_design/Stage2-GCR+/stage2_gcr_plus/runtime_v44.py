@@ -23,6 +23,7 @@ from .deductive_reasoning import (
     build_deductive_repair_prompt,
     dataset_name_from,
     deductive_dominates,
+    _has_deterministic_fatal,
     make_deductive_eval,
     parse_deductive_artifact,
     repair_operator_for_residual,
@@ -132,6 +133,10 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry.setdefault("deductive_final_consistent", False)
         entry.setdefault("deductive_repair_locus", "")
         entry.setdefault("deductive_parser_confidence", "")
+        entry.setdefault("deductive_final_source", "")
+        entry.setdefault("deductive_step_source", "")
+        entry.setdefault("deductive_contract_ok", False)
+        entry.setdefault("deductive_checked_equation_count", 0)
         entry.setdefault("deductive_fatal_count", 0)
         entry.setdefault("deductive_local_count", 0)
         entry.setdefault("deductive_repair_operator_type", "")
@@ -180,6 +185,10 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "deductive_final_consistent": bool(entry.get("deductive_final_consistent", False)),
                 "deductive_repair_locus": str(entry.get("deductive_repair_locus", "")),
                 "deductive_parser_confidence": str(entry.get("deductive_parser_confidence", "")),
+                "deductive_final_source": str(entry.get("deductive_final_source", "")),
+                "deductive_step_source": str(entry.get("deductive_step_source", "")),
+                "deductive_contract_ok": bool(entry.get("deductive_contract_ok", False)),
+                "deductive_checked_equation_count": int(entry.get("deductive_checked_equation_count", 0)),
                 "deductive_fatal_count": int(entry.get("deductive_fatal_count", 0)),
                 "deductive_local_count": int(entry.get("deductive_local_count", 0)),
                 "deductive_repair_operator_type": str(entry.get("deductive_repair_operator_type", "")),
@@ -1061,6 +1070,10 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry["deductive_final_consistent"] = bool(evaluation.residual.final_consistent)
         entry["deductive_repair_locus"] = str(evaluation.residual.repair_locus or "")
         entry["deductive_parser_confidence"] = str(evaluation.artifact.parser_confidence)
+        entry["deductive_final_source"] = str(evaluation.artifact.final_source)
+        entry["deductive_step_source"] = str(evaluation.artifact.step_source)
+        entry["deductive_contract_ok"] = bool(evaluation.artifact.contract_ok)
+        entry["deductive_checked_equation_count"] = int(evaluation.residual.checked_equation_count)
         entry["deductive_fatal_count"] = int(len(evaluation.residual.fatal))
         entry["deductive_local_count"] = int(len(evaluation.residual.local))
         entry["v4_4_class_key"] = repr(evaluation.class_key)
@@ -1201,17 +1214,20 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
     def _deductive_rank_key(self, entry: Dict[str, Any]) -> tuple:
         fatal_count = int(entry.get("deductive_fatal_count", 0))
         local_count = int(entry.get("deductive_local_count", 0))
-        verified_prefix = int(entry.get("deductive_verified_prefix_len", 0))
-        final_consistent = bool(entry.get("deductive_final_consistent", False))
-        has_answer = bool(entry.get("deductive_norm_answer"))
+        checked_equations = int(entry.get("deductive_checked_equation_count", 0))
+        final_source = str(entry.get("deductive_final_source") or "")
+        explicit_final = final_source in {"final_line", "gsm_hash", "boxed"}
 
         return (
             -fatal_count,
+            int(explicit_final),
+            int(bool(entry.get("deductive_contract_ok", False))),
+            int(bool(entry.get("deductive_final_consistent", False))),
             -local_count,
-            verified_prefix,
-            int(final_consistent),
-            int(has_answer),
-            int(entry.get("v4_4_sink_support", entry.get("sink_support", 0))),
+            checked_equations,
+            int(bool(entry.get("deductive_norm_answer"))),
+            int(bool(entry.get("stage1_anchor", False))),
+            str(entry.get("digest", "")),
         )
 
     def _collapse_deductive_classes(self, verified_entries: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1308,6 +1324,9 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "final_consistent": bool(target_eval.residual.final_consistent),
                 "fatal_count": int(len(target_eval.residual.fatal)),
                 "local_count": int(len(target_eval.residual.local)),
+                "final_source": str(target_eval.artifact.final_source),
+                "contract_ok": bool(target_eval.artifact.contract_ok),
+                "checked_equation_count": int(target_eval.residual.checked_equation_count),
             },
             "stable_loci": stable_loci,
             "unstable_locus": unstable_locus,
@@ -1391,6 +1410,85 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             return True
         return deductive_dominates(new_eval, old_eval)
 
+    def _deductive_has_deterministic_fatal(self, evaluation: DeductiveEval) -> bool:
+        return _has_deterministic_fatal(evaluation)
+
+    def _deductive_has_repairable_deterministic_fatal(self, evaluation: DeductiveEval) -> bool:
+        if not self._deductive_has_deterministic_fatal(evaluation):
+            return False
+        operator_type = repair_operator_for_residual(evaluation)
+        return bool(operator_type and operator_type != "deductive_transition_suffix_patch")
+
+    def _deductive_anchor_is_safe(self, evaluation: DeductiveEval) -> bool:
+        if not evaluation.artifact.normalized_final_answer:
+            return False
+        if self._deductive_has_deterministic_fatal(evaluation):
+            return False
+        return True
+
+    def _deductive_entry_is_explicit_clean_witness(self, entry: Dict[str, Any]) -> bool:
+        final_source = str(entry.get("deductive_final_source") or "")
+        if final_source not in {"final_line", "gsm_hash", "boxed"}:
+            return False
+        if not bool(entry.get("deductive_contract_ok", False)):
+            return False
+        if int(entry.get("deductive_fatal_count", 0)) != 0:
+            return False
+        if not bool(entry.get("deductive_final_consistent", False)):
+            return False
+        if int(entry.get("deductive_checked_equation_count", 0)) <= 0:
+            return False
+        return bool(entry.get("deductive_norm_answer"))
+
+    def _best_same_answer_deductive_candidate(
+        self,
+        collapsed: Sequence[Dict[str, Any]],
+        anchor_eval: DeductiveEval,
+    ) -> Optional[Dict[str, Any]]:
+        anchor_answer = str(anchor_eval.artifact.normalized_final_answer or "")
+        if not anchor_answer:
+            return None
+        for entry in collapsed:
+            if str(entry.get("deductive_norm_answer") or "") == anchor_answer:
+                return entry
+        return None
+
+    def _best_cross_answer_certificate(
+        self,
+        collapsed: Sequence[Dict[str, Any]],
+        anchor_eval: DeductiveEval,
+    ) -> Optional[Dict[str, Any]]:
+        anchor_answer = str(anchor_eval.artifact.normalized_final_answer or "")
+        classes: Dict[str, List[Dict[str, Any]]] = {}
+        for entry in collapsed:
+            answer = str(entry.get("deductive_norm_answer") or "")
+            if not answer:
+                continue
+            classes.setdefault(answer, []).append(entry)
+
+        anchor_class = classes.get(anchor_answer, [])
+        if any(self._deductive_entry_is_explicit_clean_witness(entry) for entry in anchor_class):
+            return None
+
+        best_candidate: Optional[Dict[str, Any]] = None
+        best_key: tuple = ()
+        for answer, entries in classes.items():
+            if answer == anchor_answer:
+                continue
+            witnesses = [entry for entry in entries if self._deductive_entry_is_explicit_clean_witness(entry)]
+            independent_origins = {
+                str(entry.get("origin_node_id") or entry.get("origin_role") or entry.get("digest") or "")
+                for entry in witnesses
+            }
+            if len(independent_origins) < 2:
+                continue
+            rep = sorted(witnesses, key=self._deductive_rank_key, reverse=True)[0]
+            key = self._deductive_rank_key(rep)
+            if best_candidate is None or key > best_key:
+                best_candidate = rep
+                best_key = key
+        return best_candidate
+
     def _deductive_anchor_or_best_non_regressive(
         self,
         anchor_entry: Optional[Dict[str, Any]],
@@ -1412,10 +1510,73 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         turn_traces: Sequence[TurnTrace] = (),
         budget_bucket: str = "normal",
     ) -> Tuple[Optional[Dict[str, Any]], str, Dict[str, Any]]:
+        repair_rounds_run = 0
+        repair_branch_count = 0
+        repair_accepted = 0
+        repair_rejected_by_dominance = 0
+        recovery_target_digest = ""
+        recovery_subgraph_node_count = 0
+        recovery_subgraph_edge_count = 0
+        anchor_repair_entries: List[Dict[str, Any]] = []
+        selected_anchor_repair: Optional[Dict[str, Any]] = None
+
+        if anchor_entry is not None:
+            anchor_eval_initial = self._evaluate_deductive_candidate(
+                question_text=question_text,
+                entry=anchor_entry,
+                dataset_profile=dataset_profile,
+                metadata=metadata,
+            )
+            self._attach_deductive_eval(anchor_entry, anchor_eval_initial)
+            if (
+                graph is not None
+                and self._deductive_has_repairable_deterministic_fatal(anchor_eval_initial)
+            ):
+                recovery_target_digest = str(anchor_entry.get("digest", ""))
+                recovery_context = self._build_deductive_recovery_context(
+                    graph,
+                    turn_traces,
+                    anchor_entry,
+                    anchor_eval_initial,
+                )
+                recovery_subgraph_node_count = len(recovery_context["recovery_subgraph_node_ids"])
+                recovery_subgraph_edge_count = len(recovery_context["recovery_subgraph_edge_ids"])
+                repair_rounds_run = 1
+                branches = self._generate_deductive_repair_branches(
+                    question_text=question_text,
+                    metadata=metadata,
+                    dataset_profile=dataset_profile,
+                    current_entry=anchor_entry,
+                    current_eval=anchor_eval_initial,
+                    repair_round=repair_rounds_run,
+                    recovery_context=recovery_context,
+                )
+                repair_branch_count += len(branches)
+                approved: List[Dict[str, Any]] = []
+                for branch_entry, branch_eval in branches:
+                    if not deductive_dominates(branch_eval, anchor_eval_initial):
+                        branch_entry["deductive_repair_rejected_by_dominance"] = True
+                        repair_rejected_by_dominance += 1
+                        continue
+                    if str(branch_entry.get("repair_operator_type", "")) == "deductive_transition_suffix_patch":
+                        branch_entry["deductive_repair_rejected_by_dominance"] = True
+                        repair_rejected_by_dominance += 1
+                        continue
+                    branch_entry["deductive_repair_accepted"] = True
+                    branch_entry["recovery_reinserted"] = True
+                    branch_entry["candidate_bank_source"] = "recovery_output"
+                    self._assert_recovery_entry_invariants(branch_entry)
+                    repair_accepted += 1
+                    approved.append(branch_entry)
+                if approved:
+                    approved.sort(key=self._deductive_rank_key, reverse=True)
+                    anchor_repair_entries.extend(approved)
+                    selected_anchor_repair = approved[0]
+
         verified = self._verify_deductive_pool(
             question_text,
             anchor_entry,
-            candidate_entries,
+            list(candidate_entries) + anchor_repair_entries,
             dataset_profile,
             metadata,
         )
@@ -1432,80 +1593,44 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         anchor_eval = self._deductive_eval_for_entry(anchor_verified)
         execution_mode = self._deductive_mode(anchor_eval=anchor_eval, collapsed=collapsed, budget_bucket=budget_bucket)
 
-        best = collapsed[0]
+        best = collapsed[0] if collapsed else anchor_verified
         selected_entry = best
-        selected_reason = "v4_4_deductive_no_anchor"
-        if anchor_verified is not None:
-            if self._deductive_is_safe_improvement(best, anchor_verified):
+        selected_reason = "v4_4_deductive_best_available" if best is not None else "v4_4_deductive_empty_bank"
+        if selected_anchor_repair is not None:
+            selected_entry = selected_anchor_repair
+            selected_reason = "v4_4_deductive_override_anchor_repair"
+        elif anchor_verified is not None and anchor_eval is not None:
+            if self._deductive_anchor_is_safe(anchor_eval):
+                same_answer = self._best_same_answer_deductive_candidate(collapsed, anchor_eval)
+                if (
+                    same_answer is not None
+                    and same_answer is not anchor_verified
+                    and self._deductive_is_safe_improvement(same_answer, anchor_verified)
+                ):
+                    selected_entry = same_answer
+                    selected_reason = "v4_4_deductive_same_answer_enrichment"
+                else:
+                    certified = self._best_cross_answer_certificate(collapsed, anchor_eval)
+                    if certified is not None:
+                        selected_entry = certified
+                        selected_reason = "v4_4_deductive_override_answer_class_certificate"
+                    else:
+                        selected_entry = anchor_verified
+                        selected_reason = "v4_4_deductive_preserve_anchor_no_deterministic_fatal"
+            elif best is not None and self._deductive_is_safe_improvement(best, anchor_verified):
+                selected_entry = best
                 selected_reason = "v4_4_deductive_override_residual_dominance"
             else:
                 selected_entry = anchor_verified
                 selected_reason = "v4_4_deductive_anchor_guard_preserve"
 
-        repair_rounds_run = 0
-        repair_branch_count = 0
-        repair_accepted = 0
-        repair_rejected_by_dominance = 0
-        recovery_target_digest = ""
-        recovery_subgraph_node_count = 0
-        recovery_subgraph_edge_count = 0
-
         selected_eval = self._deductive_eval_for_entry(selected_entry)
         if (
-            graph is not None
-            and execution_mode != "bypass"
-            and selected_eval is not None
-            and selected_eval.residual.residual_kind not in {"stable", None}
+            anchor_verified is not None
+            and selected_entry is not anchor_verified
+            and selected_reason != "v4_4_deductive_override_answer_class_certificate"
+            and not self._deductive_is_safe_improvement(selected_entry, anchor_verified)
         ):
-            recovery_target_digest = str(selected_entry.get("digest", ""))
-            recovery_context = self._build_deductive_recovery_context(
-                graph,
-                turn_traces,
-                selected_entry,
-                selected_eval,
-            )
-            recovery_subgraph_node_count = len(recovery_context["recovery_subgraph_node_ids"])
-            recovery_subgraph_edge_count = len(recovery_context["recovery_subgraph_edge_ids"])
-            repair_rounds_run = 1
-            branches = self._generate_deductive_repair_branches(
-                question_text=question_text,
-                metadata=metadata,
-                dataset_profile=dataset_profile,
-                current_entry=selected_entry,
-                current_eval=selected_eval,
-                repair_round=repair_rounds_run,
-                recovery_context=recovery_context,
-            )
-            repair_branch_count += len(branches)
-            approved: List[Dict[str, Any]] = []
-            for branch_entry, branch_eval in branches:
-                if not deductive_dominates(branch_eval, selected_eval):
-                    branch_entry["deductive_repair_rejected_by_dominance"] = True
-                    repair_rejected_by_dominance += 1
-                    continue
-                if str(branch_entry.get("repair_operator_type", "")) == "deductive_transition_suffix_patch" and len(branch_eval.residual.fatal) >= len(selected_eval.residual.fatal):
-                    branch_entry["deductive_repair_rejected_by_dominance"] = True
-                    repair_rejected_by_dominance += 1
-                    continue
-                branch_entry["deductive_repair_accepted"] = True
-                branch_entry["recovery_reinserted"] = True
-                branch_entry["candidate_bank_source"] = "recovery_output"
-                self._assert_recovery_entry_invariants(branch_entry)
-                repair_accepted += 1
-                approved.append(branch_entry)
-            if approved:
-                verified.extend(approved)
-                collapsed = self._collapse_deductive_classes(verified)
-                best_after_repair = collapsed[0]
-                if anchor_verified is None or self._deductive_is_safe_improvement(best_after_repair, anchor_verified):
-                    selected_entry = best_after_repair
-                    selected_reason = "v4_4_deductive_reinsert_recollapse"
-                else:
-                    selected_entry = anchor_verified
-                    selected_reason = "v4_4_deductive_anchor_guard_preserve"
-
-        selected_eval = self._deductive_eval_for_entry(selected_entry)
-        if anchor_verified is not None and selected_entry is not anchor_verified and not self._deductive_is_safe_improvement(selected_entry, anchor_verified):
             selected_entry = anchor_verified
             selected_eval = self._deductive_eval_for_entry(selected_entry)
             selected_reason = "v4_4_deductive_anchor_guard_preserve"
@@ -1533,6 +1658,9 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             "deductive_selected_first_bad_step": (selected_eval.residual.first_bad_step if selected_eval else None),
             "deductive_selected_verified_prefix_len": int(selected_eval.residual.verified_prefix_len if selected_eval else 0),
             "deductive_selected_final_consistent": bool(selected_eval.residual.final_consistent if selected_eval else False),
+            "deductive_selected_final_source": str(selected_eval.artifact.final_source if selected_eval else ""),
+            "deductive_selected_contract_ok": bool(selected_eval.artifact.contract_ok if selected_eval else False),
+            "deductive_selected_checked_equation_count": int(selected_eval.residual.checked_equation_count if selected_eval else 0),
             "deductive_repair_operator_type": str(selected_entry.get("deductive_repair_operator_type", selected_entry.get("repair_operator_type", ""))),
             "deductive_repair_accepted": bool(selected_entry.get("deductive_repair_accepted", False)),
             "deductive_repair_rejected_by_dominance": bool(repair_rejected_by_dominance > 0),
@@ -1553,6 +1681,9 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                     "verified_prefix_len": int(item.get("deductive_verified_prefix_len", 0)),
                     "final_consistent": bool(item.get("deductive_final_consistent", False)),
                     "parser_confidence": str(item.get("deductive_parser_confidence", "")),
+                    "final_source": str(item.get("deductive_final_source", "")),
+                    "contract_ok": bool(item.get("deductive_contract_ok", False)),
+                    "checked_equation_count": int(item.get("deductive_checked_equation_count", 0)),
                 }
                 for item in collapsed[: self.config.max_logged_candidates]
             ],
@@ -1565,6 +1696,9 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                     "v4_4_stage1_anchor_first_bad_step": anchor_eval.residual.first_bad_step,
                     "v4_4_stage1_anchor_verified_prefix_len": int(anchor_eval.residual.verified_prefix_len),
                     "v4_4_stage1_anchor_final_consistent": bool(anchor_eval.residual.final_consistent),
+                    "v4_4_stage1_anchor_final_source": str(anchor_eval.artifact.final_source),
+                    "v4_4_stage1_anchor_contract_ok": bool(anchor_eval.artifact.contract_ok),
+                    "v4_4_stage1_anchor_checked_equation_count": int(anchor_eval.residual.checked_equation_count),
                 }
             )
         return selected_entry, selected_reason, extra

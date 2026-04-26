@@ -31,6 +31,9 @@ class DeductiveArtifact:
     derivation_signature: str
     stable_prefix_signature: str | None
     parser_confidence: str
+    final_source: str
+    step_source: str
+    contract_ok: bool
 
 
 @dataclass
@@ -44,6 +47,7 @@ class DeductiveResidual:
     repair_locus: str | None
     final_consistent: bool
     residual_signature: str
+    checked_equation_count: int = 0
 
 
 @dataclass
@@ -114,30 +118,47 @@ def _extract_boxed_expression(text: str) -> str | None:
     return None
 
 
-def _extract_final_answer(text: str, dataset_name: str) -> str | None:
+_EXPLICIT_FINAL_RE = re.compile(
+    r"^\s*(?:FINAL|Final|final|答案)\s*[:：]\s*(.+?)\s*$",
+    flags=re.MULTILINE,
+)
+
+_GSM_HASH_RE = re.compile(r"####\s*([^\n]+)")
+
+_ANSWER_LINE_RE = re.compile(
+    r"^\s*(?:answer|Answer|答案)\s*[:：-]\s*(.+?)\s*$",
+    flags=re.MULTILINE,
+)
+
+_ANSWER_ONLY_RE = re.compile(
+    r"^\s*-?\d+(?:,\d{3})*(?:\.\d+)?(?:\s*/\s*-?\d+(?:\.\d+)?)?\s*$"
+)
+
+
+def _extract_final_answer_with_source(text: str, dataset_name: str) -> tuple[str | None, str]:
     cleaned = _strip_hidden_reasoning(text)
     if dataset_name == "math":
         boxed = _extract_boxed_expression(cleaned)
         if boxed:
-            return boxed
-    final_matches = re.findall(r"^\s*(?:FINAL|Final|final|答案)\s*[:：]\s*(.+?)\s*$", cleaned, flags=re.MULTILINE)
+            return boxed, "boxed"
+    final_matches = _EXPLICIT_FINAL_RE.findall(cleaned)
     if final_matches:
-        return final_matches[-1].strip().strip("$").strip()
-    gsm_matches = re.findall(r"####\s*([^\n]+)", cleaned)
-    if gsm_matches:
-        return gsm_matches[-1].strip()
-    answer_matches = re.findall(r"(?:answer|答案)\s*[:：-]?\s*([^\n]+)", cleaned, flags=re.IGNORECASE)
-    if answer_matches:
-        return answer_matches[-1].strip().strip("$").strip()
+        return final_matches[-1].strip().strip("$").strip(), "final_line"
     if dataset_name == "gsm8k":
-        numeric_matches = re.findall(r"-?\d+(?:,\d{3})*(?:\.\d+)?(?:\s*/\s*-?\d+(?:\.\d+)?)?", cleaned)
-        if numeric_matches:
-            return numeric_matches[-1].strip()
+        gsm_matches = _GSM_HASH_RE.findall(cleaned)
+        if gsm_matches:
+            return gsm_matches[-1].strip(), "gsm_hash"
+        answer_matches = _ANSWER_LINE_RE.findall(cleaned)
+        if answer_matches:
+            return answer_matches[-1].strip().strip("$").strip(), "answer_line"
+        if _ANSWER_ONLY_RE.fullmatch(cleaned.strip()):
+            return cleaned.strip(), "answer_only"
+        return None, "none"
     if dataset_name == "math":
         lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
         if lines:
-            return lines[-1].strip().strip("$").strip()
-    return None
+            return lines[-1].strip().strip("$").strip(), "last_line"
+    return None, "none"
 
 
 def normalize_numeric_answer(value: str | None) -> str | None:
@@ -207,7 +228,13 @@ def _extract_equations(text: str) -> tuple[str, ...]:
             continue
         candidate = chunk.strip()
         candidate = re.sub(r"^[A-Za-z\s,:-]*", "", candidate).strip()
+        if candidate.startswith("="):
+            candidate = candidate.lstrip("= ").strip()
         candidate = candidate.strip(".。; ")
+        if candidate.count("=") >= 2:
+            left, rest = candidate.split("=", 1)
+            if _safe_arithmetic_eval(left) is None:
+                candidate = rest.strip()
         if "=" in candidate:
             equations.append(candidate)
     return tuple(equations)
@@ -229,8 +256,11 @@ def _operation_kind(text: str) -> str | None:
     return None
 
 
-def _parse_numbered_steps(text: str, dataset_name: str) -> tuple[DeductiveStep, ...]:
+def _parse_numbered_steps_with_source(text: str, dataset_name: str) -> tuple[tuple[DeductiveStep, ...], str]:
     cleaned = _strip_hidden_reasoning(text)
+    has_solution_header = bool(
+        re.search(r"^\s*SOLUTION\s*[:：]?\s*$", cleaned, flags=re.MULTILINE | re.IGNORECASE)
+    )
     matches = list(re.finditer(r"(?m)^\s*(\d+)[\.\)]\s+(.+?)\s*$", cleaned))
     steps: List[DeductiveStep] = []
     for match in matches:
@@ -248,7 +278,7 @@ def _parse_numbered_steps(text: str, dataset_name: str) -> tuple[DeductiveStep, 
             )
         )
     if steps:
-        return tuple(steps)
+        return tuple(steps), "solution_numbered" if has_solution_header else "numbered"
 
     fallback_lines = []
     for line in cleaned.splitlines():
@@ -271,20 +301,31 @@ def _parse_numbered_steps(text: str, dataset_name: str) -> tuple[DeductiveStep, 
                 span=None,
             )
         )
-    return tuple(steps)
+    if steps:
+        return tuple(steps), "fallback_lines"
+    return tuple(), "none"
 
 
 def parse_deductive_artifact(text: str, dataset_name: str) -> DeductiveArtifact:
     dataset = str(dataset_name or "").strip().lower()
     raw_text = _strip_hidden_reasoning(text)
-    final_answer = _extract_final_answer(raw_text, dataset)
+    final_answer, final_source = _extract_final_answer_with_source(raw_text, dataset)
     normalized_final_answer = _normalize_final_answer(final_answer, dataset)
-    steps = _parse_numbered_steps(raw_text, dataset)
+    steps, step_source = _parse_numbered_steps_with_source(raw_text, dataset)
+    has_solution_header = bool(
+        re.search(r"^\s*SOLUTION\s*[:：]?\s*$", raw_text, flags=re.MULTILINE | re.IGNORECASE)
+    )
     has_equation = any(step.equations for step in steps)
-    if final_answer and steps and has_equation:
+    explicit_final = final_source in {"final_line", "gsm_hash", "boxed"}
+    contract_ok = bool(has_solution_header and explicit_final and steps)
+    if contract_ok and has_equation:
         confidence = "high"
-    elif final_answer and (steps or has_equation):
+    elif explicit_final and steps and has_equation:
         confidence = "medium"
+    elif final_source == "answer_only":
+        confidence = "answer_only"
+    elif normalized_final_answer:
+        confidence = "low"
     else:
         confidence = "low"
     derivation_parts = [step.text for step in steps] or [_strip_final_lines(raw_text)]
@@ -297,6 +338,9 @@ def parse_deductive_artifact(text: str, dataset_name: str) -> DeductiveArtifact:
         derivation_signature=_signature(derivation_parts),
         stable_prefix_signature=None,
         parser_confidence=confidence,
+        final_source=final_source,
+        step_source=step_source,
+        contract_ok=contract_ok,
     )
 
 
@@ -402,9 +446,10 @@ def _verify_gsm8k_artifact(question_text: str, artifact: DeductiveArtifact) -> D
     repair_locus: str | None = None
     final_consistent = bool(artifact.normalized_final_answer)
     last_verified_value: str | None = None
+    checked_equation_count = 0
 
     if artifact.normalized_final_answer:
-        support.append("final_answer_present")
+        support.append(f"final_source:{artifact.final_source}")
     else:
         fatal.append("missing_final_answer")
         residual_kind = "missing_final_answer"
@@ -412,17 +457,19 @@ def _verify_gsm8k_artifact(question_text: str, artifact: DeductiveArtifact) -> D
         final_consistent = False
 
     for step_index, step in enumerate(artifact.steps):
+        step_checked = False
         mismatch = False
         for equation in step.equations:
             values = _equation_numeric_values(equation)
             if values is None:
                 continue
+            step_checked = True
+            checked_equation_count += 1
             left_value, right_value = values
             if abs(left_value - right_value) > 1e-6:
                 mismatch = True
                 break
             last_verified_value = _format_number(right_value)
-            support.append("arithmetic_checked")
         if mismatch:
             fatal.append("arithmetic_mismatch")
             residual_kind = residual_kind or "arithmetic_mismatch"
@@ -431,7 +478,11 @@ def _verify_gsm8k_artifact(question_text: str, artifact: DeductiveArtifact) -> D
             verified_prefix_len = step_index
             final_consistent = False
             break
-        verified_prefix_len = step_index + 1
+        if step_checked:
+            support.append("arithmetic_checked")
+            verified_prefix_len = step_index + 1
+        elif step.operation_kind or step.values:
+            local.append("semantic_unverified_step")
 
     if not fatal and artifact.normalized_final_answer and last_verified_value is not None:
         if normalize_numeric_answer(last_verified_value) != artifact.normalized_final_answer:
@@ -442,6 +493,18 @@ def _verify_gsm8k_artifact(question_text: str, artifact: DeductiveArtifact) -> D
         else:
             support.append("final_matches_derivation")
             final_consistent = True
+
+    if artifact.final_source == "answer_only":
+        local.append("answer_only_no_derivation")
+
+    if artifact.final_source == "none":
+        fatal.append("missing_final_answer")
+        residual_kind = residual_kind or "missing_final_answer"
+        repair_locus = repair_locus or "final"
+        final_consistent = False
+
+    if not fatal and checked_equation_count == 0 and artifact.final_source != "answer_only" and artifact.steps:
+        local.append("no_checked_equations")
 
     if not fatal and artifact.steps:
         question_values = _numbers_for_overlap(question_text)
@@ -468,6 +531,7 @@ def _verify_gsm8k_artifact(question_text: str, artifact: DeductiveArtifact) -> D
             str(first_bad_step),
             str(verified_prefix_len),
             str(final_consistent),
+            str(checked_equation_count),
             residual_kind,
             repair_locus or "",
         ]
@@ -482,6 +546,7 @@ def _verify_gsm8k_artifact(question_text: str, artifact: DeductiveArtifact) -> D
         repair_locus=repair_locus,
         final_consistent=final_consistent,
         residual_signature=residual_signature,
+        checked_equation_count=checked_equation_count,
     )
 
 
@@ -520,9 +585,10 @@ def _verify_math_artifact(question_text: str, artifact: DeductiveArtifact) -> De
     final_consistent = bool(artifact.normalized_final_answer)
     saw_parseable_equation = False
     last_expression: str | None = None
+    checked_equation_count = 0
 
-    has_boxed = bool(_extract_boxed_expression(artifact.raw_text))
-    has_final_line = bool(re.search(r"^\s*(?:FINAL|Final|final)\s*[:：]", artifact.raw_text, flags=re.MULTILINE))
+    has_boxed = artifact.final_source == "boxed"
+    has_final_line = artifact.final_source == "final_line"
     if not artifact.final_answer:
         fatal.append("missing_boxed_answer")
         residual_kind = "missing_boxed_answer"
@@ -547,6 +613,7 @@ def _verify_math_artifact(question_text: str, artifact: DeductiveArtifact) -> De
             numeric_values = _equation_numeric_values(equation)
             if numeric_values is not None:
                 saw_parseable_equation = True
+                checked_equation_count += 1
                 if abs(numeric_values[0] - numeric_values[1]) > 1e-6:
                     fatal.append("parseable_algebra_mismatch")
                     fatal.append("algebra_non_equivalence")
@@ -559,6 +626,7 @@ def _verify_math_artifact(question_text: str, artifact: DeductiveArtifact) -> De
                 local.append("semantic_unverified")
                 continue
             saw_parseable_equation = True
+            checked_equation_count += 1
             if not equivalent:
                 fatal.append("parseable_algebra_mismatch")
                 fatal.append("algebra_non_equivalence")
@@ -608,6 +676,7 @@ def _verify_math_artifact(question_text: str, artifact: DeductiveArtifact) -> De
             str(first_bad_step),
             str(verified_prefix_len),
             str(final_consistent),
+            str(checked_equation_count),
             residual_kind,
             repair_locus or "",
         ]
@@ -622,6 +691,7 @@ def _verify_math_artifact(question_text: str, artifact: DeductiveArtifact) -> De
         repair_locus=repair_locus,
         final_consistent=final_consistent,
         residual_signature=residual_signature,
+        checked_equation_count=checked_equation_count,
     )
 
 
@@ -655,17 +725,20 @@ def deductive_class_key(eval: DeductiveEval) -> tuple:
         eval.artifact.normalized_final_answer,
         eval.residual.residual_kind,
         eval.residual.first_bad_step,
-        eval.residual.verified_prefix_len,
-        eval.artifact.stable_prefix_signature,
+        eval.artifact.final_source,
+        bool(eval.artifact.contract_ok),
     )
 
 
 def _rank_key(artifact: DeductiveArtifact, residual: DeductiveResidual) -> tuple:
+    explicit_final = artifact.final_source in {"final_line", "gsm_hash", "boxed"}
     return (
         -len(residual.fatal),
-        -len(residual.local),
-        int(residual.verified_prefix_len),
+        int(explicit_final),
+        int(artifact.contract_ok),
         int(residual.final_consistent),
+        -len(residual.local),
+        int(residual.checked_equation_count),
         int(bool(artifact.normalized_final_answer)),
     )
 
@@ -700,15 +773,57 @@ def introduces_earlier_error(new: DeductiveEval, old: DeductiveEval) -> bool:
     return int(new.residual.verified_prefix_len) < int(old.residual.verified_prefix_len)
 
 
-def deductive_dominates(new: DeductiveEval, old: DeductiveEval) -> bool:
-    if len(new.residual.fatal) < len(old.residual.fatal):
-        return True
+_DETERMINISTIC_FATALS = {
+    "arithmetic_mismatch",
+    "final_inconsistent_with_derivation",
+    "final_inconsistent_with_last_expression",
+    "parseable_algebra_mismatch",
+    "algebra_non_equivalence",
+    "missing_final_answer",
+    "missing_boxed_answer",
+    "empty_math_expression",
+}
 
-    if (
-        len(new.residual.fatal) == len(old.residual.fatal)
-        and new.residual.verified_prefix_len > old.residual.verified_prefix_len
-        and not introduces_earlier_error(new, old)
-    ):
+
+def _has_deterministic_fatal(eval: DeductiveEval) -> bool:
+    return any(item in _DETERMINISTIC_FATALS for item in eval.residual.fatal) or (
+        eval.residual.residual_kind in _DETERMINISTIC_FATALS
+    )
+
+
+def _same_answer(new: DeductiveEval, old: DeductiveEval) -> bool:
+    return bool(new.artifact.normalized_final_answer) and (
+        new.artifact.normalized_final_answer == old.artifact.normalized_final_answer
+    )
+
+
+def _explicit_final(eval: DeductiveEval) -> bool:
+    return eval.artifact.final_source in {"final_line", "gsm_hash", "boxed"}
+
+
+def deductive_dominates(new: DeductiveEval, old: DeductiveEval) -> bool:
+    same_answer = _same_answer(new, old)
+    old_has_det_fatal = _has_deterministic_fatal(old)
+
+    if same_answer:
+        if len(new.residual.fatal) < len(old.residual.fatal):
+            return True
+        if (
+            len(new.residual.fatal) == len(old.residual.fatal)
+            and new.residual.final_consistent
+            and not introduces_earlier_error(new, old)
+            and new.residual.checked_equation_count > old.residual.checked_equation_count
+        ):
+            return True
+        return False
+
+    if not old_has_det_fatal:
+        return False
+
+    if not _explicit_final(new):
+        return False
+
+    if len(new.residual.fatal) < len(old.residual.fatal) and not introduces_earlier_error(new, old):
         return True
 
     if (
