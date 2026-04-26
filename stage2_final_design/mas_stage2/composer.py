@@ -28,6 +28,47 @@ def _stable_token_id(token: str, vocab_size: int) -> int:
     return int(digest[:8], 16) % max(1, vocab_size - 1) + 1
 
 
+def _split_pieces(text: str) -> List[str]:
+    return re.findall(r"\w+|[^\w\s]", str(text))
+
+
+def _tag_composer_pieces(text: str) -> List[tuple[str, bool]]:
+    """Return ``(piece, use_semantic_prior)`` pairs for composer text.
+
+    Structural fields stay purely discrete/trainable. Natural-language or code
+    payload gets an optional Qwen embedding residual at the same piece
+    granularity as the hash-token path.
+    """
+
+    raw = str(text).strip()
+    if not raw:
+        return [("<empty>", False)]
+    lowered = raw.lower()
+    if lowered in {"no_private_memory"}:
+        return [(piece, False) for piece in _split_pieces(raw)]
+    for prefix in ("role=", "turn="):
+        if lowered.startswith(prefix):
+            return [(piece, False) for piece in _split_pieces(raw)]
+    for prefix in ("question=", "global_state="):
+        if lowered.startswith(prefix):
+            head = raw[: len(prefix)]
+            payload = raw[len(prefix) :]
+            return (
+                [(piece, False) for piece in _split_pieces(head)]
+                + [(piece, True) for piece in _split_pieces(payload)]
+            )
+    if raw.startswith("["):
+        end = raw.find("]")
+        if end >= 0:
+            head = raw[: end + 1]
+            payload = raw[end + 1 :]
+            return (
+                [(piece, False) for piece in _split_pieces(head)]
+                + [(piece, True) for piece in _split_pieces(payload)]
+            )
+    return [(piece, True) for piece in _split_pieces(raw)]
+
+
 def tokenize_texts(
     texts: Sequence[str],
     *,
@@ -39,20 +80,50 @@ def tokenize_texts(
     这里不依赖外部 tokenizer，便于在当前工程里快速验证 composer 闭环。
     """
 
+    input_ids, attention_mask, _, _ = tokenize_texts_with_semantic_mask(
+        texts,
+        vocab_size=vocab_size,
+        max_length=max_length,
+    )
+    return input_ids, attention_mask
+
+
+def tokenize_texts_with_semantic_mask(
+    texts: Sequence[str],
+    *,
+    vocab_size: int,
+    max_length: int,
+) -> tuple[torch.Tensor, torch.Tensor, List[str], torch.Tensor]:
+    """Hash composer text into ids while marking payload pieces for Qwen prior."""
+
     tokens: List[int] = []
+    pieces_for_prior: List[str] = []
+    semantic_flags: List[bool] = []
     for text in texts:
-        pieces = re.findall(r"\w+|[^\w\s]", str(text).lower())
-        tokens.extend(_stable_token_id(piece, vocab_size) for piece in pieces)
+        for piece, use_semantic_prior in _tag_composer_pieces(text):
+            normalized_piece = piece.lower()
+            tokens.append(_stable_token_id(normalized_piece, vocab_size))
+            pieces_for_prior.append(piece)
+            semantic_flags.append(bool(use_semantic_prior))
+            if len(tokens) >= max_length:
+                break
         if len(tokens) >= max_length:
             break
     if not tokens:
         tokens = [_stable_token_id("<empty>", vocab_size)]
+        pieces_for_prior = ["<empty>"]
+        semantic_flags = [False]
     tokens = tokens[:max_length]
+    pieces_for_prior = pieces_for_prior[:max_length]
+    semantic_flags = semantic_flags[:max_length]
     input_ids = torch.zeros(1, max_length, dtype=torch.long)
     attention_mask = torch.zeros(1, max_length, dtype=torch.bool)
+    semantic_mask = torch.zeros(1, max_length, dtype=torch.bool)
     input_ids[0, : len(tokens)] = torch.tensor(tokens, dtype=torch.long)
     attention_mask[0, : len(tokens)] = True
-    return input_ids, attention_mask
+    semantic_mask[0, : len(tokens)] = torch.tensor(semantic_flags, dtype=torch.bool)
+    return input_ids, attention_mask, pieces_for_prior, semantic_mask
+
 
 
 class MemoryComposer(nn.Module):
@@ -194,6 +265,9 @@ class SimpleMemoryComposer(nn.Module):
 
         # Simple embedding
         self.embedding = nn.Embedding(vocab_size, config.hidden_dim)
+        self.semantic_projection = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
+        nn.init.eye_(self.semantic_projection.weight)
+        self.semantic_alpha = nn.Parameter(torch.tensor(0.05, dtype=torch.float32))
 
         # Positional encoding
         self.pos_encoding = nn.Parameter(
@@ -232,13 +306,7 @@ class SimpleMemoryComposer(nn.Module):
         input_embeddings: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Compress already-embedded text chunks into latent memory.
-
-        The production runtime feeds this path with cached Qwen3/vLLM
-        embeddings, so the composer no longer needs hash-token IDs on the hot
-        path.  The token-id ``forward`` method is retained for old checkpoints
-        and unit tests that still exercise the standalone composer.
-        """
+        """Compress already-embedded inputs into latent memory."""
 
         if input_embeddings.dim() != 3:
             raise ValueError("input_embeddings must have shape (batch, sequence, hidden_dim)")
@@ -268,6 +336,40 @@ class SimpleMemoryComposer(nn.Module):
         )
         return self.norm(latent_memory + queries)
 
+    def _apply_semantic_prior(
+        self,
+        token_embeddings: torch.Tensor,
+        semantic_prior: Optional[torch.Tensor],
+        semantic_mask: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        if semantic_prior is None:
+            return token_embeddings
+        if semantic_prior.dim() != 3:
+            raise ValueError("semantic_prior must have shape (batch, sequence, hidden_dim)")
+        if semantic_prior.size(0) != token_embeddings.size(0):
+            raise ValueError("semantic_prior batch size must match input_ids batch size")
+        if semantic_prior.size(1) < token_embeddings.size(1):
+            raise ValueError("semantic_prior sequence length must cover input_ids sequence length")
+        if semantic_prior.size(-1) != self.config.hidden_dim:
+            raise ValueError(
+                f"semantic prior dim {semantic_prior.size(-1)} does not match composer hidden_dim {self.config.hidden_dim}"
+            )
+
+        seq_len = token_embeddings.size(1)
+        prior = semantic_prior[:, :seq_len, :].to(device=token_embeddings.device, dtype=token_embeddings.dtype)
+        if semantic_mask is None:
+            mask = torch.ones(
+                token_embeddings.size(0),
+                seq_len,
+                1,
+                dtype=token_embeddings.dtype,
+                device=token_embeddings.device,
+            )
+        else:
+            mask = semantic_mask[:, :seq_len].to(device=token_embeddings.device, dtype=token_embeddings.dtype).unsqueeze(-1)
+        projected_prior = self.semantic_projection(prior)
+        return token_embeddings + self.semantic_alpha.to(dtype=token_embeddings.dtype, device=token_embeddings.device) * projected_prior * mask
+
     def forward_embeddings(
         self,
         input_embeddings: torch.Tensor,
@@ -280,17 +382,22 @@ class SimpleMemoryComposer(nn.Module):
     def forward(
         self,
         input_ids: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None
+        attention_mask: Optional[torch.Tensor] = None,
+        semantic_prior: Optional[torch.Tensor] = None,
+        semantic_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Args:
             input_ids: (B, L) token ids
             attention_mask: (B, L) attention mask
+            semantic_prior: optional token/piece-level Qwen prior, same hidden dim
+            semantic_mask: marks payload pieces that should receive the prior
 
         Returns:
             latent_memory: (B, L', D)
         """
         x = self.embedding(input_ids)  # (B, L, D)
+        x = self._apply_semantic_prior(x, semantic_prior, semantic_mask)
         return self._compose_from_embeddings(x, attention_mask)
 
     def freeze(self):

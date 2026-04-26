@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import torch
 
-from mas_stage2.composer import MemoryComposerConfig, SimpleMemoryComposer
+from mas_stage2.composer import MemoryComposerConfig, SimpleMemoryComposer, tokenize_texts, tokenize_texts_with_semantic_mask
 from mas_stage2.lmpo import LMPOConfig, LMPOTrainer
 from mas_stage2.types import ControllerState, EdgeActivation, FeedbackEvent, TurnTrace, Stage2RunResult
 from stage2_gcr_plus.code_repair import CodeRepairEval
@@ -107,6 +107,61 @@ def test_simple_memory_composer_accepts_dense_qwen_embeddings():
     latent = composer.forward_embeddings(input_embeddings, attention_mask)
 
     assert latent.shape == (1, 2, 8)
+
+
+def test_composer_semantic_mask_preserves_hash_ids_and_structure_tokens():
+    texts = [
+        "role=solver",
+        "question=Return the sorted list.",
+        "turn=1",
+        "global_state=checker asks for a boundary fix",
+        "[slot=class_summary|gate=0.250|support=0.800|feedback|pass] Use sorted(values) before returning.",
+    ]
+    input_ids, attention_mask = tokenize_texts(texts, vocab_size=128, max_length=64)
+    rich_ids, rich_mask, pieces, semantic_mask = tokenize_texts_with_semantic_mask(
+        texts,
+        vocab_size=128,
+        max_length=64,
+    )
+
+    assert torch.equal(rich_ids, input_ids)
+    assert torch.equal(rich_mask, attention_mask)
+    assert len(pieces) > len(texts)
+
+    real_len = int(attention_mask.sum().item())
+    flags = list(zip([piece.lower() for piece in pieces], semantic_mask[0, :real_len].tolist()))
+    assert ("role", False) in flags
+    assert ("solver", False) in flags
+    assert ("question", False) in flags
+    assert ("return", True) in flags
+    assert ("global_state", False) in flags
+    assert ("checker", True) in flags
+    assert ("slot", False) in flags
+    assert ("class_summary", False) in flags
+    assert ("gate", False) in flags
+    assert ("feedback", False) in flags
+    assert ("use", True) in flags
+    assert ("sorted", True) in flags
+
+
+def test_simple_memory_composer_adds_trainable_token_level_semantic_prior():
+    composer = SimpleMemoryComposer(
+        MemoryComposerConfig(hidden_dim=8, latent_length=2, encoder_layers=1, dropout=0.0, max_input_length=4),
+        vocab_size=32,
+    )
+    input_ids = torch.tensor([[1, 2, 3, 4]], dtype=torch.long)
+    attention_mask = torch.ones(1, 4, dtype=torch.bool)
+    semantic_prior = torch.randn(1, 4, 8)
+    semantic_mask = torch.tensor([[False, True, True, False]], dtype=torch.bool)
+
+    latent = composer(input_ids, attention_mask, semantic_prior=semantic_prior, semantic_mask=semantic_mask)
+    loss = latent.sum()
+    loss.backward()
+
+    assert latent.shape == (1, 2, 8)
+    assert composer.embedding.weight.grad is not None
+    assert composer.semantic_projection.weight.grad is not None
+    assert composer.semantic_alpha.grad is not None
 
 
 def test_lmpo_updates_from_auxiliary_loss_without_policy_logprob():

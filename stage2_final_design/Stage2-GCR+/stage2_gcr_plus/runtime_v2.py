@@ -32,7 +32,7 @@ try:
     import torch.nn as nn
     import torch.nn.functional as F
 
-    from mas_stage2.composer import SimpleMemoryComposer, tokenize_texts
+    from mas_stage2.composer import SimpleMemoryComposer, tokenize_texts_with_semantic_mask
     from mas_stage2.global_node import GlobalContextNode
     from mas_stage2.gnn import LightweightGNN
     from mas_stage2.lmpo import LMPOTrainer
@@ -66,7 +66,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - environment-specific fa
     nn = _TorchUnavailableModule()
     F = _TorchUnavailableFunctional()
     SimpleMemoryComposer = _TorchUnavailableObject
-    tokenize_texts = _tokenize_texts_unavailable
+    tokenize_texts_with_semantic_mask = _tokenize_texts_unavailable
     GlobalContextNode = _TorchUnavailableObject
     LightweightGNN = _TorchUnavailableObject
     LMPOTrainer = _TorchUnavailableObject
@@ -120,6 +120,7 @@ class Stage2RuntimeV2(Stage2Runtime):
         self._pending_policy_log_probs: List[torch.Tensor] = []
         self._pending_policy_entropies: List[torch.Tensor] = []
         self._pending_edge_gate_records: List[Dict[str, object]] = []
+        self._composer_piece_embedding_cache: Dict[str, List[float]] = {}
         self._current_learn = False
 
     def state_dict(self) -> dict:
@@ -219,28 +220,54 @@ class Stage2RuntimeV2(Stage2Runtime):
         records_by_id: Dict[str, MemoryRecord],
     ) -> torch.Tensor:
         texts = self._composer_texts(node, question_text, controller_state, selected_items, records_by_id)
-        input_embeddings, attention_mask = self._composer_embedding_tensor(texts)
-        latent = self.composer.forward_embeddings(input_embeddings, attention_mask).squeeze(0)
+        input_ids, attention_mask, pieces, semantic_mask = tokenize_texts_with_semantic_mask(
+            texts,
+            vocab_size=self.v2_config.composer_vocab_size,
+            max_length=self.v2_config.composer_max_input_length,
+        )
+        device = next(self.composer.parameters()).device
+        input_ids = input_ids.to(device=device)
+        attention_mask = attention_mask.to(device=device)
+        semantic_mask = semantic_mask.to(device=device)
+        semantic_prior = self._composer_semantic_prior_tensor(pieces, semantic_mask)
+        latent = self.composer(
+            input_ids,
+            attention_mask,
+            semantic_prior=semantic_prior,
+            semantic_mask=semantic_mask,
+        ).squeeze(0)
         return latent
 
-    def _composer_embedding_tensor(self, texts: Sequence[str]) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Embed composer text chunks via the shared Qwen3/vLLM embedder."""
+    def _composer_piece_embedding(self, piece: str, hidden_dim: int) -> List[float]:
+        key = f"{hidden_dim}\0{piece}"
+        cached = self._composer_piece_embedding_cache.get(key)
+        if cached is not None:
+            return cached
+        vector = list(self.embedder.embed(piece))
+        if len(vector) < hidden_dim:
+            vector = vector + [0.0] * (hidden_dim - len(vector))
+        elif len(vector) > hidden_dim:
+            vector = vector[:hidden_dim]
+        self._composer_piece_embedding_cache[key] = vector
+        return vector
+
+    def _composer_semantic_prior_tensor(self, pieces: Sequence[str], semantic_mask: torch.Tensor) -> torch.Tensor:
+        """Build token-level Qwen priors only for payload pieces."""
 
         max_items = max(1, int(self.v2_config.composer_max_input_length))
-        clipped_texts = [str(text) for text in texts[:max_items]] or ["no_private_memory"]
         hidden_dim = self.v2_config.resolved_hidden_dim(self.embed_dim)
-        vectors: List[List[float]] = []
-        for text in clipped_texts:
-            vector = list(self.embedder.embed(text))
-            if len(vector) < hidden_dim:
-                vector = vector + [0.0] * (hidden_dim - len(vector))
-            elif len(vector) > hidden_dim:
-                vector = vector[:hidden_dim]
-            vectors.append(vector)
         device = next(self.composer.parameters()).device
-        input_embeddings = torch.tensor(vectors, dtype=torch.float32, device=device).unsqueeze(0)
-        attention_mask = torch.ones(1, len(vectors), dtype=torch.bool, device=device)
-        return input_embeddings, attention_mask
+        prior = torch.zeros(1, max_items, hidden_dim, dtype=torch.float32, device=device)
+        limit = min(len(pieces), max_items, int(semantic_mask.size(1)))
+        for idx in range(limit):
+            if not bool(semantic_mask[0, idx].item()):
+                continue
+            piece = str(pieces[idx]).strip()
+            if not piece:
+                continue
+            vector = self._composer_piece_embedding(piece, hidden_dim)
+            prior[0, idx, :] = torch.tensor(vector, dtype=torch.float32, device=device)
+        return prior
 
     def _aggregate_v2_neighbors(
         self,
