@@ -140,6 +140,28 @@ def _summary_view_record(records: Sequence[MemoryRecord], view_name: str) -> Opt
     )
 
 
+def _typed_record_excerpt(record: MemoryRecord, fallback: str) -> str:
+    metadata = dict(record.metadata or {})
+    if str(metadata.get("morph_type", "")) != "deductive_reasoning":
+        return fallback
+    residual_kind = str(metadata.get("residual_kind", "") or "unknown_residual")
+    first_bad_step = metadata.get("first_bad_step", None)
+    try:
+        verified_prefix_len = int(metadata.get("verified_prefix_len", 0))
+    except Exception:
+        verified_prefix_len = 0
+    repair_locus = str(metadata.get("repair_locus", "") or "derivation")
+    parts: List[str] = []
+    if verified_prefix_len > 0:
+        parts.append(f"Keep: Steps 1-{verified_prefix_len} were verified.")
+    if first_bad_step is not None:
+        parts.append(f"Avoid: Step {first_bad_step} had {residual_kind}.")
+    else:
+        parts.append(f"Avoid: {residual_kind}.")
+    parts.append(f"Repair locus: {repair_locus}.")
+    return " ".join(parts)
+
+
 @dataclass
 class PrivateEpisodeMemoryStore:
     config: Stage2MemoryConfig
@@ -558,10 +580,11 @@ class LocalMemoryComposer:
         for item in ordered_items:
             record = records_by_id[item.record_id]
             excerpt = _truncate(record.text, self.config.max_record_chars)
+            typed_excerpt = _typed_record_excerpt(record, excerpt)
             support_weight = float(item.metadata.get("support_weight", item.score))
             slot_name = str(item.metadata.get("slot_name", "unknown_slot"))
-            weighted_excerpt = f"[{slot_name} | alpha={support_weight:.3f}] {excerpt}"
-            excerpts.append(f"[{slot_name}|alpha={support_weight:.3f}|{record.record_type}|{record.feedback_type}] {excerpt}")
+            weighted_excerpt = f"[{slot_name} | alpha={support_weight:.3f}] {typed_excerpt}"
+            excerpts.append(f"[{slot_name}|alpha={support_weight:.3f}|{record.record_type}|{record.feedback_type}] {typed_excerpt}")
             if record.feedback_type in FEEDBACK_FAILURE_TYPES:
                 failure_signals.append(weighted_excerpt)
             elif record.feedback_type in FEEDBACK_STABLE_TYPES:
