@@ -24,6 +24,7 @@ from .deductive_reasoning import (
     dataset_name_from,
     deductive_dominates,
     _has_deterministic_fatal,
+    has_unverified_anchor_residual,
     make_deductive_eval,
     parse_deductive_artifact,
     repair_operator_for_residual,
@@ -139,6 +140,8 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry.setdefault("deductive_checked_equation_count", 0)
         entry.setdefault("deductive_fatal_count", 0)
         entry.setdefault("deductive_local_count", 0)
+        entry.setdefault("deductive_fatal_kinds", [])
+        entry.setdefault("deductive_local_kinds", [])
         entry.setdefault("deductive_repair_operator_type", "")
         entry.setdefault("deductive_repair_accepted", False)
         entry.setdefault("deductive_repair_rejected_by_dominance", False)
@@ -191,6 +194,8 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "deductive_checked_equation_count": int(entry.get("deductive_checked_equation_count", 0)),
                 "deductive_fatal_count": int(entry.get("deductive_fatal_count", 0)),
                 "deductive_local_count": int(entry.get("deductive_local_count", 0)),
+                "deductive_fatal_kinds": list(entry.get("deductive_fatal_kinds", ())),
+                "deductive_local_kinds": list(entry.get("deductive_local_kinds", ())),
                 "deductive_repair_operator_type": str(entry.get("deductive_repair_operator_type", "")),
                 "deductive_repair_accepted": bool(entry.get("deductive_repair_accepted", False)),
                 "deductive_repair_rejected_by_dominance": bool(entry.get("deductive_repair_rejected_by_dominance", False)),
@@ -1062,6 +1067,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
     def _attach_deductive_eval(self, entry: Dict[str, Any], evaluation: DeductiveEval) -> None:
         self._ensure_v4_4_entry_fields(entry)
         entry["v4_4_route_family"] = "deductive_reasoning"
+        entry["dataset_name"] = str(evaluation.artifact.dataset_name or "")
         entry["deductive_eval"] = evaluation
         entry["deductive_norm_answer"] = str(evaluation.artifact.normalized_final_answer or "")
         entry["deductive_first_bad_step"] = evaluation.residual.first_bad_step
@@ -1076,6 +1082,8 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry["deductive_checked_equation_count"] = int(evaluation.residual.checked_equation_count)
         entry["deductive_fatal_count"] = int(len(evaluation.residual.fatal))
         entry["deductive_local_count"] = int(len(evaluation.residual.local))
+        entry["deductive_fatal_kinds"] = list(evaluation.residual.fatal)
+        entry["deductive_local_kinds"] = list(evaluation.residual.local)
         entry["v4_4_class_key"] = repr(evaluation.class_key)
 
     def _evaluate_deductive_candidate(
@@ -1426,9 +1434,15 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             return False
         return True
 
-    def _deductive_entry_is_explicit_clean_witness(self, entry: Dict[str, Any]) -> bool:
+    def _deductive_entry_is_clean_witness(self, entry: Dict[str, Any], *, dataset_name: str) -> bool:
         final_source = str(entry.get("deductive_final_source") or "")
-        if final_source not in {"final_line", "gsm_hash", "boxed"}:
+        if dataset_name == "gsm8k":
+            if final_source not in {"final_line", "gsm_hash"}:
+                return False
+        elif dataset_name == "math":
+            if final_source not in {"boxed", "final_line"}:
+                return False
+        elif final_source not in {"final_line", "gsm_hash", "boxed"}:
             return False
         if not bool(entry.get("deductive_contract_ok", False)):
             return False
@@ -1436,22 +1450,67 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             return False
         if not bool(entry.get("deductive_final_consistent", False)):
             return False
-        if int(entry.get("deductive_checked_equation_count", 0)) <= 0:
+        local_kinds = set(str(item) for item in entry.get("deductive_local_kinds", ()))
+        if local_kinds - {"unconsumed_question_quantity"}:
+            return False
+        min_checked = 2 if dataset_name == "gsm8k" else 1
+        if int(entry.get("deductive_checked_equation_count", 0)) < min_checked:
             return False
         return bool(entry.get("deductive_norm_answer"))
 
+    def _deductive_entry_is_explicit_clean_witness(self, entry: Dict[str, Any]) -> bool:
+        dataset_name = str(entry.get("dataset_name") or entry.get("dataset") or "")
+        return self._deductive_entry_is_clean_witness(entry, dataset_name=dataset_name)
+
+    def _deductive_answer_classes(
+        self,
+        entries: Sequence[Dict[str, Any]],
+        *,
+        dataset_name: str,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        classes: Dict[str, List[Dict[str, Any]]] = {}
+        for entry in entries:
+            answer = str(entry.get("deductive_norm_answer") or "")
+            if not answer:
+                continue
+            if not self._deductive_entry_is_clean_witness(entry, dataset_name=dataset_name):
+                continue
+            classes.setdefault(answer, []).append(entry)
+        return classes
+
+    def _deductive_independent_sources(self, entries: Sequence[Dict[str, Any]]) -> set[str]:
+        sources: set[str] = set()
+        for entry in entries:
+            source = (
+                str(entry.get("origin_node_id") or "")
+                or str(entry.get("origin_role") or "")
+                or str(entry.get("candidate_bank_source") or "")
+                or str(entry.get("digest") or "")
+            )
+            if source:
+                sources.add(source)
+        return sources
+
     def _best_same_answer_deductive_candidate(
         self,
-        collapsed: Sequence[Dict[str, Any]],
+        entries: Sequence[Dict[str, Any]],
         anchor_eval: DeductiveEval,
+        *,
+        dataset_name: str,
     ) -> Optional[Dict[str, Any]]:
         anchor_answer = str(anchor_eval.artifact.normalized_final_answer or "")
         if not anchor_answer:
             return None
-        for entry in collapsed:
-            if str(entry.get("deductive_norm_answer") or "") == anchor_answer:
-                return entry
-        return None
+        witnesses = [
+            entry
+            for entry in entries
+            if str(entry.get("deductive_norm_answer") or "") == anchor_answer
+            and self._deductive_entry_is_clean_witness(entry, dataset_name=dataset_name)
+        ]
+        if not witnesses:
+            return None
+        witnesses.sort(key=self._deductive_rank_key, reverse=True)
+        return witnesses[0]
 
     def _best_cross_answer_certificate(
         self,
@@ -1472,15 +1531,12 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
 
         best_candidate: Optional[Dict[str, Any]] = None
         best_key: tuple = ()
+        dataset_name = str(anchor_eval.artifact.dataset_name or "")
         for answer, entries in classes.items():
             if answer == anchor_answer:
                 continue
-            witnesses = [entry for entry in entries if self._deductive_entry_is_explicit_clean_witness(entry)]
-            independent_origins = {
-                str(entry.get("origin_node_id") or entry.get("origin_role") or entry.get("digest") or "")
-                for entry in witnesses
-            }
-            if len(independent_origins) < 2:
+            witnesses = [entry for entry in entries if self._deductive_entry_is_clean_witness(entry, dataset_name=dataset_name)]
+            if len(self._deductive_independent_sources(witnesses)) < 2:
                 continue
             rep = sorted(witnesses, key=self._deductive_rank_key, reverse=True)[0]
             key = self._deductive_rank_key(rep)
@@ -1488,6 +1544,209 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 best_candidate = rep
                 best_key = key
         return best_candidate
+
+    def _deductive_anchor_needs_probe(self, anchor_eval: DeductiveEval) -> bool:
+        if not anchor_eval.artifact.normalized_final_answer:
+            return False
+        if self._deductive_has_deterministic_fatal(anchor_eval):
+            return False
+        if has_unverified_anchor_residual(anchor_eval):
+            return True
+        return anchor_eval.artifact.dataset_name == "math" and anchor_eval.artifact.final_source == "last_line"
+
+    def _best_clean_cross_answer_witness(
+        self,
+        entries: Sequence[Dict[str, Any]],
+        *,
+        anchor_answer: str,
+        dataset_name: str,
+    ) -> Optional[Dict[str, Any]]:
+        candidates = []
+        for entry in entries:
+            answer = str(entry.get("deductive_norm_answer") or "")
+            if not answer or answer == anchor_answer:
+                continue
+            if not self._deductive_entry_is_clean_witness(entry, dataset_name=dataset_name):
+                continue
+            candidates.append(entry)
+        if not candidates:
+            return None
+        candidates.sort(key=self._deductive_rank_key, reverse=True)
+        return candidates[0]
+
+    def _deductive_probe_confirms_challenger(
+        self,
+        probe_entry: Optional[Dict[str, Any]],
+        challenger_entry: Dict[str, Any],
+        anchor_eval: DeductiveEval,
+        *,
+        dataset_name: str,
+    ) -> bool:
+        if probe_entry is None:
+            return False
+        probe_eval = self._deductive_eval_for_entry(probe_entry)
+        if probe_eval is None:
+            return False
+        probe_answer = str(probe_entry.get("deductive_norm_answer") or "")
+        challenger_answer = str(challenger_entry.get("deductive_norm_answer") or "")
+        anchor_answer = str(anchor_eval.artifact.normalized_final_answer or "")
+        if not probe_answer or probe_answer == anchor_answer:
+            return False
+        if probe_answer != challenger_answer:
+            return False
+        if not self._deductive_entry_is_clean_witness(probe_entry, dataset_name=dataset_name):
+            return False
+        if not self._deductive_entry_is_clean_witness(challenger_entry, dataset_name=dataset_name):
+            return False
+        return True
+
+    def _deductive_probe_is_safe_override(
+        self,
+        probe_entry: Optional[Dict[str, Any]],
+        anchor_eval: DeductiveEval,
+        answer_classes: Dict[str, List[Dict[str, Any]]],
+        *,
+        dataset_name: str,
+    ) -> bool:
+        if probe_entry is None:
+            return False
+        probe_eval = self._deductive_eval_for_entry(probe_entry)
+        if probe_eval is None:
+            return False
+        probe_answer = str(probe_entry.get("deductive_norm_answer") or "")
+        anchor_answer = str(anchor_eval.artifact.normalized_final_answer or "")
+        if not probe_answer or probe_answer == anchor_answer:
+            return False
+        if not self._deductive_entry_is_clean_witness(probe_entry, dataset_name=dataset_name):
+            return False
+        if answer_classes.get(anchor_answer):
+            return False
+        return True
+
+    def _build_deductive_pairwise_probe_prompt(
+        self,
+        *,
+        question_text: str,
+        anchor_eval: DeductiveEval,
+        challenger_entry: Dict[str, Any],
+        metadata: Optional[dict],
+    ) -> str:
+        anchor = anchor_eval.artifact.normalized_final_answer or anchor_eval.artifact.final_answer or ""
+        challenger_answer = str(challenger_entry.get("deductive_norm_answer") or "")
+        challenger_text = str(challenger_entry.get("text", ""))
+        return (
+            "You are comparing two candidate answers for a math problem.\n\n"
+            f"Problem:\n{render_question_text(question_text, metadata=metadata)}\n\n"
+            f"Anchor answer:\n{anchor}\n\n"
+            f"Challenger answer:\n{challenger_answer}\n\n"
+            f"Challenger derivation:\n{challenger_text}\n\n"
+            "Re-solve the problem independently from the question quantities only.\n"
+            "Do not assume either answer is correct.\n"
+            "Use only equation-chain steps, no prose-only steps.\n\n"
+            "Return exactly:\n\n"
+            "SOLUTION:\n"
+            "1. <quantity_name> = <arithmetic expression> = <value>\n"
+            "2. <quantity_name> = <arithmetic expression> = <value>\n"
+            "...\n\n"
+            "FINAL: <number>\n"
+        )
+
+    def _run_deductive_probe_prompt(
+        self,
+        *,
+        prompt: str,
+        question_text: str,
+        dataset_profile: DatasetProfile,
+        metadata: Optional[dict],
+        operator_type: str,
+        parent_entry: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        agent_ids = self._select_graph_repair_agents()
+        if not agent_ids:
+            return None
+        agent_id = agent_ids[0]
+        agent = self._by_id[agent_id]
+        system_prompt = build_system_prompt(agent, self._graph_repair_slots(), extra_role_hint=operator_type)
+        raw_output = self.evaluator._cached_chat(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            runtime=self.evaluator._resolve_runtime("tier2", dataset_profile),
+        )
+        probed = self._sanitize_candidate(question_text, raw_output, metadata=metadata)
+        if not probed:
+            return None
+        entry, _ = self._prepare_deductive_verified_entry(
+            probed,
+            question_text=question_text,
+            metadata=metadata,
+            dataset_profile=dataset_profile,
+            parent=parent_entry,
+            repair_operator_type=operator_type,
+        )
+        entry["candidate_bank_source"] = "deductive_probe"
+        entry["origin_role"] = "deductive_probe"
+        entry["parent_candidate_digest"] = str(parent_entry.get("digest", ""))
+        entry["repair_operator_type"] = operator_type
+        entry["deductive_repair_operator_type"] = operator_type
+        evaluation = self._evaluate_deductive_candidate(
+            question_text=question_text,
+            entry=entry,
+            dataset_profile=dataset_profile,
+            metadata=metadata,
+        )
+        self._attach_deductive_eval(entry, evaluation)
+        return entry
+
+    def _try_deductive_anchor_probe(
+        self,
+        *,
+        question_text: str,
+        anchor_entry: Dict[str, Any],
+        anchor_eval: DeductiveEval,
+        dataset_profile: DatasetProfile,
+        metadata: Optional[dict],
+    ) -> Optional[Dict[str, Any]]:
+        prompt = build_deductive_repair_prompt(
+            operator_type="deductive_anchor_verification_probe",
+            question_text=render_question_text(question_text, metadata=metadata),
+            artifact=anchor_eval.artifact,
+            residual=anchor_eval.residual,
+        )
+        return self._run_deductive_probe_prompt(
+            prompt=prompt,
+            question_text=question_text,
+            dataset_profile=dataset_profile,
+            metadata=metadata,
+            operator_type="deductive_anchor_verification_probe",
+            parent_entry=anchor_entry,
+        )
+
+    def _try_deductive_pairwise_probe(
+        self,
+        *,
+        question_text: str,
+        anchor_entry: Dict[str, Any],
+        anchor_eval: DeductiveEval,
+        challenger_entry: Dict[str, Any],
+        dataset_profile: DatasetProfile,
+        metadata: Optional[dict],
+    ) -> Optional[Dict[str, Any]]:
+        prompt = self._build_deductive_pairwise_probe_prompt(
+            question_text=question_text,
+            anchor_eval=anchor_eval,
+            challenger_entry=challenger_entry,
+            metadata=metadata,
+        )
+        return self._run_deductive_probe_prompt(
+            prompt=prompt,
+            question_text=question_text,
+            dataset_profile=dataset_profile,
+            metadata=metadata,
+            operator_type="deductive_pairwise_challenger_probe",
+            parent_entry=anchor_entry,
+        )
 
     def _deductive_anchor_or_best_non_regressive(
         self,
@@ -1592,43 +1851,122 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         anchor_verified = next((entry for entry in verified if str(entry.get("digest", "")) == anchor_digest), None)
         anchor_eval = self._deductive_eval_for_entry(anchor_verified)
         execution_mode = self._deductive_mode(anchor_eval=anchor_eval, collapsed=collapsed, budget_bucket=budget_bucket)
+        dataset_name = self._dataset_name(dataset_profile, metadata)
+        anchor_answer = str(anchor_eval.artifact.normalized_final_answer or "") if anchor_eval is not None else ""
+        answer_classes = self._deductive_answer_classes(collapsed, dataset_name=dataset_name)
+        same_answer_clean_witness_count = len(answer_classes.get(anchor_answer, [])) if anchor_answer else 0
+        cross_answer_clean_witness_count = sum(
+            len(entries)
+            for answer, entries in answer_classes.items()
+            if answer and answer != anchor_answer
+        )
+        anchor_needs_probe = bool(anchor_eval is not None and self._deductive_anchor_needs_probe(anchor_eval))
+        best_challenger_answer = ""
+        probe_triggered = False
+        probe_answer = ""
+        probe_clean = False
+        probe_confirmed_challenger = False
+        probe_entries: List[Dict[str, Any]] = []
 
         best = collapsed[0] if collapsed else anchor_verified
         selected_entry = best
         selected_reason = "v4_4_deductive_best_available" if best is not None else "v4_4_deductive_empty_bank"
-        if selected_anchor_repair is not None:
-            selected_entry = selected_anchor_repair
-            selected_reason = "v4_4_deductive_override_anchor_repair"
-        elif anchor_verified is not None and anchor_eval is not None:
-            if self._deductive_anchor_is_safe(anchor_eval):
-                same_answer = self._best_same_answer_deductive_candidate(collapsed, anchor_eval)
-                if (
-                    same_answer is not None
-                    and same_answer is not anchor_verified
-                    and self._deductive_is_safe_improvement(same_answer, anchor_verified)
-                ):
-                    selected_entry = same_answer
-                    selected_reason = "v4_4_deductive_same_answer_enrichment"
+        if anchor_verified is not None and anchor_eval is not None:
+            same_answer = self._best_same_answer_deductive_candidate(
+                collapsed,
+                anchor_eval,
+                dataset_name=dataset_name,
+            )
+            if (
+                same_answer is not None
+                and same_answer is not anchor_verified
+                and self._deductive_is_safe_improvement(same_answer, anchor_verified)
+            ):
+                selected_entry = same_answer
+                selected_reason = "v4_4_deductive_same_answer_enrichment"
+            elif selected_anchor_repair is not None:
+                selected_entry = selected_anchor_repair
+                selected_reason = "v4_4_deductive_deterministic_repair"
+            elif self._deductive_has_deterministic_fatal(anchor_eval):
+                if best is not None and self._deductive_is_safe_improvement(best, anchor_verified):
+                    selected_entry = best
+                    selected_reason = "v4_4_deductive_override_residual_dominance"
                 else:
-                    certified = self._best_cross_answer_certificate(collapsed, anchor_eval)
-                    if certified is not None:
-                        selected_entry = certified
-                        selected_reason = "v4_4_deductive_override_answer_class_certificate"
+                    selected_entry = anchor_verified
+                    selected_reason = "v4_4_deductive_anchor_guard_preserve"
+            elif anchor_needs_probe:
+                challenger = self._best_clean_cross_answer_witness(
+                    collapsed,
+                    anchor_answer=anchor_answer,
+                    dataset_name=dataset_name,
+                )
+                if challenger is not None:
+                    best_challenger_answer = str(challenger.get("deductive_norm_answer") or "")
+                    probe_triggered = True
+                    pairwise_probe = self._try_deductive_pairwise_probe(
+                        question_text=question_text,
+                        anchor_entry=anchor_verified,
+                        anchor_eval=anchor_eval,
+                        challenger_entry=challenger,
+                        dataset_profile=dataset_profile,
+                        metadata=metadata,
+                    )
+                    if pairwise_probe is not None:
+                        probe_entries.append(pairwise_probe)
+                        probe_answer = str(pairwise_probe.get("deductive_norm_answer") or "")
+                        probe_clean = self._deductive_entry_is_clean_witness(pairwise_probe, dataset_name=dataset_name)
+                        probe_confirmed_challenger = self._deductive_probe_confirms_challenger(
+                            pairwise_probe,
+                            challenger,
+                            anchor_eval,
+                            dataset_name=dataset_name,
+                        )
+                    if probe_confirmed_challenger:
+                        pairwise_probe["v4_4_selection_reason"] = "v4_4_deductive_pairwise_probe_override"
+                        pairwise_probe["deductive_repair_accepted"] = True
+                        selected_entry = pairwise_probe
+                        selected_reason = "v4_4_deductive_pairwise_probe_override"
+                if challenger is None:
+                    probe_triggered = True
+                    anchor_probe = self._try_deductive_anchor_probe(
+                        question_text=question_text,
+                        anchor_entry=anchor_verified,
+                        anchor_eval=anchor_eval,
+                        dataset_profile=dataset_profile,
+                        metadata=metadata,
+                    )
+                    if anchor_probe is not None:
+                        probe_entries.append(anchor_probe)
+                        probe_answer = str(anchor_probe.get("deductive_norm_answer") or "")
+                        probe_clean = self._deductive_entry_is_clean_witness(anchor_probe, dataset_name=dataset_name)
+                    if self._deductive_probe_is_safe_override(
+                        anchor_probe,
+                        anchor_eval,
+                        answer_classes,
+                        dataset_name=dataset_name,
+                    ):
+                        anchor_probe["v4_4_selection_reason"] = "v4_4_deductive_anchor_probe_override"
+                        anchor_probe["deductive_repair_accepted"] = True
+                        selected_entry = anchor_probe
+                        selected_reason = "v4_4_deductive_anchor_probe_override"
                     else:
                         selected_entry = anchor_verified
-                        selected_reason = "v4_4_deductive_preserve_anchor_no_deterministic_fatal"
-            elif best is not None and self._deductive_is_safe_improvement(best, anchor_verified):
-                selected_entry = best
-                selected_reason = "v4_4_deductive_override_residual_dominance"
+                        selected_reason = "v4_4_deductive_preserve_anchor_no_probe_certificate"
+                elif selected_reason != "v4_4_deductive_pairwise_probe_override":
+                    selected_entry = anchor_verified
+                    selected_reason = "v4_4_deductive_preserve_anchor_no_probe_certificate"
             else:
                 selected_entry = anchor_verified
-                selected_reason = "v4_4_deductive_anchor_guard_preserve"
+                selected_reason = "v4_4_deductive_preserve_anchor_no_probe_certificate"
 
         selected_eval = self._deductive_eval_for_entry(selected_entry)
         if (
             anchor_verified is not None
             and selected_entry is not anchor_verified
-            and selected_reason != "v4_4_deductive_override_answer_class_certificate"
+            and selected_reason not in {
+                "v4_4_deductive_pairwise_probe_override",
+                "v4_4_deductive_anchor_probe_override",
+            }
             and not self._deductive_is_safe_improvement(selected_entry, anchor_verified)
         ):
             selected_entry = anchor_verified
@@ -1664,9 +2002,18 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             "deductive_repair_operator_type": str(selected_entry.get("deductive_repair_operator_type", selected_entry.get("repair_operator_type", ""))),
             "deductive_repair_accepted": bool(selected_entry.get("deductive_repair_accepted", False)),
             "deductive_repair_rejected_by_dominance": bool(repair_rejected_by_dominance > 0),
+            "deductive_anchor_answer": anchor_answer,
+            "deductive_anchor_needs_probe": bool(anchor_needs_probe),
+            "deductive_same_answer_clean_witness_count": int(same_answer_clean_witness_count),
+            "deductive_cross_answer_clean_witness_count": int(cross_answer_clean_witness_count),
+            "deductive_best_challenger_answer": best_challenger_answer,
+            "deductive_probe_triggered": bool(probe_triggered),
+            "deductive_probe_answer": probe_answer,
+            "deductive_probe_clean": bool(probe_clean),
+            "deductive_probe_confirmed_challenger": bool(probe_confirmed_challenger),
             "v4_4_repair_rounds_run": int(repair_rounds_run),
-            "v4_4_repair_branch_count": int(repair_branch_count),
-            "v4_4_repair_improvement_count": int(repair_accepted),
+            "v4_4_repair_branch_count": int(repair_branch_count + len(probe_entries)),
+            "v4_4_repair_improvement_count": int(repair_accepted + int(bool(selected_entry in probe_entries and selected_entry.get("deductive_repair_accepted", False)))),
             "v4_4_recovery_target_digest": recovery_target_digest,
             "v4_4_recovery_subgraph_node_count": int(recovery_subgraph_node_count),
             "v4_4_recovery_subgraph_edge_count": int(recovery_subgraph_edge_count),

@@ -6,8 +6,10 @@ from mas_treesearch.evaluator import MultiFidelityEvaluator
 from stage2_gcr_plus.deductive_reasoning import (
     answer_only_from_artifact,
     deductive_dominates,
+    has_unverified_anchor_residual,
     make_deductive_eval,
     parse_deductive_artifact,
+    repair_operator_for_residual,
     verify_deductive_artifact,
 )
 from stage2_gcr_plus.runtime_v44 import Stage2RuntimeV44
@@ -26,6 +28,13 @@ def _eval(text: str, *, dataset_name: str = "gsm8k"):
     artifact = parse_deductive_artifact(text, dataset_name)
     residual = verify_deductive_artifact("A test problem.", artifact, profile, {"dataset_name": dataset_name})
     return make_deductive_eval(artifact, residual, {"text": text})
+
+
+def _verified_entry(runtime: Stage2RuntimeV44, text: str, digest: str, *, dataset_name: str = "gsm8k"):
+    profile = SimpleNamespace(task_type="numeric" if dataset_name == "gsm8k" else "math_expression", name=dataset_name)
+    entry = {"digest": digest, "text": text, "sink_support": 0, "stage1_anchor": False}
+    verified = runtime._verify_deductive_pool("A test problem.", None, [entry], profile, {"dataset_name": dataset_name})
+    return verified[0]
 
 
 def test_deductive_parser_extracts_steps_final_and_equation():
@@ -186,3 +195,69 @@ def test_deductive_internal_solution_returns_answer_only_artifact():
     )
 
     assert answer_only_from_artifact(artifact) == "102"
+
+
+def test_answer_only_anchor_needs_probe():
+    eval_obj = _eval("30")
+
+    assert eval_obj.artifact.final_source == "answer_only"
+    assert has_unverified_anchor_residual(eval_obj)
+    assert repair_operator_for_residual(eval_obj) == "deductive_anchor_verification_probe"
+
+
+def test_clean_challenger_requires_probe_confirmation():
+    anchor = _eval("30")
+    challenger = _eval(
+        "SOLUTION:\n"
+        "1. x = 10 + 5 = 15\n"
+        "2. y = 15 + 1 = 16\n"
+        "\n"
+        "FINAL: 16\n"
+    )
+
+    assert not deductive_dominates(challenger, anchor)
+
+
+def test_pairwise_probe_can_override_answer_only_anchor():
+    runtime = _runtime_stub()
+    anchor = _eval("30")
+    challenger = _verified_entry(
+        runtime,
+        "SOLUTION:\n"
+        "1. remaining = 100 - 10 = 90\n"
+        "2. later_days = 90 / 10 = 9\n"
+        "3. total_days = 1 + 9 = 10\n"
+        "\n"
+        "FINAL: 10\n",
+        "challenger",
+    )
+    probe = _verified_entry(
+        runtime,
+        "SOLUTION:\n"
+        "1. first_day = 5 + 5 = 10\n"
+        "2. remaining = 100 - 10 = 90\n"
+        "3. later_days = 90 / 10 = 9\n"
+        "4. total_days = 1 + 9 = 10\n"
+        "\n"
+        "FINAL: 10\n",
+        "probe",
+    )
+
+    assert runtime._deductive_probe_confirms_challenger(probe, challenger, anchor, dataset_name="gsm8k")
+
+
+def test_probe_returning_anchor_preserves():
+    runtime = _runtime_stub()
+    anchor = _eval("30")
+    probe = _verified_entry(
+        runtime,
+        "SOLUTION:\n"
+        "1. weekday_minutes = 1600 / 16 = 100\n"
+        "2. total_minutes = 1600 + 100 + 100 = 1800\n"
+        "3. hours = 1800 / 60 = 30\n"
+        "\n"
+        "FINAL: 30\n",
+        "probe",
+    )
+
+    assert not runtime._deductive_probe_is_safe_override(probe, anchor, {}, dataset_name="gsm8k")

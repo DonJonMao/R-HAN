@@ -785,9 +785,26 @@ _DETERMINISTIC_FATALS = {
 }
 
 
+_UNVERIFIED_ANCHOR_RESIDUALS = {
+    "answer_only_no_derivation",
+    "no_checked_equations",
+    "semantic_unverified_step",
+}
+
+
 def _has_deterministic_fatal(eval: DeductiveEval) -> bool:
     return any(item in _DETERMINISTIC_FATALS for item in eval.residual.fatal) or (
         eval.residual.residual_kind in _DETERMINISTIC_FATALS
+    )
+
+
+def has_unverified_anchor_residual(eval: DeductiveEval) -> bool:
+    kind = str(eval.residual.residual_kind or "")
+    local = set(eval.residual.local or ())
+    return (
+        kind in _UNVERIFIED_ANCHOR_RESIDUALS
+        or bool(local & _UNVERIFIED_ANCHOR_RESIDUALS)
+        or eval.artifact.final_source == "answer_only"
     )
 
 
@@ -871,6 +888,8 @@ def repair_operator_for_residual(eval: DeductiveEval) -> str | None:
         return "deductive_algebra_suffix_patch"
     if kind in {"unsupported_transition", "extraneous_quantity", "unconsumed_question_quantity"}:
         return "deductive_transition_suffix_patch"
+    if kind in _UNVERIFIED_ANCHOR_RESIDUALS or eval.artifact.final_source == "answer_only":
+        return "deductive_anchor_verification_probe"
     return None
 
 
@@ -885,6 +904,24 @@ def build_deductive_repair_prompt(
     bad_step = bad_step_text(artifact, residual.first_bad_step)
     issue = residual.residual_kind or "none"
     rendered_prefix = prefix or "(none)"
+    if operator_type == "deductive_anchor_verification_probe":
+        anchor = artifact.normalized_final_answer or artifact.final_answer or ""
+        return (
+            "You are verifying a proposed final answer for a grade-school math problem.\n\n"
+            f"Problem:\n{question_text}\n\n"
+            f"Proposed final answer from the previous stage:\n{anchor}\n\n"
+            "Do not assume the proposed answer is correct.\n"
+            "Re-solve the problem from the question quantities only.\n"
+            "Use a compact equation-chain format. Every step must contain a computable equation.\n"
+            "Do not add prose-only reasoning steps.\n\n"
+            "Return exactly:\n\n"
+            "SOLUTION:\n"
+            "1. <quantity_name> = <arithmetic expression> = <value>\n"
+            "2. <quantity_name> = <arithmetic expression> = <value>\n"
+            "3. <quantity_name> = <arithmetic expression> = <value>\n"
+            "...\n\n"
+            "FINAL: <number>\n"
+        )
     if operator_type == "deductive_arithmetic_suffix_patch":
         return (
             "You are repairing a mathematical derivation.\n\n"
