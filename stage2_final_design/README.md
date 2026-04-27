@@ -51,6 +51,10 @@ stage2_final_design/
    - slot 内 record 选择使用 learned scorer + sparsemax support-set
    - 当前训练已经在这两层同时开启
 
+## 路线设计文档
+
+- [`ROUTE_DESIGN_CODE_DEDUCTIVE.md`](ROUTE_DESIGN_CODE_DEDUCTIVE.md): 记录当前 `code_repair` 与 `deductive_reasoning` 两条 route 的 artifact、verifier residual、repair/probe selector、关键差距，以及 `632b5ae` 版 GSM8K/MATH 实验结果。
+
 ## 不再保留的东西
 
 这次整理后，下面这些内容不再作为 `final_design` 的一部分保留：
