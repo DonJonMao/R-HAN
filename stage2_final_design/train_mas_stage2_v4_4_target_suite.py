@@ -9,13 +9,19 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from mas_stage2 import load_prepared_stage1_artifact, save_prepared_stage1_artifact
 from mas_stage2_v4_4 import Stage2V44Config, Stage2V44Pipeline
-from mas_treesearch import SearchConfig, TieredEvalConfig, UnionRuntimeConfig, list_processed_datasets, load_processed_split
+from mas_treesearch import (
+    SearchConfig,
+    TieredEvalConfig,
+    UnionRuntimeConfig,
+    list_processed_datasets,
+)
 from train_mas_stage2_target_suite import (
     RunningStats,
     _checkpoint_metadata,
     _item_dataset_name,
     _item_metadata,
     _load_json_dict,
+    _load_stage2_supported_split,
     _periodic_window,
     _resolve_dataset_plan,
     _runtime_config_dict,
@@ -461,9 +467,24 @@ def _run_dataset(
     stage1_checkpoint_root: str,
     structure_cache_enabled: bool,
 ) -> Dict[str, Any]:
-    train_items = _sample(load_processed_split(data_root, dataset_name, "train"), plan["max_train"], seed, True)
-    validation_items = _sample(load_processed_split(data_root, dataset_name, "validation"), plan["max_validation"], seed + 1, True)
-    test_items = _sample(load_processed_split(data_root, dataset_name, "test"), plan["max_test"], seed + 2, True)
+    train_items = _sample(
+        _load_stage2_supported_split(data_root, dataset_name, "train"),
+        plan["max_train"],
+        seed,
+        True,
+    )
+    validation_items = _sample(
+        _load_stage2_supported_split(data_root, dataset_name, "validation"),
+        plan["max_validation"],
+        seed + 1,
+        True,
+    )
+    test_items = _sample(
+        _load_stage2_supported_split(data_root, dataset_name, "test"),
+        plan["max_test"],
+        seed + 2,
+        True,
+    )
     if not train_items:
         raise ValueError(f"No train items found for dataset={dataset_name}")
 

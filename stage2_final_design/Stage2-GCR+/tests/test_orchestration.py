@@ -114,3 +114,42 @@ def test_build_sample_shards_preserves_ids_and_balances(tmp_path: Path):
 
     assert sorted(seen_train_ids) == sorted(str(row["id"]) for row in train_rows)
     assert max(shard_train_sizes) - min(shard_train_sizes) <= 1
+
+
+def test_build_sample_shards_filters_kc_rows_without_gold(tmp_path: Path):
+    data_root = tmp_path / "data"
+    dataset_name = "knowledge_crosswords"
+    train_rows = [
+        {"id": "gold_metadata", "question": "q", "answer": "None", "metadata": {"answer_all": ["Alice"]}},
+        {"id": "gold_answer", "question": "q", "answer": '["Bob"]', "metadata": {"answer_all": None}},
+        {"id": "missing_none", "question": "q", "answer": "None", "metadata": {"answer_all": None}},
+        {"id": "missing_empty", "question": "q", "answer": "[]", "metadata": {}},
+        {"id": "missing_text", "question": "q", "answer": "Alice", "metadata": {}},
+    ]
+
+    _write_jsonl(data_root / dataset_name / "train.jsonl", train_rows)
+
+    shard_root = tmp_path / "shards"
+    shards = build_sample_shards(
+        data_root=data_root,
+        datasets=[dataset_name],
+        shard_root=shard_root,
+        shard_count=2,
+        seed=7,
+        splits=("train",),
+    )
+
+    seen_ids: list[str] = []
+    for spec in shards:
+        train_path = spec.data_root / dataset_name / "train.jsonl"
+        rows = [json.loads(line) for line in train_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        seen_ids.extend(str(row["id"]) for row in rows)
+
+    manifest = json.loads((shard_root / "shard_manifest.json").read_text(encoding="utf-8"))
+    summary = manifest["filter_summary"][dataset_name]["train"]
+
+    assert sorted(seen_ids) == ["gold_answer", "gold_metadata"]
+    assert sum(spec.counts[dataset_name]["train"] for spec in shards) == 2
+    assert summary["source"] == 5
+    assert summary["kept"] == 2
+    assert summary["dropped"] == 3

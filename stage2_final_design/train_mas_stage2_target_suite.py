@@ -16,7 +16,14 @@ from mas_stage2 import (
     load_prepared_stage1_artifact,
     save_prepared_stage1_artifact,
 )
-from mas_treesearch import SearchConfig, TieredEvalConfig, UnionRuntimeConfig, list_processed_datasets, load_processed_split
+from mas_treesearch import (
+    SearchConfig,
+    TieredEvalConfig,
+    UnionRuntimeConfig,
+    filter_stage2_supported_items,
+    list_processed_datasets,
+    load_processed_split,
+)
 
 
 @dataclass
@@ -146,6 +153,11 @@ def _sample(items: List[Dict[str, Any]], limit: int, seed: int, shuffle: bool) -
     if limit >= 0:
         return picked[:limit]
     return picked
+
+
+def _load_stage2_supported_split(data_root: str, dataset_name: str, split: str) -> List[Dict[str, Any]]:
+    items = load_processed_split(data_root, dataset_name, split)
+    return filter_stage2_supported_items(dataset_name, items)
 
 
 def _sampled_split_ids(items: List[Dict[str, Any]]) -> List[str]:
@@ -452,9 +464,9 @@ def _resolve_dataset_plan(
     max_validation: int,
     max_test: int,
 ) -> Dict[str, int]:
-    train_count = len(load_processed_split(data_root, dataset_name, "train"))
-    validation_count = len(load_processed_split(data_root, dataset_name, "validation"))
-    test_count = len(load_processed_split(data_root, dataset_name, "test"))
+    train_count = len(_load_stage2_supported_split(data_root, dataset_name, "train"))
+    validation_count = len(_load_stage2_supported_split(data_root, dataset_name, "validation"))
+    test_count = len(_load_stage2_supported_split(data_root, dataset_name, "test"))
     return {
         "max_train": train_count if max_train < 0 else min(max_train, train_count),
         "max_validation": validation_count if max_validation < 0 else min(max_validation, validation_count),
@@ -481,9 +493,24 @@ def _run_dataset(
     stage1_checkpoint_root: str,
     structure_cache_enabled: bool,
 ) -> Dict[str, Any]:
-    train_items = _sample(load_processed_split(data_root, dataset_name, "train"), plan["max_train"], seed, True)
-    validation_items = _sample(load_processed_split(data_root, dataset_name, "validation"), plan["max_validation"], seed + 1, True)
-    test_items = _sample(load_processed_split(data_root, dataset_name, "test"), plan["max_test"], seed + 2, True)
+    train_items = _sample(
+        _load_stage2_supported_split(data_root, dataset_name, "train"),
+        plan["max_train"],
+        seed,
+        True,
+    )
+    validation_items = _sample(
+        _load_stage2_supported_split(data_root, dataset_name, "validation"),
+        plan["max_validation"],
+        seed + 1,
+        True,
+    )
+    test_items = _sample(
+        _load_stage2_supported_split(data_root, dataset_name, "test"),
+        plan["max_test"],
+        seed + 2,
+        True,
+    )
     if not train_items:
         raise ValueError(f"No train items found for dataset={dataset_name}")
 

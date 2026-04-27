@@ -332,6 +332,32 @@ def load_processed_split(
     return load_jsonl(path, max_items=max_items)
 
 
+def has_stage2_reference_answer(dataset_name: str, item: Dict[str, Any]) -> bool:
+    if str(dataset_name or "").strip().lower() != "knowledge_crosswords":
+        return True
+
+    metadata = item.get("metadata")
+    if isinstance(metadata, dict):
+        answer_all = metadata.get("answer_all")
+        if isinstance(answer_all, list) and answer_all:
+            return True
+
+    answer = item.get("answer")
+    if isinstance(answer, list):
+        return bool(answer)
+    if isinstance(answer, str):
+        try:
+            parsed = json.loads(answer)
+        except Exception:
+            return False
+        return isinstance(parsed, list) and bool(parsed)
+    return False
+
+
+def filter_stage2_supported_items(dataset_name: str, items: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [item for item in items if has_stage2_reference_answer(dataset_name, item)]
+
+
 def list_processed_datasets(data_root: str) -> List[str]:
     if not os.path.isdir(data_root):
         return []

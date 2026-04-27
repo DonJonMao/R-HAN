@@ -12,7 +12,14 @@ It provides a minimal viable architecture search stack with:
 
 from .agents import AgentPool, AgentSpec, default_agent_pool
 from .config import EmbeddingConfig, SearchConfig, TieredEvalConfig, UnionRuntimeConfig
-from .data import build_processed_datasets, list_processed_datasets, load_processed_split, standardize_record
+from .data import (
+    build_processed_datasets,
+    filter_stage2_supported_items,
+    has_stage2_reference_answer,
+    list_processed_datasets,
+    load_processed_split,
+    standardize_record,
+)
 from .learning import FeatureBuilder, LearnableEditPrior, LearnableValueModel
 from .pipeline import TreeSearchMASPipeline
 from .profiles import DatasetProfile, StructurePrior, list_supported_datasets, resolve_dataset_profile
@@ -45,6 +52,8 @@ __all__ = [
     "build_processed_datasets",
     "default_agent_pool",
     "is_union_result",
+    "filter_stage2_supported_items",
+    "has_stage2_reference_answer",
     "list_processed_datasets",
     "list_supported_datasets",
     "load_processed_split",

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
 
+from mas_treesearch.data import filter_stage2_supported_items
+
 
 @dataclass(frozen=True)
 class ShardSpec:
@@ -65,6 +67,7 @@ def build_sample_shards(
         raise ValueError("datasets must not be empty")
 
     counts_by_shard: list[dict[str, dict[str, int]]] = [dict() for _ in range(shard_count)]
+    filter_summary: dict[str, dict[str, dict[str, int | str]]] = {}
 
     for dataset_index, dataset_name in enumerate(datasets):
         dataset_dir = source_root / dataset_name
@@ -72,7 +75,16 @@ def build_sample_shards(
             raise FileNotFoundError(f"dataset directory not found: {dataset_dir}")
         for split_index, split in enumerate(splits):
             source_file = dataset_dir / f"{split}.jsonl"
-            rows = _load_jsonl(source_file)
+            source_rows = _load_jsonl(source_file)
+            rows = filter_stage2_supported_items(dataset_name, source_rows)
+            dropped = len(source_rows) - len(rows)
+            if dropped:
+                filter_summary.setdefault(dataset_name, {})[split] = {
+                    "filter": "stage2_supported_reference_answer",
+                    "source": len(source_rows),
+                    "kept": len(rows),
+                    "dropped": dropped,
+                }
             shard_rows = _round_robin_assign(rows, shard_count=shard_count, seed=seed + dataset_index * 100 + split_index)
             for shard_id, picked in enumerate(shard_rows):
                 target_file = out_root / f"shard_{shard_id}" / dataset_name / f"{split}.jsonl"
@@ -96,6 +108,7 @@ def build_sample_shards(
         "splits": list(splits),
         "seed": int(seed),
         "shard_count": int(shard_count),
+        "filter_summary": filter_summary,
         "shards": [
             {
                 "shard_index": spec.shard_index,
