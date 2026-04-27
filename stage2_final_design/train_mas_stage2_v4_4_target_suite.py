@@ -386,6 +386,21 @@ def _row_from_result(dataset_name: str, split: str, item: Dict[str, Any], result
         "v4_4_candidate_steps_after": float(learning_stats.get("candidate_steps", 0.0)),
         "v4_4_override_steps_after": float(learning_stats.get("override_steps", 0.0)),
         "v4_4_reviewer_steps_after": float(learning_stats.get("reviewer_steps", 0.0)),
+        "structural_probe_triggered": bool(meta.get("structural_probe_triggered", False)),
+        "structural_probe_type": str(meta.get("structural_probe_type", "")),
+        "structural_probe_accepted": bool(meta.get("structural_probe_accepted", False)),
+        "structural_certificate_kind": str(meta.get("structural_certificate_kind", "")),
+        "structural_certificate_ok": bool(meta.get("structural_certificate_ok", False)),
+        "structural_task_kind": str(meta.get("structural_task_kind", "")),
+        "structural_fatal_kinds": list(meta.get("structural_fatal_kinds", [])),
+        "structural_local_kinds": list(meta.get("structural_local_kinds", [])),
+        "structural_norm_answer": str(meta.get("structural_norm_answer", "")),
+        "structural_verify_all_status": str(meta.get("structural_verify_all_status", "")),
+        "structural_failed_constraints": list(meta.get("structural_failed_constraints", [])),
+        "structural_oracle_probe_available": bool(meta.get("structural_oracle_probe_available", False)),
+        "structural_oracle_probe_accepted": bool(meta.get("structural_oracle_probe_accepted", False)),
+        "structural_graph_parse_confidence": str(meta.get("structural_graph_parse_confidence", "")),
+        "structural_verify_all_confidence": str(meta.get("structural_verify_all_confidence", "")),
     }
     row["stage2_vs_stage1_outcome"] = _compare_stage2_vs_stage1(row)
     if structure is not None:

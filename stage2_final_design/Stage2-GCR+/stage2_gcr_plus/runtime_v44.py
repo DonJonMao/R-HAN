@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections import defaultdict
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -29,6 +30,22 @@ from .deductive_reasoning import (
     parse_deductive_artifact,
     repair_operator_for_residual,
     verify_deductive_artifact,
+)
+from .structural_constraints import (
+    STRUCTURAL_DATASETS,
+    StructuralArtifact,
+    StructuralEval,
+    StructuralProblemIR,
+    build_kc_conflict_component_repair_prompt,
+    build_kc_verify_all_probe_prompt,
+    build_nlgraph_oracle_candidate,
+    make_structural_eval,
+    parse_kc_verify_all_result,
+    parse_structural_artifact,
+    parse_structural_problem,
+    structural_dominates,
+    structural_final_answer,
+    _has_structural_deterministic_fatal,
 )
 
 
@@ -145,6 +162,31 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry.setdefault("deductive_repair_operator_type", "")
         entry.setdefault("deductive_repair_accepted", False)
         entry.setdefault("deductive_repair_rejected_by_dominance", False)
+        entry.setdefault("structural_dataset", "")
+        entry.setdefault("structural_object_kind", "")
+        entry.setdefault("structural_task_kind", "")
+        entry.setdefault("structural_norm_answer", "")
+        entry.setdefault("structural_witness_signature", "")
+        entry.setdefault("structural_contract_ok", False)
+        entry.setdefault("structural_final_source", "")
+        entry.setdefault("structural_parser_confidence", "")
+        entry.setdefault("structural_fatal_count", 0)
+        entry.setdefault("structural_local_count", 0)
+        entry.setdefault("structural_fatal_kinds", [])
+        entry.setdefault("structural_local_kinds", [])
+        entry.setdefault("structural_repair_locus", "")
+        entry.setdefault("structural_verified_constraints", 0)
+        entry.setdefault("structural_certificate_kind", "")
+        entry.setdefault("structural_certificate_ok", False)
+        entry.setdefault("structural_probe_type", "")
+        entry.setdefault("structural_probe_triggered", False)
+        entry.setdefault("structural_probe_accepted", False)
+        entry.setdefault("structural_verify_all_status", "")
+        entry.setdefault("structural_failed_constraints", [])
+        entry.setdefault("structural_oracle_probe_available", False)
+        entry.setdefault("structural_oracle_probe_accepted", False)
+        entry.setdefault("structural_graph_parse_confidence", "")
+        entry.setdefault("structural_verify_all_confidence", "")
 
     @staticmethod
     def _stable_entry_tiebreak(entry: Dict[str, Any]) -> Tuple[int, str]:
@@ -152,6 +194,12 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             int(bool(entry.get("stage1_anchor", False))),
             str(entry.get("digest", "")),
         )
+
+    def _candidate_source_label(self, entry: Dict[str, Any]) -> str:
+        source = str(entry.get("candidate_bank_source", "")).strip()
+        if source in {"deductive_probe", "structural_probe"}:
+            return source
+        return super()._candidate_source_label(entry)
 
     def _serialize_candidate_entry(self, entry: Dict[str, Any]) -> Dict[str, Any]:
         payload = super()._serialize_candidate_entry(entry)
@@ -199,6 +247,31 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "deductive_repair_operator_type": str(entry.get("deductive_repair_operator_type", "")),
                 "deductive_repair_accepted": bool(entry.get("deductive_repair_accepted", False)),
                 "deductive_repair_rejected_by_dominance": bool(entry.get("deductive_repair_rejected_by_dominance", False)),
+                "structural_dataset": str(entry.get("structural_dataset", "")),
+                "structural_object_kind": str(entry.get("structural_object_kind", "")),
+                "structural_task_kind": str(entry.get("structural_task_kind", "")),
+                "structural_norm_answer": str(entry.get("structural_norm_answer", "")),
+                "structural_witness_signature": str(entry.get("structural_witness_signature", "")),
+                "structural_contract_ok": bool(entry.get("structural_contract_ok", False)),
+                "structural_final_source": str(entry.get("structural_final_source", "")),
+                "structural_parser_confidence": str(entry.get("structural_parser_confidence", "")),
+                "structural_fatal_count": int(entry.get("structural_fatal_count", 0)),
+                "structural_local_count": int(entry.get("structural_local_count", 0)),
+                "structural_fatal_kinds": list(entry.get("structural_fatal_kinds", ())),
+                "structural_local_kinds": list(entry.get("structural_local_kinds", ())),
+                "structural_repair_locus": str(entry.get("structural_repair_locus", "")),
+                "structural_verified_constraints": int(entry.get("structural_verified_constraints", 0)),
+                "structural_certificate_kind": str(entry.get("structural_certificate_kind", "")),
+                "structural_certificate_ok": bool(entry.get("structural_certificate_ok", False)),
+                "structural_probe_type": str(entry.get("structural_probe_type", "")),
+                "structural_probe_triggered": bool(entry.get("structural_probe_triggered", False)),
+                "structural_probe_accepted": bool(entry.get("structural_probe_accepted", False)),
+                "structural_verify_all_status": str(entry.get("structural_verify_all_status", "")),
+                "structural_failed_constraints": list(entry.get("structural_failed_constraints", ())),
+                "structural_oracle_probe_available": bool(entry.get("structural_oracle_probe_available", False)),
+                "structural_oracle_probe_accepted": bool(entry.get("structural_oracle_probe_accepted", False)),
+                "structural_graph_parse_confidence": str(entry.get("structural_graph_parse_confidence", "")),
+                "structural_verify_all_confidence": str(entry.get("structural_verify_all_confidence", "")),
             }
         )
         return payload
@@ -228,6 +301,11 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
 
     def _is_deductive_dataset(self, dataset_profile: DatasetProfile, metadata: Optional[dict]) -> bool:
         return self._dataset_name(dataset_profile, metadata) in DEDUCTIVE_DATASETS
+
+    def _is_structural_dataset(self, dataset_profile: DatasetProfile, metadata: Optional[dict]) -> bool:
+        name = self._dataset_name(dataset_profile, metadata)
+        task_type = str(getattr(dataset_profile, "task_type", "") or (metadata or {}).get("mas_task_type") or "")
+        return name in STRUCTURAL_DATASETS or task_type in {"graph_reasoning", "structured_list"}
 
     def _route_family(self, dataset_profile: DatasetProfile, metadata: Optional[dict]) -> str:
         task_type = str(dataset_profile.task_type)
@@ -289,6 +367,27 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                     "ISSUE: arithmetic_mismatch|algebra_mismatch|unsupported_transition|missing_final|none\n"
                     "FIX: <one sentence>"
                 )
+        if self._is_structural_dataset(dataset_profile, metadata):
+            dataset_name = self._dataset_name(dataset_profile, metadata)
+            if dataset_name == "nlgraph":
+                return (
+                    "Output exactly one JSON object with a structural witness.\n"
+                    "For connectivity use: "
+                    '{"answer":"yes|no","witness_type":"path|component","path":["..."],"components":[["..."]]}\n'
+                    "For shortest_path use: "
+                    '{"answer":["..."],"witness_type":"path","path":["..."],"distance":0}\n'
+                    "For topological_sort use: "
+                    '{"answer":["..."],"witness_type":"order","order":["..."]}\n'
+                    "For cycle use: "
+                    '{"answer":"yes|no","witness_type":"cycle|acyclic","cycle":["..."]}\n'
+                    "Do not include prose outside JSON."
+                )
+            if dataset_name == "knowledge_crosswords":
+                return (
+                    "Output exactly a JSON list of answers in blank order, "
+                    'for example ["answer for blank 1", "answer for blank 2"]. '
+                    "Do not include prose outside JSON."
+                )
         return super()._role_answer_contract(
             graph,
             node,
@@ -311,6 +410,8 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
     ) -> str:
         del reference_answer
         if self._is_deductive_dataset(dataset_profile, metadata):
+            return MultiFidelityEvaluator._strip_hidden_reasoning(str(raw_output or "")).strip()
+        if self._is_structural_dataset(dataset_profile, metadata):
             return MultiFidelityEvaluator._strip_hidden_reasoning(str(raw_output or "")).strip()
         return super()._postprocess_node_output(
             node,
@@ -2050,6 +2151,589 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             )
         return selected_entry, selected_reason, extra
 
+    def _evaluate_structural_candidate(
+        self,
+        question_text: str,
+        entry: Dict[str, Any],
+        dataset_profile: DatasetProfile,
+        metadata: Optional[dict],
+    ) -> StructuralEval:
+        problem = parse_structural_problem(question_text, dataset_profile=dataset_profile, metadata=metadata)
+        artifact = parse_structural_artifact(str(entry.get("text", "")), problem)
+        eval_obj = make_structural_eval(problem, artifact)
+        self._fill_structural_entry_fields(entry, eval_obj)
+        return eval_obj
+
+    def _fill_structural_entry_fields(self, entry: Dict[str, Any], eval_obj: StructuralEval) -> None:
+        self._ensure_v4_4_entry_fields(entry)
+        entry["_structural_eval"] = eval_obj
+        entry["v4_4_route_family"] = "graph_constrained"
+        entry["structural_dataset"] = eval_obj.problem.dataset_name
+        entry["structural_object_kind"] = eval_obj.problem.object_kind
+        entry["structural_task_kind"] = eval_obj.problem.task_kind
+        entry["structural_norm_answer"] = eval_obj.artifact.normalized_answer
+        entry["structural_witness_signature"] = eval_obj.artifact.artifact_signature
+        entry["structural_contract_ok"] = eval_obj.artifact.contract_ok
+        entry["structural_final_source"] = eval_obj.artifact.final_source
+        entry["structural_parser_confidence"] = eval_obj.artifact.parser_confidence
+        entry["structural_fatal_count"] = len(eval_obj.residual.fatal)
+        entry["structural_local_count"] = len(eval_obj.residual.local)
+        entry["structural_fatal_kinds"] = list(eval_obj.residual.fatal)
+        entry["structural_local_kinds"] = list(eval_obj.residual.local)
+        entry["structural_repair_locus"] = eval_obj.residual.repair_locus
+        entry["structural_verified_constraints"] = eval_obj.residual.verified_constraints
+        entry["structural_certificate_kind"] = eval_obj.residual.certificate_kind
+        entry["structural_certificate_ok"] = eval_obj.residual.certificate_ok
+        entry["structural_graph_parse_confidence"] = eval_obj.problem.parse_confidence
+        entry["v4_4_class_key"] = eval_obj.class_key
+
+    @staticmethod
+    def _structural_eval_for_entry(entry: Optional[Dict[str, Any]]) -> Optional[StructuralEval]:
+        if entry is None:
+            return None
+        eval_obj = entry.get("_structural_eval")
+        return eval_obj if isinstance(eval_obj, StructuralEval) else None
+
+    def _structural_rank_key(self, entry: Dict[str, Any]) -> Tuple[Any, ...]:
+        return (
+            -int(entry.get("structural_fatal_count", 0)),
+            int(bool(entry.get("structural_certificate_ok", False))),
+            int(bool(entry.get("structural_contract_ok", False))),
+            -int(entry.get("structural_local_count", 0)),
+            int(bool(entry.get("structural_norm_answer", ""))),
+            int(entry.get("structural_verified_constraints", 0)),
+            int(bool(entry.get("stage1_anchor", False))),
+            str(entry.get("digest", "")),
+        )
+
+    def _collapse_structural_classes(self, verified_entries: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        groups: Dict[Tuple[Any, ...], List[Dict[str, Any]]] = defaultdict(list)
+        for entry in verified_entries:
+            key = tuple(entry.get("v4_4_class_key") or ())
+            groups[key].append(entry)
+
+        reps: List[Dict[str, Any]] = []
+        for members in groups.values():
+            members.sort(key=self._structural_rank_key, reverse=True)
+            rep = members[0]
+            rep["v4_4_class_size"] = len(members)
+            reps.append(rep)
+        reps.sort(key=self._structural_rank_key, reverse=True)
+        return reps
+
+    def _make_structural_probe_entry(
+        self,
+        text: str,
+        eval_obj: StructuralEval,
+        *,
+        source: str,
+        probe_type: str,
+        parent: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        entry = self._init_candidate_entry(text)
+        self._ensure_v4_4_entry_fields(entry)
+        if parent is not None:
+            entry["source_roles"] = set(parent.get("source_roles", set()))
+            entry["source_node_ids"] = set(parent.get("source_node_ids", set()))
+            entry["turn_indices"] = set(parent.get("turn_indices", set()))
+            entry["candidate_model_score"] = float(parent.get("candidate_model_score", 0.5))
+            entry["candidate_model_uncertainty"] = float(parent.get("candidate_model_uncertainty", 0.2))
+            entry["support_score"] = float(parent.get("support_score", 0.5))
+            entry["sink_support"] = int(parent.get("sink_support", 0))
+            entry["occurrence_count"] = int(parent.get("occurrence_count", 0))
+            entry["parent_candidate_digest"] = str(parent.get("digest", ""))
+        entry["candidate_bank_source"] = source
+        entry["origin_role"] = "structural_probe"
+        entry["structural_probe_type"] = probe_type
+        entry["structural_probe_triggered"] = True
+        self._fill_structural_entry_fields(entry, eval_obj)
+        return entry
+
+    def _run_kc_probe_model(
+        self,
+        *,
+        prompt: str,
+        dataset_profile: DatasetProfile,
+        extra_role_hint: str,
+    ) -> str:
+        if not self._by_id:
+            return ""
+        agent_id = "verifier" if "verifier" in self._by_id else next(iter(self._by_id))
+        agent = self._by_id[agent_id]
+        system_prompt = build_system_prompt(agent, self._graph_repair_slots(), extra_role_hint=extra_role_hint)
+        return str(
+            self.evaluator._cached_chat(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                runtime=self.evaluator._resolve_runtime("tier2", dataset_profile),
+            )
+            or ""
+        )
+
+    def _run_kc_verify_all_probe(
+        self,
+        problem: StructuralProblemIR,
+        entry: Dict[str, Any],
+        eval_obj: Optional[StructuralEval],
+        dataset_profile: DatasetProfile,
+        metadata: Optional[dict],
+    ):
+        del metadata
+        if eval_obj is None:
+            return None
+        prompt = build_kc_verify_all_probe_prompt(problem, eval_obj.artifact)
+        raw = self._run_kc_probe_model(
+            prompt=prompt,
+            dataset_profile=dataset_profile,
+            extra_role_hint="kc_verify_all_probe",
+        )
+        if not raw:
+            return None
+        result = parse_kc_verify_all_result(raw)
+        entry["structural_verify_all_status"] = result.status
+        entry["structural_verify_all_confidence"] = result.confidence
+        entry["structural_failed_constraints"] = list(result.failed_constraints)
+        entry["structural_probe_triggered"] = True
+        entry["structural_probe_type"] = "kc_verify_all_probe"
+        return result
+
+    def _run_kc_conflict_component_repair(
+        self,
+        problem: StructuralProblemIR,
+        anchor_entry: Dict[str, Any],
+        anchor_eval: StructuralEval,
+        verify_result,
+        dataset_profile: DatasetProfile,
+        metadata: Optional[dict],
+    ) -> Optional[Dict[str, Any]]:
+        prompt = build_kc_conflict_component_repair_prompt(problem, anchor_eval.artifact, verify_result)
+        raw = self._run_kc_probe_model(
+            prompt=prompt,
+            dataset_profile=dataset_profile,
+            extra_role_hint="kc_conflict_component_repair",
+        )
+        repaired = self._sanitize_candidate(problem.raw_question, raw, metadata=metadata)
+        if not repaired:
+            return None
+        artifact = parse_structural_artifact(repaired, problem)
+        eval_obj = make_structural_eval(problem, artifact)
+        return self._make_structural_probe_entry(
+            artifact.raw_text,
+            eval_obj,
+            source="structural_probe",
+            probe_type="kc_conflict_component_repair",
+            parent=anchor_entry,
+        )
+
+    def _best_kc_challenger(
+        self,
+        collapsed: Sequence[Dict[str, Any]],
+        anchor_eval: StructuralEval,
+    ) -> Optional[Dict[str, Any]]:
+        anchor_answer = anchor_eval.artifact.normalized_answer
+        challengers = [
+            entry
+            for entry in collapsed
+            if str(entry.get("structural_norm_answer", "")) != anchor_answer
+            and int(entry.get("structural_fatal_count", 0)) == 0
+            and bool(entry.get("structural_contract_ok", False))
+        ]
+        challengers.sort(key=self._structural_rank_key, reverse=True)
+        return challengers[0] if challengers else None
+
+    def _select_best_nlgraph_structural(
+        self,
+        *,
+        problem: StructuralProblemIR,
+        anchor_entry: Optional[Dict[str, Any]],
+        anchor_eval: Optional[StructuralEval],
+        collapsed: Sequence[Dict[str, Any]],
+    ) -> Tuple[Optional[Dict[str, Any]], str, Dict[str, Any]]:
+        probe_count = 0
+        accepted_count = 0
+        oracle_available = False
+        oracle_accepted = False
+        oracle_artifact = build_nlgraph_oracle_candidate(problem)
+        if oracle_artifact is not None:
+            oracle_available = True
+            oracle_eval = make_structural_eval(problem, oracle_artifact)
+            oracle_entry = self._make_structural_probe_entry(
+                oracle_artifact.raw_text,
+                oracle_eval,
+                source="structural_probe",
+                probe_type=f"oracle_{problem.task_kind}",
+                parent=anchor_entry,
+            )
+            oracle_entry["structural_oracle_probe_available"] = True
+            probe_count += 1
+            if oracle_eval.residual.certificate_ok:
+                if anchor_eval is None:
+                    oracle_entry["v4_4_selection_reason"] = "v4_4_structural_nlgraph_oracle_probe_override"
+                    oracle_entry["structural_probe_accepted"] = True
+                    oracle_entry["structural_oracle_probe_accepted"] = True
+                    return oracle_entry, "v4_4_structural_nlgraph_oracle_probe_override", {
+                        "probe_count": probe_count,
+                        "accepted_count": 1,
+                        "oracle_available": oracle_available,
+                        "oracle_accepted": True,
+                    }
+                same_answer = oracle_eval.artifact.normalized_answer == anchor_eval.artifact.normalized_answer
+                if same_answer and not anchor_eval.residual.certificate_ok:
+                    oracle_entry["v4_4_selection_reason"] = "v4_4_structural_nlgraph_same_answer_oracle_enrichment"
+                    oracle_entry["structural_probe_accepted"] = True
+                    oracle_entry["structural_oracle_probe_accepted"] = True
+                    return oracle_entry, "v4_4_structural_nlgraph_same_answer_oracle_enrichment", {
+                        "probe_count": probe_count,
+                        "accepted_count": 1,
+                        "oracle_available": oracle_available,
+                        "oracle_accepted": True,
+                    }
+                if structural_dominates(oracle_eval, anchor_eval) or not anchor_eval.residual.certificate_ok:
+                    oracle_entry["v4_4_selection_reason"] = "v4_4_structural_nlgraph_oracle_probe_override"
+                    oracle_entry["structural_probe_accepted"] = True
+                    oracle_entry["structural_oracle_probe_accepted"] = True
+                    oracle_accepted = True
+                    accepted_count = 1
+                    return oracle_entry, "v4_4_structural_nlgraph_oracle_probe_override", {
+                        "probe_count": probe_count,
+                        "accepted_count": accepted_count,
+                        "oracle_available": oracle_available,
+                        "oracle_accepted": oracle_accepted,
+                    }
+
+        if anchor_entry is not None and anchor_eval is not None:
+            anchor_answer = anchor_eval.artifact.normalized_answer
+            same_answer_clean = [
+                entry
+                for entry in collapsed
+                if str(entry.get("structural_norm_answer", "")) == anchor_answer
+                and bool(entry.get("structural_certificate_ok", False))
+            ]
+            if same_answer_clean:
+                same_answer_clean.sort(key=self._structural_rank_key, reverse=True)
+                best = same_answer_clean[0]
+                best["v4_4_selection_reason"] = "v4_4_structural_same_answer_enrichment"
+                return best, "v4_4_structural_same_answer_enrichment", {
+                    "probe_count": probe_count,
+                    "accepted_count": accepted_count,
+                    "oracle_available": oracle_available,
+                    "oracle_accepted": oracle_accepted,
+                }
+
+        if anchor_eval is not None and _has_structural_deterministic_fatal(anchor_eval):
+            clean = [
+                entry
+                for entry in collapsed
+                if bool(entry.get("structural_certificate_ok", False))
+                and int(entry.get("structural_fatal_count", 0)) == 0
+            ]
+            if clean:
+                clean.sort(key=self._structural_rank_key, reverse=True)
+                best = clean[0]
+                best["v4_4_selection_reason"] = "v4_4_structural_clean_candidate_overrides_fatal_anchor"
+                return best, "v4_4_structural_clean_candidate_overrides_fatal_anchor", {
+                    "probe_count": probe_count,
+                    "accepted_count": accepted_count,
+                    "oracle_available": oracle_available,
+                    "oracle_accepted": oracle_accepted,
+                }
+
+        if anchor_entry is not None:
+            anchor_entry["v4_4_selection_reason"] = "v4_4_structural_preserve_anchor_no_certificate"
+            return anchor_entry, "v4_4_structural_preserve_anchor_no_certificate", {
+                "probe_count": probe_count,
+                "accepted_count": accepted_count,
+                "oracle_available": oracle_available,
+                "oracle_accepted": oracle_accepted,
+            }
+        selected = collapsed[0] if collapsed else None
+        return selected, "v4_4_structural_no_anchor_best_available", {
+            "probe_count": probe_count,
+            "accepted_count": accepted_count,
+            "oracle_available": oracle_available,
+            "oracle_accepted": oracle_accepted,
+        }
+
+    def _select_best_kc_structural(
+        self,
+        *,
+        problem: StructuralProblemIR,
+        anchor_entry: Optional[Dict[str, Any]],
+        anchor_eval: Optional[StructuralEval],
+        collapsed: Sequence[Dict[str, Any]],
+        dataset_profile: DatasetProfile,
+        metadata: Optional[dict],
+    ) -> Tuple[Optional[Dict[str, Any]], str, Dict[str, Any]]:
+        probe_count = 0
+        accepted_count = 0
+        verify_status = ""
+        verify_confidence = ""
+        failed_constraints: List[Dict[str, Any]] = []
+
+        if anchor_eval is not None and _has_structural_deterministic_fatal(anchor_eval):
+            best_schema_clean = [
+                entry
+                for entry in collapsed
+                if int(entry.get("structural_fatal_count", 0)) == 0
+                and bool(entry.get("structural_contract_ok", False))
+            ]
+            if best_schema_clean:
+                best_schema_clean.sort(key=self._structural_rank_key, reverse=True)
+                best = best_schema_clean[0]
+                best["v4_4_selection_reason"] = "v4_4_structural_kc_schema_clean_override"
+                return best, "v4_4_structural_kc_schema_clean_override", {
+                    "probe_count": probe_count,
+                    "accepted_count": accepted_count,
+                    "verify_status": verify_status,
+                    "verify_confidence": verify_confidence,
+                    "failed_constraints": failed_constraints,
+                }
+
+        if anchor_entry is not None and anchor_eval is not None:
+            probe_count += 1
+            anchor_verify = self._run_kc_verify_all_probe(problem, anchor_entry, anchor_eval, dataset_profile, metadata)
+            if anchor_verify is not None:
+                verify_status = anchor_verify.status
+                verify_confidence = anchor_verify.confidence
+                failed_constraints = list(anchor_verify.failed_constraints)
+            if anchor_verify and anchor_verify.status == "pass" and anchor_verify.confidence in {"high", "medium"}:
+                anchor_entry["structural_verify_all_status"] = "pass"
+                anchor_entry["v4_4_selection_reason"] = "v4_4_structural_kc_verify_all_preserve_anchor"
+                return anchor_entry, "v4_4_structural_kc_verify_all_preserve_anchor", {
+                    "probe_count": probe_count,
+                    "accepted_count": accepted_count,
+                    "verify_status": verify_status,
+                    "verify_confidence": verify_confidence,
+                    "failed_constraints": failed_constraints,
+                }
+
+            challenger = self._best_kc_challenger(collapsed, anchor_eval)
+            if challenger is not None:
+                challenger_eval = self._structural_eval_for_entry(challenger)
+                probe_count += 1
+                challenger_verify = self._run_kc_verify_all_probe(
+                    problem,
+                    challenger,
+                    challenger_eval,
+                    dataset_profile,
+                    metadata,
+                )
+                if (
+                    challenger_verify
+                    and challenger_verify.status == "pass"
+                    and challenger_verify.confidence in {"high", "medium"}
+                ):
+                    challenger["structural_verify_all_status"] = "pass"
+                    challenger["v4_4_selection_reason"] = "v4_4_structural_kc_verify_all_challenger_override"
+                    challenger["structural_probe_accepted"] = True
+                    accepted_count += 1
+                    return challenger, "v4_4_structural_kc_verify_all_challenger_override", {
+                        "probe_count": probe_count,
+                        "accepted_count": accepted_count,
+                        "verify_status": challenger_verify.status,
+                        "verify_confidence": challenger_verify.confidence,
+                        "failed_constraints": list(challenger_verify.failed_constraints),
+                    }
+
+            if anchor_verify and anchor_verify.failed_constraints:
+                probe_count += 1
+                repaired = self._run_kc_conflict_component_repair(
+                    problem,
+                    anchor_entry,
+                    anchor_eval,
+                    anchor_verify,
+                    dataset_profile,
+                    metadata,
+                )
+                if repaired is not None:
+                    repaired_eval = self._structural_eval_for_entry(repaired)
+                    probe_count += 1
+                    repaired_verify = self._run_kc_verify_all_probe(
+                        problem,
+                        repaired,
+                        repaired_eval,
+                        dataset_profile,
+                        metadata,
+                    )
+                    if (
+                        repaired_verify
+                        and repaired_verify.status == "pass"
+                        and repaired_verify.confidence in {"high", "medium"}
+                    ):
+                        repaired["v4_4_selection_reason"] = "v4_4_structural_kc_conflict_component_repair"
+                        repaired["structural_probe_accepted"] = True
+                        accepted_count += 1
+                        return repaired, "v4_4_structural_kc_conflict_component_repair", {
+                            "probe_count": probe_count,
+                            "accepted_count": accepted_count,
+                            "verify_status": repaired_verify.status,
+                            "verify_confidence": repaired_verify.confidence,
+                            "failed_constraints": list(repaired_verify.failed_constraints),
+                        }
+
+        if anchor_entry is not None:
+            anchor_entry["v4_4_selection_reason"] = "v4_4_structural_kc_preserve_no_verify_all_certificate"
+            return anchor_entry, "v4_4_structural_kc_preserve_no_verify_all_certificate", {
+                "probe_count": probe_count,
+                "accepted_count": accepted_count,
+                "verify_status": verify_status,
+                "verify_confidence": verify_confidence,
+                "failed_constraints": failed_constraints,
+            }
+        selected = collapsed[0] if collapsed else None
+        return selected, "v4_4_structural_kc_no_anchor_best_available", {
+            "probe_count": probe_count,
+            "accepted_count": accepted_count,
+            "verify_status": verify_status,
+            "verify_confidence": verify_confidence,
+            "failed_constraints": failed_constraints,
+        }
+
+    def _select_best_structural_candidate(
+        self,
+        *,
+        question_text: str,
+        anchor_entry: Optional[Dict[str, Any]],
+        candidate_entries: Sequence[Dict[str, Any]],
+        dataset_profile: DatasetProfile,
+        metadata: Optional[dict],
+        budget_bucket: str,
+    ) -> Tuple[Optional[Dict[str, Any]], str, Dict[str, Any]]:
+        dataset_name = self._dataset_name(dataset_profile, metadata)
+        problem = parse_structural_problem(question_text, dataset_profile=dataset_profile, metadata=metadata)
+        verified: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        if anchor_entry is not None:
+            self._evaluate_structural_candidate(question_text, anchor_entry, dataset_profile, metadata)
+            verified.append(anchor_entry)
+            seen.add(str(anchor_entry.get("digest", "")))
+        for entry in candidate_entries:
+            digest = str(entry.get("digest", ""))
+            if digest and digest in seen:
+                continue
+            self._evaluate_structural_candidate(question_text, entry, dataset_profile, metadata)
+            verified.append(entry)
+            seen.add(digest)
+        if not verified:
+            return anchor_entry, "v4_4_structural_empty_bank", {
+                "v4_4_protocol_family": "graph_constrained",
+                "v4_4_execution_mode": "bypass",
+                "v4_4_budget_bucket": budget_bucket,
+                "v4_4_collapsed_class_count": 0,
+            }
+
+        collapsed = self._collapse_structural_classes(verified)
+        anchor_eval = self._structural_eval_for_entry(anchor_entry)
+        if dataset_name == "knowledge_crosswords":
+            selected, reason, route_stats = self._select_best_kc_structural(
+                problem=problem,
+                anchor_entry=anchor_entry,
+                anchor_eval=anchor_eval,
+                collapsed=collapsed,
+                dataset_profile=dataset_profile,
+                metadata=metadata,
+            )
+        else:
+            selected, reason, route_stats = self._select_best_nlgraph_structural(
+                problem=problem,
+                anchor_entry=anchor_entry,
+                anchor_eval=anchor_eval,
+                collapsed=collapsed,
+            )
+
+        selected_eval = self._structural_eval_for_entry(selected)
+        if selected is not None and selected_eval is None:
+            selected_eval = self._evaluate_structural_candidate(question_text, selected, dataset_profile, metadata)
+        probe_count = int(route_stats.get("probe_count", 0))
+        accepted_count = int(route_stats.get("accepted_count", 0))
+        oracle_available = bool(route_stats.get("oracle_available", False))
+        oracle_accepted = bool(route_stats.get("oracle_accepted", False))
+        verify_status = str(route_stats.get("verify_status", ""))
+        verify_confidence = str(route_stats.get("verify_confidence", ""))
+        failed_constraints = list(route_stats.get("failed_constraints", []))
+        execution_mode = self._apply_budget_bucket("lean" if probe_count else "bypass", budget_bucket)
+        anchor_digest = str((anchor_entry or {}).get("digest", ""))
+
+        extra = {
+            "v4_4_protocol_family": "graph_constrained",
+            "v4_4_execution_mode": execution_mode,
+            "v4_4_budget_bucket": budget_bucket,
+            "v4_4_stage1_anchor_present": bool(anchor_entry is not None),
+            "v4_4_stage1_anchor_used": bool(
+                anchor_entry is not None and selected is not None and str(selected.get("digest", "")) == anchor_digest
+            ),
+            "v4_4_candidate_count": int(len(candidate_entries)),
+            "v4_4_collapsed_class_count": int(len(collapsed)),
+            "v4_4_selected_candidate_digest": str((selected or {}).get("digest", "")),
+            "v4_4_selected_candidate_source": self._candidate_source_label(selected or {}),
+            "v4_4_selected_quality_score": float(self._quality_score(selected or {})),
+            "v4_4_selected_model_uncertainty": float((selected or {}).get("candidate_model_uncertainty", 0.0)),
+            "v4_4_selected_broken_block_count": int(
+                (selected or {}).get("structural_fatal_count", 0)
+                + (selected or {}).get("structural_local_count", 0)
+            ),
+            "v4_4_selected_repair_locus": str((selected or {}).get("structural_repair_locus", "")),
+            "v4_4_selected_verified_blocks": int((selected or {}).get("structural_verified_constraints", 0)),
+            "v4_4_graph_branch_count": int(probe_count),
+            "v4_4_graph_restart_count": 0,
+            "v4_4_repair_branch_count": int(probe_count),
+            "v4_4_repair_improvement_count": int(accepted_count),
+            "v4_4_restart_count": 0,
+            "structural_probe_triggered": bool(probe_count > 0),
+            "structural_probe_type": str((selected or {}).get("structural_probe_type", "")),
+            "structural_probe_accepted": bool((selected or {}).get("structural_probe_accepted", False)),
+            "structural_certificate_kind": str((selected or {}).get("structural_certificate_kind", "")),
+            "structural_certificate_ok": bool((selected or {}).get("structural_certificate_ok", False)),
+            "structural_task_kind": str((selected or {}).get("structural_task_kind", "")),
+            "structural_fatal_kinds": list((selected or {}).get("structural_fatal_kinds", ())),
+            "structural_local_kinds": list((selected or {}).get("structural_local_kinds", ())),
+            "structural_norm_answer": str((selected or {}).get("structural_norm_answer", "")),
+            "structural_verify_all_status": str((selected or {}).get("structural_verify_all_status", verify_status)),
+            "structural_failed_constraints": list((selected or {}).get("structural_failed_constraints", failed_constraints)),
+            "structural_oracle_probe_available": bool(oracle_available),
+            "structural_oracle_probe_accepted": bool(
+                oracle_accepted or (selected is not None and selected.get("structural_oracle_probe_accepted", False))
+            ),
+            "structural_graph_parse_confidence": str(
+                (selected or {}).get("structural_graph_parse_confidence", problem.parse_confidence)
+            ),
+            "structural_verify_all_confidence": str(
+                (selected or {}).get("structural_verify_all_confidence", verify_confidence)
+            ),
+            "v4_4_top_classes": [
+                {
+                    "class_key": self._public_class_key(tuple(item.get("v4_4_class_key", ()))),
+                    "size": int(item.get("v4_4_class_size", 1)),
+                    "contains_anchor": bool(anchor_digest and str(item.get("digest", "")) == anchor_digest),
+                    "representative_digest": str(item.get("digest", "")),
+                    "structural_norm_answer": str(item.get("structural_norm_answer", "")),
+                    "fatal_kinds": list(item.get("structural_fatal_kinds", ())),
+                    "local_kinds": list(item.get("structural_local_kinds", ())),
+                    "repair_locus": str(item.get("structural_repair_locus", "")),
+                    "verified_constraints": int(item.get("structural_verified_constraints", 0)),
+                    "certificate_kind": str(item.get("structural_certificate_kind", "")),
+                    "certificate_ok": bool(item.get("structural_certificate_ok", False)),
+                }
+                for item in collapsed[: self.config.max_logged_candidates]
+            ],
+        }
+        if anchor_entry is not None and anchor_eval is not None:
+            extra.update(
+                {
+                    "v4_4_stage1_anchor_digest": str(anchor_entry.get("digest", "")),
+                    "v4_4_stage1_anchor_broken_block_count": int(len(anchor_eval.residual.fatal) + len(anchor_eval.residual.local)),
+                    "v4_4_stage1_anchor_repair_locus": str(anchor_eval.residual.repair_locus),
+                    "v4_4_stage1_anchor_verified_blocks": int(anchor_eval.residual.verified_constraints),
+                    "structural_anchor_answer": str(anchor_eval.artifact.normalized_answer),
+                    "structural_anchor_certificate_ok": bool(anchor_eval.residual.certificate_ok),
+                    "structural_anchor_fatal_kinds": list(anchor_eval.residual.fatal),
+                    "structural_anchor_local_kinds": list(anchor_eval.residual.local),
+                }
+            )
+        return selected, reason, extra
+
     def _evaluate_graph_candidate(
         self,
         *,
@@ -2814,6 +3498,15 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         anchor: Optional[Dict[str, Any]],
         budget_bucket: str,
     ) -> Tuple[Optional[Dict[str, Any]], str, Dict[str, Any]]:
+        if self._is_structural_dataset(dataset_profile, metadata):
+            return self._select_best_structural_candidate(
+                question_text=question_text,
+                anchor_entry=anchor,
+                candidate_entries=candidates,
+                dataset_profile=dataset_profile,
+                metadata=metadata,
+                budget_bucket=budget_bucket,
+            )
         ordered: List[Dict[str, Any]] = []
         if anchor is not None:
             ordered.append(anchor)
@@ -3213,6 +3906,16 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                     metadata=metadata,
                 )
             final_answer = answer_only_from_artifact(selected_eval.artifact)
+        elif selected is not None and route_family == "graph_constrained" and self._is_structural_dataset(dataset_profile, metadata):
+            selected_eval = self._structural_eval_for_entry(selected)
+            if selected_eval is None:
+                selected_eval = self._evaluate_structural_candidate(
+                    question_text,
+                    selected,
+                    dataset_profile,
+                    metadata,
+                )
+            final_answer = structural_final_answer(selected_eval)
         else:
             final_answer = str((selected or {}).get("text", "")) if selected is not None else ""
         self._record_selection_metadata(
