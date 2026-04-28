@@ -40,15 +40,19 @@ from .discrete_slot_calibration import (
     accepts_pairwise_slot_update,
     apply_slot_update,
     build_pairwise_slot_probe_prompt,
+    build_slot_challenger_proposal_prompt,
     make_slot_eval,
     mine_slot_challengers,
     parse_slot_artifact,
+    parse_slot_challenger_proposal,
     parse_slot_problem,
     parse_slot_probe_result,
     preserves_frozen_slots,
     propose_membership_repair,
     slot_assignment_final_answer,
     slot_update_dominates,
+    _detect_question_polarity,
+    _norm_text,
 )
 from .structural_constraints import (
     STRUCTURAL_DATASETS,
@@ -230,6 +234,27 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry.setdefault("discrete_probe_confidence", "")
         entry.setdefault("discrete_update_accepted", False)
         entry.setdefault("discrete_update_slots", [])
+        entry.setdefault("discrete_target_polarity", "")
+        entry.setdefault("discrete_probe_question_polarity", "")
+        entry.setdefault("discrete_probe_target_condition", "")
+        entry.setdefault("discrete_probe_inverse_condition", "")
+        entry.setdefault("discrete_probe_anchor_satisfies_target", "")
+        entry.setdefault("discrete_probe_challenger_satisfies_target", "")
+        entry.setdefault("discrete_probe_anchor_satisfies_inverse", "")
+        entry.setdefault("discrete_probe_challenger_satisfies_inverse", "")
+        entry.setdefault("discrete_probe_discriminator", "")
+        entry.setdefault("discrete_probe_anchor_support_count", 0)
+        entry.setdefault("discrete_probe_challenger_support_count", 0)
+        entry.setdefault("discrete_audit_triggered", False)
+        entry.setdefault("discrete_audit_winner", "")
+        entry.setdefault("discrete_audit_confidence", "")
+        entry.setdefault("discrete_anchor_source_count", 0)
+        entry.setdefault("discrete_anchor_occurrence_count", 0)
+        entry.setdefault("discrete_anchor_sink_support", 0)
+        entry.setdefault("discrete_challenger_support_dominates", False)
+        entry.setdefault("discrete_pairwise_reject_reason", "")
+        entry.setdefault("discrete_challenger_proposal_triggered", False)
+        entry.setdefault("discrete_challenger_proposal_count", 0)
 
     @staticmethod
     def _stable_entry_tiebreak(entry: Dict[str, Any]) -> Tuple[int, str]:
@@ -339,6 +364,27 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "discrete_probe_confidence": str(entry.get("discrete_probe_confidence", "")),
                 "discrete_update_accepted": bool(entry.get("discrete_update_accepted", False)),
                 "discrete_update_slots": list(entry.get("discrete_update_slots", ())),
+                "discrete_target_polarity": str(entry.get("discrete_target_polarity", "")),
+                "discrete_probe_question_polarity": str(entry.get("discrete_probe_question_polarity", "")),
+                "discrete_probe_target_condition": str(entry.get("discrete_probe_target_condition", "")),
+                "discrete_probe_inverse_condition": str(entry.get("discrete_probe_inverse_condition", "")),
+                "discrete_probe_anchor_satisfies_target": str(entry.get("discrete_probe_anchor_satisfies_target", "")),
+                "discrete_probe_challenger_satisfies_target": str(entry.get("discrete_probe_challenger_satisfies_target", "")),
+                "discrete_probe_anchor_satisfies_inverse": str(entry.get("discrete_probe_anchor_satisfies_inverse", "")),
+                "discrete_probe_challenger_satisfies_inverse": str(entry.get("discrete_probe_challenger_satisfies_inverse", "")),
+                "discrete_probe_discriminator": str(entry.get("discrete_probe_discriminator", "")),
+                "discrete_probe_anchor_support_count": int(entry.get("discrete_probe_anchor_support_count", 0)),
+                "discrete_probe_challenger_support_count": int(entry.get("discrete_probe_challenger_support_count", 0)),
+                "discrete_audit_triggered": bool(entry.get("discrete_audit_triggered", False)),
+                "discrete_audit_winner": str(entry.get("discrete_audit_winner", "")),
+                "discrete_audit_confidence": str(entry.get("discrete_audit_confidence", "")),
+                "discrete_anchor_source_count": int(entry.get("discrete_anchor_source_count", 0)),
+                "discrete_anchor_occurrence_count": int(entry.get("discrete_anchor_occurrence_count", 0)),
+                "discrete_anchor_sink_support": int(entry.get("discrete_anchor_sink_support", 0)),
+                "discrete_challenger_support_dominates": bool(entry.get("discrete_challenger_support_dominates", False)),
+                "discrete_pairwise_reject_reason": str(entry.get("discrete_pairwise_reject_reason", "")),
+                "discrete_challenger_proposal_triggered": bool(entry.get("discrete_challenger_proposal_triggered", False)),
+                "discrete_challenger_proposal_count": int(entry.get("discrete_challenger_proposal_count", 0)),
             }
         )
         return payload
@@ -2325,6 +2371,107 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             str(entry.get("digest", "")),
         )
 
+    def _slot_value_support_table(
+        self,
+        *,
+        problem: SlotProblemIR,
+        anchor_eval: SlotEval,
+        entries: List[dict],
+    ) -> Dict[Tuple[str, str], Tuple[int, int, int]]:
+        # key = (slot_id, normalized_value)
+        # value = (source_count, occurrence_count, sink_support)
+        table: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+        def add(slot_id: str, value: str, entry: dict, *, anchor: bool = False) -> None:
+            norm = _norm_text(value)
+            if not norm:
+                return
+            key = (slot_id, norm)
+            bucket = table.setdefault(key, {"sources": set(), "occurrence": 0, "sink": 0})
+
+            source = str(
+                entry.get("origin_node_id")
+                or entry.get("origin_role")
+                or entry.get("candidate_bank_source")
+                or entry.get("digest")
+                or ("stage1_anchor" if anchor else "")
+            )
+            if source:
+                bucket["sources"].add(source)
+
+            bucket["occurrence"] += max(1, int(entry.get("occurrence_count", 1)))
+            bucket["sink"] += int(entry.get("sink_support", 0))
+
+        # Anchor support.
+        anchor_entry = {"candidate_bank_source": "stage1_anchor", "occurrence_count": 1, "sink_support": 0}
+        for slot_id, value in anchor_eval.artifact.assignment.items():
+            add(slot_id, value, anchor_entry, anchor=True)
+
+        # Candidate support.
+        for entry in entries:
+            eval_obj = entry.get("_slot_eval")
+            if not isinstance(eval_obj, SlotEval):
+                continue
+            if eval_obj.residual.fatal:
+                continue
+            for slot_id, value in eval_obj.artifact.assignment.items():
+                add(slot_id, value, entry)
+
+        return {
+            key: (len(value["sources"]), int(value["occurrence"]), int(value["sink"]))
+            for key, value in table.items()
+        }
+
+    @staticmethod
+    def _pairwise_slot_reject_reason(
+        *,
+        problem: SlotProblemIR,
+        challenger: SlotChallenger,
+        probe: PairwiseSlotProbeResult,
+        audit: Optional[PairwiseSlotProbeResult] = None,
+        anchor_support: Optional[Tuple[int, int, int]] = None,
+        challenger_support: Optional[Tuple[int, int, int]] = None,
+    ) -> str:
+        parser_polarity = _detect_question_polarity(problem.raw_question)
+        if not probe.discriminator:
+            return "reject_no_discriminator"
+        if not probe.challenger_support:
+            return "reject_no_challenger_support"
+        if parser_polarity == "negative_or_exception" and probe.question_polarity not in {"negative", "exception", "negative_or_exception"}:
+            return "reject_polarity_mismatch"
+        if parser_polarity == "negative_or_exception" and not probe.inverse_condition:
+            return "reject_polarity_mismatch"
+        if probe.challenger_satisfies_target != "yes":
+            return "reject_challenger_not_target"
+        if probe.challenger_satisfies_inverse == "yes":
+            return "reject_challenger_inverse"
+        if probe.anchor_satisfies_target != "no" or not probe.anchor_conflict:
+            return "reject_anchor_not_conflicted"
+        if anchor_support is not None and challenger_support is not None:
+            if challenger_support <= anchor_support and audit is None:
+                return "reject_support_weaker_than_anchor"
+        has_pool_support = challenger.source_count >= 2 or challenger.occurrence_count >= 2
+        if not has_pool_support and audit is None:
+            return "reject_support_weaker_than_anchor"
+        if audit is not None:
+            if audit.winner != "challenger":
+                return "reject_audit_disagree"
+            if audit.confidence not in {"high", "medium"}:
+                return "reject_audit_disagree"
+            if not audit.challenger_support or not audit.discriminator:
+                return "reject_audit_disagree"
+            if audit.challenger_satisfies_target != "yes":
+                return "reject_audit_disagree"
+            if audit.anchor_satisfies_target != "no":
+                return "reject_audit_disagree"
+            if audit.challenger_satisfies_inverse == "yes":
+                return "reject_audit_disagree"
+            if audit.challenger_conflict:
+                return "reject_audit_disagree"
+        if probe.winner != "challenger" or probe.confidence not in {"high", "medium"} or probe.challenger_conflict:
+            return "reject_audit_disagree" if audit is not None else "probe_reject"
+        return ""
+
     def _collapse_slot_classes(self, verified_entries: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
         groups: Dict[Tuple[Any, ...], List[Dict[str, Any]]] = defaultdict(list)
         for entry in verified_entries:
@@ -2372,6 +2519,9 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         parent_entry: Dict[str, Any],
         challenger: SlotChallenger,
         probe: PairwiseSlotProbeResult,
+        audit: Optional[PairwiseSlotProbeResult] = None,
+        anchor_support: Optional[Tuple[int, int, int]] = None,
+        challenger_support: Optional[Tuple[int, int, int]] = None,
         problem: SlotProblemIR,
     ) -> Dict[str, Any]:
         entry = self._make_discrete_probe_entry(
@@ -2388,6 +2538,27 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry["discrete_challenger_sink_support"] = challenger.sink_support
         entry["discrete_probe_winner"] = probe.winner
         entry["discrete_probe_confidence"] = probe.confidence
+        entry["discrete_target_polarity"] = _detect_question_polarity(problem.raw_question)
+        entry["discrete_probe_question_polarity"] = probe.question_polarity
+        entry["discrete_probe_target_condition"] = probe.target_condition
+        entry["discrete_probe_inverse_condition"] = probe.inverse_condition
+        entry["discrete_probe_anchor_satisfies_target"] = probe.anchor_satisfies_target
+        entry["discrete_probe_challenger_satisfies_target"] = probe.challenger_satisfies_target
+        entry["discrete_probe_anchor_satisfies_inverse"] = probe.anchor_satisfies_inverse
+        entry["discrete_probe_challenger_satisfies_inverse"] = probe.challenger_satisfies_inverse
+        entry["discrete_probe_discriminator"] = probe.discriminator
+        entry["discrete_probe_anchor_support_count"] = len(probe.anchor_support)
+        entry["discrete_probe_challenger_support_count"] = len(probe.challenger_support)
+        if audit is not None:
+            entry["discrete_audit_triggered"] = True
+            entry["discrete_audit_winner"] = audit.winner
+            entry["discrete_audit_confidence"] = audit.confidence
+        if anchor_support is not None:
+            entry["discrete_anchor_source_count"] = anchor_support[0]
+            entry["discrete_anchor_occurrence_count"] = anchor_support[1]
+            entry["discrete_anchor_sink_support"] = anchor_support[2]
+        if challenger_support is not None:
+            entry["discrete_challenger_support_dominates"] = challenger_support > (anchor_support or (0, 0, 0))
         entry["discrete_update_accepted"] = True
         entry["discrete_update_slots"] = [challenger.slot_id]
         eval_obj = make_slot_eval(problem, artifact)
@@ -2420,21 +2591,33 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
     def _run_pairwise_slot_probe(
         self,
         *,
+        question_text: str,
         problem: SlotProblemIR,
         anchor_entry: Dict[str, Any],
         anchor_eval: SlotEval,
         challenger: SlotChallenger,
+        metadata: Optional[dict],
         dataset_profile: DatasetProfile,
+        mode: str = "initial",
     ) -> Optional[Dict[str, Any]]:
+        del question_text
+        del metadata
         prompt = build_pairwise_slot_probe_prompt(
             problem=problem,
             artifact=anchor_eval.artifact,
             challenger=challenger,
         )
+        if mode == "audit":
+            prompt = (
+                "You are auditing a proposed answer change.\n"
+                "Default decision is KEEP ANCHOR unless the challenger clearly satisfies the target condition and the anchor clearly violates it.\n"
+                "Pay special attention to NOT, EXCEPT, LEAST, FALSE, INCORRECT, and other polarity cues.\n\n"
+                + prompt
+            )
         raw = self._run_discrete_slot_probe_model(
             prompt=prompt,
             dataset_profile=dataset_profile,
-            extra_role_hint="discrete_slot_pairwise_probe",
+            extra_role_hint="discrete_slot_pairwise_probe" if mode != "audit" else "discrete_slot_pairwise_audit_probe",
         )
         if not raw:
             return None
@@ -2454,7 +2637,90 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry["discrete_challenger_sink_support"] = challenger.sink_support
         entry["discrete_probe_winner"] = result.winner
         entry["discrete_probe_confidence"] = result.confidence
+        entry["discrete_target_polarity"] = _detect_question_polarity(problem.raw_question)
+        entry["discrete_probe_question_polarity"] = result.question_polarity
+        entry["discrete_probe_target_condition"] = result.target_condition
+        entry["discrete_probe_inverse_condition"] = result.inverse_condition
+        entry["discrete_probe_anchor_satisfies_target"] = result.anchor_satisfies_target
+        entry["discrete_probe_challenger_satisfies_target"] = result.challenger_satisfies_target
+        entry["discrete_probe_anchor_satisfies_inverse"] = result.anchor_satisfies_inverse
+        entry["discrete_probe_challenger_satisfies_inverse"] = result.challenger_satisfies_inverse
+        entry["discrete_probe_discriminator"] = result.discriminator
+        entry["discrete_probe_anchor_support_count"] = len(result.anchor_support)
+        entry["discrete_probe_challenger_support_count"] = len(result.challenger_support)
+        if mode == "audit":
+            entry["discrete_audit_triggered"] = True
+            entry["discrete_audit_winner"] = result.winner
+            entry["discrete_audit_confidence"] = result.confidence
         return entry
+
+    def _run_slot_challenger_proposal(
+        self,
+        *,
+        question_text: str,
+        problem: SlotProblemIR,
+        anchor_eval: SlotEval,
+        dataset_profile: DatasetProfile,
+        metadata: Optional[dict],
+    ) -> List[SlotChallenger]:
+        del question_text
+        del metadata
+        prompt = build_slot_challenger_proposal_prompt(
+            problem=problem,
+            artifact=anchor_eval.artifact,
+            max_challengers=2,
+        )
+        raw = self._run_discrete_slot_probe_model(
+            prompt=prompt,
+            dataset_profile=dataset_profile,
+            extra_role_hint="slot_challenger_proposal",
+        )
+        if not raw:
+            return []
+        _, proposals = parse_slot_challenger_proposal(raw, problem)
+        challengers: List[SlotChallenger] = []
+        for index, item in enumerate(proposals[:2]):
+            slot_id = str(item.get("slot_id", "")).strip()
+            value = str(item.get("value", "")).strip()
+            if not slot_id or not value:
+                continue
+            anchor_value = str(anchor_eval.artifact.assignment.get(slot_id, "")).strip()
+            if not anchor_value or _norm_text(anchor_value) == _norm_text(value):
+                continue
+            challengers.append(
+                SlotChallenger(
+                    slot_id=slot_id,
+                    anchor_value=anchor_value,
+                    challenger_value=value,
+                    occurrence_count=0,
+                    sink_support=0,
+                    source_count=0,
+                    best_entry_digest=f"proposal_{index}",
+                    best_entry={
+                        "candidate_bank_source": "slot_challenger_proposal",
+                        "origin_role": "discrete_probe",
+                        "digest": f"proposal_{index}",
+                        "occurrence_count": 0,
+                        "sink_support": 0,
+                    },
+                )
+            )
+        return challengers
+
+    @staticmethod
+    def _merge_proposed_challengers(
+        challengers: Sequence[SlotChallenger],
+        proposed: Sequence[SlotChallenger],
+    ) -> List[SlotChallenger]:
+        merged: List[SlotChallenger] = list(challengers)
+        seen = {(item.slot_id, _norm_text(item.challenger_value)) for item in merged}
+        for item in proposed:
+            key = (item.slot_id, _norm_text(item.challenger_value))
+            if key in seen:
+                continue
+            merged.append(item)
+            seen.add(key)
+        return merged
 
     def _select_best_discrete_slot_candidate(
         self,
@@ -2506,6 +2772,10 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         anchor_eval = self._slot_eval_for_entry(anchor_entry)
         probe_count = 0
         accepted_count = 0
+        audit_count = 0
+        proposal_triggered = False
+        proposal_count = 0
+        last_reject_reason = ""
         selected: Optional[Dict[str, Any]] = None
         reason = ""
 
@@ -2547,49 +2817,136 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                     anchor_eval=anchor_eval,
                     candidate_entries=verified,
                 )
+                support_table = self._slot_value_support_table(
+                    problem=problem,
+                    anchor_eval=anchor_eval,
+                    entries=verified,
+                )
+                if not challengers:
+                    proposal_triggered = True
+                    proposed = self._run_slot_challenger_proposal(
+                        question_text=question_text,
+                        problem=problem,
+                        anchor_eval=anchor_eval,
+                        dataset_profile=dataset_profile,
+                        metadata=metadata,
+                    )
+                    proposal_count = len(proposed)
+                    challengers = self._merge_proposed_challengers(challengers, proposed)
                 limit = max(1, int(getattr(self.config, "v4_4_max_slot_challengers", 1)))
                 for challenger in challengers[:limit]:
+                    slot_id = challenger.slot_id
+                    anchor_key = (slot_id, _norm_text(challenger.anchor_value))
+                    challenger_key = (slot_id, _norm_text(challenger.challenger_value))
+                    anchor_support_key = support_table.get(anchor_key, (0, 0, 0))
+                    challenger_support_key = support_table.get(challenger_key, (0, 0, 0))
                     probe_count += 1
                     probe_entry = self._run_pairwise_slot_probe(
+                        question_text=question_text,
                         problem=problem,
                         anchor_entry=anchor_entry,
                         anchor_eval=anchor_eval,
                         challenger=challenger,
+                        metadata=metadata,
                         dataset_profile=dataset_profile,
+                        mode="initial",
                     )
                     probe = probe_entry.get("_slot_probe_result") if probe_entry is not None else None
                     if not isinstance(probe, PairwiseSlotProbeResult):
+                        last_reject_reason = "probe_reject"
                         continue
-                    if accepts_pairwise_slot_update(
+                    if probe_entry is not None:
+                        probe_entry["discrete_anchor_source_count"] = anchor_support_key[0]
+                        probe_entry["discrete_anchor_occurrence_count"] = anchor_support_key[1]
+                        probe_entry["discrete_anchor_sink_support"] = anchor_support_key[2]
+                        probe_entry["discrete_challenger_support_dominates"] = challenger_support_key > anchor_support_key
+                    prelim = accepts_pairwise_slot_update(
                         problem=problem,
                         anchor_eval=anchor_eval,
                         challenger=challenger,
                         probe=probe,
-                    ):
-                        updated_artifact = apply_slot_update(anchor_eval, challenger)
-                        updated_entry = self._make_discrete_slot_update_entry(
-                            updated_artifact,
-                            parent_entry=anchor_entry,
+                        audit=None,
+                        anchor_support=anchor_support_key,
+                        challenger_support=challenger_support_key,
+                    )
+                    if not prelim:
+                        last_reject_reason = self._pairwise_slot_reject_reason(
+                            problem=problem,
                             challenger=challenger,
                             probe=probe,
-                            problem=problem,
+                            audit=None,
+                            anchor_support=anchor_support_key,
+                            challenger_support=challenger_support_key,
                         )
-                        updated_eval = self._slot_eval_for_entry(updated_entry)
-                        if (
-                            updated_eval is not None
-                            and not updated_eval.residual.fatal
-                            and preserves_frozen_slots(
-                                anchor_eval.artifact.assignment,
-                                updated_eval.artifact.assignment,
-                                {challenger.slot_id},
-                            )
-                        ):
-                            accepted_count += 1
-                            selected = updated_entry
-                            reason = "v4_4_discrete_pairwise_slot_update"
-                            break
+                        if probe_entry is not None:
+                            probe_entry["discrete_pairwise_reject_reason"] = last_reject_reason
+                        if last_reject_reason != "reject_support_weaker_than_anchor":
+                            continue
+                    audit_count += 1
+                    audit_entry = self._run_pairwise_slot_probe(
+                        question_text=question_text,
+                        problem=problem,
+                        anchor_entry=anchor_entry,
+                        anchor_eval=anchor_eval,
+                        challenger=challenger,
+                        metadata=metadata,
+                        dataset_profile=dataset_profile,
+                        mode="audit",
+                    )
+                    audit = audit_entry.get("_slot_probe_result") if audit_entry is not None else None
+                    if not isinstance(audit, PairwiseSlotProbeResult):
+                        last_reject_reason = "reject_audit_disagree"
+                        continue
+                    if not accepts_pairwise_slot_update(
+                        problem=problem,
+                        anchor_eval=anchor_eval,
+                        challenger=challenger,
+                        probe=probe,
+                        audit=audit,
+                        anchor_support=anchor_support_key,
+                        challenger_support=challenger_support_key,
+                    ):
+                        last_reject_reason = self._pairwise_slot_reject_reason(
+                            problem=problem,
+                            challenger=challenger,
+                            probe=probe,
+                            audit=audit,
+                            anchor_support=anchor_support_key,
+                            challenger_support=challenger_support_key,
+                        ) or "reject_audit_disagree"
+                        if audit_entry is not None:
+                            audit_entry["discrete_pairwise_reject_reason"] = last_reject_reason
+                        continue
+                    updated_artifact = apply_slot_update(anchor_eval, challenger)
+                    updated_entry = self._make_discrete_slot_update_entry(
+                        updated_artifact,
+                        parent_entry=anchor_entry,
+                        challenger=challenger,
+                        probe=probe,
+                        audit=audit,
+                        anchor_support=anchor_support_key,
+                        challenger_support=challenger_support_key,
+                        problem=problem,
+                    )
+                    updated_eval = self._slot_eval_for_entry(updated_entry)
+                    if (
+                        updated_eval is not None
+                        and not updated_eval.residual.fatal
+                        and preserves_frozen_slots(
+                            anchor_eval.artifact.assignment,
+                            updated_eval.artifact.assignment,
+                            {challenger.slot_id},
+                        )
+                    ):
+                        accepted_count += 1
+                        selected = updated_entry
+                        reason = "v4_4_discrete_pairwise_slot_update"
+                        break
 
             if selected is None:
+                anchor_entry["discrete_pairwise_reject_reason"] = last_reject_reason
+                anchor_entry["discrete_challenger_proposal_triggered"] = proposal_triggered
+                anchor_entry["discrete_challenger_proposal_count"] = proposal_count
                 selected = anchor_entry
                 reason = "v4_4_discrete_preserve_anchor_no_slot_certificate"
         else:
@@ -2625,6 +2982,27 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             "discrete_probe_confidence": str((selected or {}).get("discrete_probe_confidence", "")),
             "discrete_update_accepted": bool((selected or {}).get("discrete_update_accepted", False)),
             "discrete_update_slots": list((selected or {}).get("discrete_update_slots", ())),
+            "discrete_target_polarity": str((selected or {}).get("discrete_target_polarity", "")),
+            "discrete_probe_question_polarity": str((selected or {}).get("discrete_probe_question_polarity", "")),
+            "discrete_probe_target_condition": str((selected or {}).get("discrete_probe_target_condition", "")),
+            "discrete_probe_inverse_condition": str((selected or {}).get("discrete_probe_inverse_condition", "")),
+            "discrete_probe_anchor_satisfies_target": str((selected or {}).get("discrete_probe_anchor_satisfies_target", "")),
+            "discrete_probe_challenger_satisfies_target": str((selected or {}).get("discrete_probe_challenger_satisfies_target", "")),
+            "discrete_probe_anchor_satisfies_inverse": str((selected or {}).get("discrete_probe_anchor_satisfies_inverse", "")),
+            "discrete_probe_challenger_satisfies_inverse": str((selected or {}).get("discrete_probe_challenger_satisfies_inverse", "")),
+            "discrete_probe_discriminator": str((selected or {}).get("discrete_probe_discriminator", "")),
+            "discrete_probe_anchor_support_count": int((selected or {}).get("discrete_probe_anchor_support_count", 0)),
+            "discrete_probe_challenger_support_count": int((selected or {}).get("discrete_probe_challenger_support_count", 0)),
+            "discrete_audit_triggered": bool(audit_count),
+            "discrete_audit_winner": str((selected or {}).get("discrete_audit_winner", "")),
+            "discrete_audit_confidence": str((selected or {}).get("discrete_audit_confidence", "")),
+            "discrete_anchor_source_count": int((selected or {}).get("discrete_anchor_source_count", 0)),
+            "discrete_anchor_occurrence_count": int((selected or {}).get("discrete_anchor_occurrence_count", 0)),
+            "discrete_anchor_sink_support": int((selected or {}).get("discrete_anchor_sink_support", 0)),
+            "discrete_challenger_support_dominates": bool((selected or {}).get("discrete_challenger_support_dominates", False)),
+            "discrete_pairwise_reject_reason": str((selected or {}).get("discrete_pairwise_reject_reason", last_reject_reason)),
+            "discrete_challenger_proposal_triggered": bool(proposal_triggered),
+            "discrete_challenger_proposal_count": int(proposal_count),
             "v4_4_top_classes": [
                 {
                     "class_key": self._public_class_key(tuple(item.get("v4_4_class_key", ()))),

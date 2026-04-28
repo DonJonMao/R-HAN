@@ -77,9 +77,20 @@ class PairwiseSlotProbeResult:
     discriminator: str
     confidence: str
     raw: str
+    question_polarity: str
+    target_condition: str
+    inverse_condition: str
+    anchor_satisfies_target: str
+    challenger_satisfies_target: str
+    anchor_satisfies_inverse: str
+    challenger_satisfies_inverse: str
 
 
 _MCQ_OPTION_RE = re.compile(r"(?m)^\s*([A-Z]|\d{1,3})[\.\):：]\s*(.+?)\s*$")
+_NEGATIVE_CUE_RE = re.compile(
+    r"\b(not|except|least|false|incorrect|cannot|can't|never|none of|not\s+an?|not\s+the)\b",
+    flags=re.IGNORECASE,
+)
 
 
 def _strip_hidden_reasoning(text: str) -> str:
@@ -109,6 +120,17 @@ def _norm_text(value: Any) -> str:
 
 def _norm_label(value: Any) -> str:
     return str(value or "").strip().upper().rstrip(".")
+
+
+def _detect_question_polarity(text: str) -> str:
+    lower = str(text or "").lower()
+    if _NEGATIVE_CUE_RE.search(lower):
+        return "negative_or_exception"
+    if re.search(r"\b(least|minimum|smallest|lowest)\b", lower):
+        return "comparative_low"
+    if re.search(r"\b(most|maximum|largest|highest)\b", lower):
+        return "comparative_high"
+    return "positive_or_unknown"
 
 
 def _normalize_options(value: Any) -> list[str]:
@@ -830,6 +852,7 @@ def build_pairwise_slot_probe_prompt(
     challenger: SlotChallenger,
 ) -> str:
     slot = _slot_by_id(problem, challenger.slot_id)
+    polarity_hint = _detect_question_polarity(problem.raw_question)
     return (
         "You are calibrating one finite-option slot.\n\n"
         f"Problem:\n{problem.raw_question}\n\n"
@@ -838,22 +861,38 @@ def build_pairwise_slot_probe_prompt(
         f"Allowed options for this slot:\n{json.dumps(list(slot.options), ensure_ascii=False)}\n\n"
         f"Anchor value:\n{challenger.anchor_value}\n\n"
         f"Challenger value:\n{challenger.challenger_value}\n\n"
-        "Frozen context:\n"
-        "All other slots must remain unchanged.\n"
-        "For multi-slot assignments, use other slot values only as context.\n"
-        "For single-slot assignments, compare only the two options.\n\n"
-        "Decide whether the challenger strictly dominates the anchor.\n\n"
+        "First identify the target condition for the correct value of this slot.\n"
+        "If the question contains NOT, EXCEPT, LEAST, FALSE, INCORRECT, CANNOT, or similar cues, "
+        "the target condition must preserve that polarity. Do not reverse it.\n\n"
+        f"Polarity hint from parser: {polarity_hint}\n\n"
+        "For negative or exception questions, an option that satisfies the excluded property is a conflict, not support.\n\n"
         "Return exactly one JSON object:\n"
         "{\n"
-        '  "winner": "anchor" | "challenger" | "uncertain",\n'
+        '  "question_polarity": "positive|negative|exception|comparative|unknown",\n'
+        '  "target_condition": "...",\n'
+        '  "inverse_condition": "...",\n'
+        '  "anchor_satisfies_target": "yes|no|uncertain",\n'
+        '  "challenger_satisfies_target": "yes|no|uncertain",\n'
+        '  "anchor_satisfies_inverse": "yes|no|uncertain",\n'
+        '  "challenger_satisfies_inverse": "yes|no|uncertain",\n'
+        '  "winner": "anchor|challenger|uncertain",\n'
         '  "anchor_conflict": ["..."],\n'
         '  "challenger_conflict": ["..."],\n'
         '  "anchor_support": ["..."],\n'
         '  "challenger_support": ["..."],\n'
         '  "discriminator": "the key fact/relation that decides the slot",\n'
-        '  "confidence": "high" | "medium" | "low"\n'
+        '  "confidence": "high|medium|low"\n'
         "}\n"
     )
+
+
+def _norm_yes_no_uncertain(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"yes", "true", "y"}:
+        return "yes"
+    if text in {"no", "false", "n"}:
+        return "no"
+    return "uncertain"
 
 
 def parse_slot_probe_result(text: str) -> PairwiseSlotProbeResult:
@@ -868,6 +907,13 @@ def parse_slot_probe_result(text: str) -> PairwiseSlotProbeResult:
             discriminator="",
             confidence="low",
             raw=str(text or ""),
+            question_polarity="unknown",
+            target_condition="",
+            inverse_condition="",
+            anchor_satisfies_target="uncertain",
+            challenger_satisfies_target="uncertain",
+            anchor_satisfies_inverse="uncertain",
+            challenger_satisfies_inverse="uncertain",
         )
     winner = str(obj.get("winner", "uncertain")).strip().lower()
     if winner not in {"anchor", "challenger", "uncertain"}:
@@ -888,6 +934,13 @@ def parse_slot_probe_result(text: str) -> PairwiseSlotProbeResult:
         discriminator=str(obj.get("discriminator", "")).strip(),
         confidence=confidence,
         raw=str(text or ""),
+        question_polarity=str(obj.get("question_polarity", "unknown")).strip().lower(),
+        target_condition=str(obj.get("target_condition", "")).strip(),
+        inverse_condition=str(obj.get("inverse_condition", "")).strip(),
+        anchor_satisfies_target=_norm_yes_no_uncertain(obj.get("anchor_satisfies_target")),
+        challenger_satisfies_target=_norm_yes_no_uncertain(obj.get("challenger_satisfies_target")),
+        anchor_satisfies_inverse=_norm_yes_no_uncertain(obj.get("anchor_satisfies_inverse")),
+        challenger_satisfies_inverse=_norm_yes_no_uncertain(obj.get("challenger_satisfies_inverse")),
     )
 
 
@@ -897,22 +950,138 @@ def accepts_pairwise_slot_update(
     anchor_eval: SlotEval,
     challenger: SlotChallenger,
     probe: PairwiseSlotProbeResult,
+    audit: PairwiseSlotProbeResult | None = None,
+    anchor_support: tuple[int, int, int] | None = None,
+    challenger_support: tuple[int, int, int] | None = None,
 ) -> bool:
     del anchor_eval
     slot = _slot_by_id(problem, challenger.slot_id)
+
     if not _value_in_slot_options(challenger.challenger_value, slot):
         return False
-    if challenger.source_count < 2 and challenger.occurrence_count < 2:
+
+    # Candidate-pool support: either challenger has independent support,
+    # or it must be confirmed by both probe and audit.
+    has_pool_support = challenger.source_count >= 2 or challenger.occurrence_count >= 2
+
+    if not has_pool_support and audit is None:
         return False
+
     if probe.winner != "challenger":
         return False
+
     if probe.confidence not in {"high", "medium"}:
         return False
+
+    # New hard evidence requirements.
+    if not probe.discriminator:
+        return False
+
+    if not probe.challenger_support:
+        return False
+
     if not probe.anchor_conflict:
         return False
+
     if probe.challenger_conflict:
         return False
+
+    # Target-condition requirements.
+    if probe.challenger_satisfies_target != "yes":
+        return False
+
+    if probe.anchor_satisfies_target != "no":
+        return False
+
+    if probe.challenger_satisfies_inverse == "yes":
+        return False
+
+    # Polarity guard.
+    parser_polarity = _detect_question_polarity(problem.raw_question)
+    if parser_polarity == "negative_or_exception":
+        if probe.question_polarity not in {"negative", "exception", "negative_or_exception"}:
+            return False
+        if not probe.inverse_condition:
+            return False
+
+    # Candidate support must not be weaker than anchor support unless audit confirms.
+    if anchor_support is not None and challenger_support is not None:
+        if challenger_support <= anchor_support and audit is None:
+            return False
+
+    # Audit confirmation, if provided.
+    if audit is not None:
+        if audit.winner != "challenger":
+            return False
+        if audit.confidence not in {"high", "medium"}:
+            return False
+        if not audit.challenger_support or not audit.discriminator:
+            return False
+        if audit.challenger_satisfies_target != "yes":
+            return False
+        if audit.anchor_satisfies_target != "no":
+            return False
+        if audit.challenger_satisfies_inverse == "yes":
+            return False
+        if audit.challenger_conflict:
+            return False
+
     return True
+
+
+def build_slot_challenger_proposal_prompt(
+    *,
+    problem: SlotProblemIR,
+    artifact: SlotArtifact,
+    max_challengers: int = 2,
+) -> str:
+    del max_challengers
+    return (
+        "You are proposing possible challengers for finite-option slot calibration.\n\n"
+        f"Problem:\n{problem.raw_question}\n\n"
+        f"Current assignment:\n{_render_assignment_json(artifact.assignment, problem)}\n\n"
+        "For each slot, propose at most one challenger option that could strictly beat the current value.\n"
+        "Do not decide the final answer. Only propose challengers for later pairwise verification.\n"
+        "Preserve NOT, EXCEPT, LEAST, FALSE, INCORRECT, and other polarity cues.\n\n"
+        "Return exactly one JSON object:\n"
+        "{\n"
+        '  "target_condition": "...",\n'
+        '  "challengers": [\n'
+        '    {"slot_id": "...", "value": "...", "reason": "..."}\n'
+        "  ]\n"
+        "}\n"
+    )
+
+
+def parse_slot_challenger_proposal(text: str, problem: SlotProblemIR) -> tuple[str, list[dict[str, str]]]:
+    obj, _ = _extract_json_any(text)
+    if not isinstance(obj, dict):
+        return "", []
+    target_condition = str(obj.get("target_condition", "")).strip()
+    proposals: list[dict[str, str]] = []
+    raw_challengers = obj.get("challengers") or []
+    if not isinstance(raw_challengers, list):
+        return target_condition, proposals
+    slot_ids = {slot.slot_id for slot in problem.slots}
+    slot_names = {slot.slot_name: slot.slot_id for slot in problem.slots}
+    for item in raw_challengers:
+        if not isinstance(item, dict):
+            continue
+        raw_slot_id = str(item.get("slot_id", "")).strip()
+        slot_id = raw_slot_id if raw_slot_id in slot_ids else slot_names.get(raw_slot_id, raw_slot_id)
+        value = str(item.get("value", "")).strip()
+        reason = str(item.get("reason", "")).strip()
+        if not slot_id or not value:
+            continue
+        try:
+            slot = _slot_by_id(problem, slot_id)
+        except KeyError:
+            continue
+        normalized = _normalize_single_slot_value(value, slot) if len(problem.slots) == 1 else _option_value_map(slot).get(_norm_text(value), "")
+        if not normalized:
+            continue
+        proposals.append({"slot_id": slot_id, "value": normalized, "reason": reason})
+    return target_condition, proposals
 
 
 def _render_single_value(value: str, slot: SlotSpec) -> str:

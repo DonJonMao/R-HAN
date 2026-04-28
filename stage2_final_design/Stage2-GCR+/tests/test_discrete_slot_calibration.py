@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 from stage2_gcr_plus.discrete_slot_calibration import (
@@ -7,6 +8,7 @@ from stage2_gcr_plus.discrete_slot_calibration import (
     SlotChallenger,
     accepts_pairwise_slot_update,
     make_slot_eval,
+    parse_slot_challenger_proposal,
     parse_slot_artifact,
     parse_slot_problem,
     preserves_frozen_slots,
@@ -89,6 +91,13 @@ D. delta
         discriminator="key relation",
         confidence="high",
         raw="{}",
+        question_polarity="positive",
+        target_condition="matches key relation",
+        inverse_condition="does not match key relation",
+        anchor_satisfies_target="no",
+        challenger_satisfies_target="yes",
+        anchor_satisfies_inverse="yes",
+        challenger_satisfies_inverse="no",
     )
     challenger = SlotChallenger(
         slot_id="answer",
@@ -102,6 +111,247 @@ D. delta
     )
 
     assert accepts_pairwise_slot_update(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        challenger=challenger,
+        probe=probe,
+    )
+
+
+def test_negative_polarity_rejects_inverse_challenger():
+    q = (
+        "Which of the following is not an abnormal breathing pattern seen in head injury "
+        "and altered conscious level?\n"
+        "1. Hyperventilation.\n"
+        "2. Anaerobic respiration.\n"
+    )
+
+    problem = parse_slot_problem(q)
+    anchor_artifact = parse_slot_artifact("FINAL: 2", problem)
+    anchor_eval = make_slot_eval(problem, anchor_artifact)
+
+    challenger = SlotChallenger(
+        slot_id="answer",
+        anchor_value="Anaerobic respiration.",
+        challenger_value="Hyperventilation.",
+        occurrence_count=2,
+        sink_support=2,
+        source_count=2,
+        best_entry_digest="x",
+        best_entry={},
+    )
+
+    probe = PairwiseSlotProbeResult(
+        winner="challenger",
+        confidence="high",
+        anchor_conflict=("claimed anaerobic respiration is abnormal",),
+        challenger_conflict=(),
+        anchor_support=(),
+        challenger_support=("hyperventilation is abnormal breathing pattern",),
+        discriminator="not abnormal breathing pattern",
+        raw="{}",
+        question_polarity="negative",
+        target_condition="is not an abnormal breathing pattern",
+        inverse_condition="is an abnormal breathing pattern",
+        anchor_satisfies_target="yes",
+        challenger_satisfies_target="no",
+        anchor_satisfies_inverse="no",
+        challenger_satisfies_inverse="yes",
+    )
+
+    assert not accepts_pairwise_slot_update(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        challenger=challenger,
+        probe=probe,
+    )
+
+
+def test_pairwise_accept_requires_challenger_support_and_discriminator():
+    problem = parse_slot_problem(
+        """
+Question: pick one.
+1. alpha
+2. beta
+"""
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact("FINAL: 1", problem))
+    challenger = SlotChallenger(
+        slot_id="answer",
+        anchor_value="alpha",
+        challenger_value="beta",
+        occurrence_count=2,
+        sink_support=2,
+        source_count=2,
+        best_entry_digest="x",
+        best_entry={},
+    )
+    probe = PairwiseSlotProbeResult(
+        winner="challenger",
+        anchor_conflict=("anchor conflicts",),
+        challenger_conflict=(),
+        anchor_support=(),
+        challenger_support=("challenger supports",),
+        discriminator="key fact",
+        confidence="high",
+        raw="{}",
+        question_polarity="positive",
+        target_condition="matches key fact",
+        inverse_condition="does not match key fact",
+        anchor_satisfies_target="no",
+        challenger_satisfies_target="yes",
+        anchor_satisfies_inverse="yes",
+        challenger_satisfies_inverse="no",
+    )
+
+    assert not accepts_pairwise_slot_update(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        challenger=challenger,
+        probe=replace(probe, challenger_support=()),
+    )
+    assert not accepts_pairwise_slot_update(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        challenger=challenger,
+        probe=replace(probe, discriminator=""),
+    )
+
+
+def test_pairwise_accept_requires_target_satisfaction():
+    problem = parse_slot_problem(
+        """
+Question: pick one.
+1. alpha
+2. beta
+"""
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact("FINAL: 1", problem))
+    challenger = SlotChallenger(
+        slot_id="answer",
+        anchor_value="alpha",
+        challenger_value="beta",
+        occurrence_count=2,
+        sink_support=2,
+        source_count=2,
+        best_entry_digest="x",
+        best_entry={},
+    )
+    probe = PairwiseSlotProbeResult(
+        winner="challenger",
+        anchor_conflict=("anchor conflicts",),
+        challenger_conflict=(),
+        anchor_support=(),
+        challenger_support=("challenger supports",),
+        discriminator="key fact",
+        confidence="high",
+        raw="{}",
+        question_polarity="positive",
+        target_condition="matches key fact",
+        inverse_condition="does not match key fact",
+        anchor_satisfies_target="no",
+        challenger_satisfies_target="uncertain",
+        anchor_satisfies_inverse="yes",
+        challenger_satisfies_inverse="no",
+    )
+
+    assert not accepts_pairwise_slot_update(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        challenger=challenger,
+        probe=probe,
+    )
+
+
+def test_audit_disagreement_rejects_update():
+    problem = parse_slot_problem(
+        """
+Question: pick one.
+1. alpha
+2. beta
+"""
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact("FINAL: 1", problem))
+    challenger = SlotChallenger(
+        slot_id="answer",
+        anchor_value="alpha",
+        challenger_value="beta",
+        occurrence_count=2,
+        sink_support=2,
+        source_count=2,
+        best_entry_digest="x",
+        best_entry={},
+    )
+    probe = PairwiseSlotProbeResult(
+        winner="challenger",
+        anchor_conflict=("anchor conflicts",),
+        challenger_conflict=(),
+        anchor_support=(),
+        challenger_support=("challenger supports",),
+        discriminator="key fact",
+        confidence="high",
+        raw="{}",
+        question_polarity="positive",
+        target_condition="matches key fact",
+        inverse_condition="does not match key fact",
+        anchor_satisfies_target="no",
+        challenger_satisfies_target="yes",
+        anchor_satisfies_inverse="yes",
+        challenger_satisfies_inverse="no",
+    )
+    audit = replace(probe, winner="anchor")
+
+    assert not accepts_pairwise_slot_update(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        challenger=challenger,
+        probe=probe,
+        audit=audit,
+    )
+
+
+def test_proposal_challenger_cannot_update_without_double_probe():
+    problem = parse_slot_problem(
+        """
+Question: pick one.
+1. alpha
+2. beta
+"""
+    )
+    _, proposals = parse_slot_challenger_proposal(
+        '{"target_condition":"matches key fact","challengers":[{"slot_id":"answer","value":"beta","reason":"candidate"}]}',
+        problem,
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact("FINAL: 1", problem))
+    challenger = SlotChallenger(
+        slot_id=proposals[0]["slot_id"],
+        anchor_value="alpha",
+        challenger_value=proposals[0]["value"],
+        occurrence_count=0,
+        sink_support=0,
+        source_count=0,
+        best_entry_digest="proposal",
+        best_entry={},
+    )
+    probe = PairwiseSlotProbeResult(
+        winner="challenger",
+        anchor_conflict=("anchor conflicts",),
+        challenger_conflict=(),
+        anchor_support=(),
+        challenger_support=("challenger supports",),
+        discriminator="key fact",
+        confidence="high",
+        raw="{}",
+        question_polarity="positive",
+        target_condition="matches key fact",
+        inverse_condition="does not match key fact",
+        anchor_satisfies_target="no",
+        challenger_satisfies_target="yes",
+        anchor_satisfies_inverse="yes",
+        challenger_satisfies_inverse="no",
+    )
+
+    assert not accepts_pairwise_slot_update(
         problem=problem,
         anchor_eval=anchor_eval,
         challenger=challenger,
