@@ -62,6 +62,7 @@ class Stage2V44Config(Stage2V43Config):
     default_budget_bucket: str = "normal"
     lean_hypothesis_cap: int = 2
     full_hypothesis_cap: int = 3
+    v4_4_max_slot_challengers: int = 4
     graph_seed_top_k: int = 3
     graph_repair_rounds: int = 1
     graph_full_branch_cap: int = 3

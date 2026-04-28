@@ -31,6 +31,25 @@ from .deductive_reasoning import (
     repair_operator_for_residual,
     verify_deductive_artifact,
 )
+from .discrete_slot_calibration import (
+    PairwiseSlotProbeResult,
+    SlotArtifact,
+    SlotChallenger,
+    SlotEval,
+    SlotProblemIR,
+    accepts_pairwise_slot_update,
+    apply_slot_update,
+    build_pairwise_slot_probe_prompt,
+    make_slot_eval,
+    mine_slot_challengers,
+    parse_slot_artifact,
+    parse_slot_problem,
+    parse_slot_probe_result,
+    preserves_frozen_slots,
+    propose_membership_repair,
+    slot_assignment_final_answer,
+    slot_update_dominates,
+)
 from .structural_constraints import (
     STRUCTURAL_DATASETS,
     StructuralArtifact,
@@ -187,6 +206,30 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry.setdefault("structural_oracle_probe_accepted", False)
         entry.setdefault("structural_graph_parse_confidence", "")
         entry.setdefault("structural_verify_all_confidence", "")
+        entry.setdefault("discrete_slot_count", 0)
+        entry.setdefault("discrete_output_kind", "")
+        entry.setdefault("discrete_assignment", {})
+        entry.setdefault("discrete_assignment_signature", "")
+        entry.setdefault("discrete_answer_source", "")
+        entry.setdefault("discrete_contract_ok", False)
+        entry.setdefault("discrete_parser_confidence", "")
+        entry.setdefault("discrete_fatal_count", 0)
+        entry.setdefault("discrete_local_count", 0)
+        entry.setdefault("discrete_fatal_kinds", [])
+        entry.setdefault("discrete_local_kinds", [])
+        entry.setdefault("discrete_invalid_slots", [])
+        entry.setdefault("discrete_unstable_slots", [])
+        entry.setdefault("discrete_challenger_slot", "")
+        entry.setdefault("discrete_anchor_value", "")
+        entry.setdefault("discrete_challenger_value", "")
+        entry.setdefault("discrete_challenger_source_count", 0)
+        entry.setdefault("discrete_challenger_occurrence_count", 0)
+        entry.setdefault("discrete_challenger_sink_support", 0)
+        entry.setdefault("discrete_probe_triggered", False)
+        entry.setdefault("discrete_probe_winner", "")
+        entry.setdefault("discrete_probe_confidence", "")
+        entry.setdefault("discrete_update_accepted", False)
+        entry.setdefault("discrete_update_slots", [])
 
     @staticmethod
     def _stable_entry_tiebreak(entry: Dict[str, Any]) -> Tuple[int, str]:
@@ -197,7 +240,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
 
     def _candidate_source_label(self, entry: Dict[str, Any]) -> str:
         source = str(entry.get("candidate_bank_source", "")).strip()
-        if source in {"deductive_probe", "structural_probe"}:
+        if source in {"deductive_probe", "structural_probe", "discrete_probe", "discrete_slot_update"}:
             return source
         return super()._candidate_source_label(entry)
 
@@ -272,6 +315,30 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "structural_oracle_probe_accepted": bool(entry.get("structural_oracle_probe_accepted", False)),
                 "structural_graph_parse_confidence": str(entry.get("structural_graph_parse_confidence", "")),
                 "structural_verify_all_confidence": str(entry.get("structural_verify_all_confidence", "")),
+                "discrete_slot_count": int(entry.get("discrete_slot_count", 0)),
+                "discrete_output_kind": str(entry.get("discrete_output_kind", "")),
+                "discrete_assignment": dict(entry.get("discrete_assignment", {})),
+                "discrete_assignment_signature": str(entry.get("discrete_assignment_signature", "")),
+                "discrete_answer_source": str(entry.get("discrete_answer_source", "")),
+                "discrete_contract_ok": bool(entry.get("discrete_contract_ok", False)),
+                "discrete_parser_confidence": str(entry.get("discrete_parser_confidence", "")),
+                "discrete_fatal_count": int(entry.get("discrete_fatal_count", 0)),
+                "discrete_local_count": int(entry.get("discrete_local_count", 0)),
+                "discrete_fatal_kinds": list(entry.get("discrete_fatal_kinds", ())),
+                "discrete_local_kinds": list(entry.get("discrete_local_kinds", ())),
+                "discrete_invalid_slots": list(entry.get("discrete_invalid_slots", ())),
+                "discrete_unstable_slots": list(entry.get("discrete_unstable_slots", ())),
+                "discrete_challenger_slot": str(entry.get("discrete_challenger_slot", "")),
+                "discrete_anchor_value": str(entry.get("discrete_anchor_value", "")),
+                "discrete_challenger_value": str(entry.get("discrete_challenger_value", "")),
+                "discrete_challenger_source_count": int(entry.get("discrete_challenger_source_count", 0)),
+                "discrete_challenger_occurrence_count": int(entry.get("discrete_challenger_occurrence_count", 0)),
+                "discrete_challenger_sink_support": int(entry.get("discrete_challenger_sink_support", 0)),
+                "discrete_probe_triggered": bool(entry.get("discrete_probe_triggered", False)),
+                "discrete_probe_winner": str(entry.get("discrete_probe_winner", "")),
+                "discrete_probe_confidence": str(entry.get("discrete_probe_confidence", "")),
+                "discrete_update_accepted": bool(entry.get("discrete_update_accepted", False)),
+                "discrete_update_slots": list(entry.get("discrete_update_slots", ())),
             }
         )
         return payload
@@ -307,18 +374,44 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         task_type = str(getattr(dataset_profile, "task_type", "") or (metadata or {}).get("mas_task_type") or "")
         return name in STRUCTURAL_DATASETS or task_type in {"graph_reasoning", "structured_list"}
 
-    def _route_family(self, dataset_profile: DatasetProfile, metadata: Optional[dict]) -> str:
+    def _is_discrete_slot_problem(
+        self,
+        question_text: str,
+        dataset_profile: DatasetProfile,
+        metadata: Optional[dict],
+    ) -> bool:
+        problem = parse_slot_problem(
+            question_text,
+            dataset_profile=dataset_profile,
+            metadata=metadata,
+        )
+        return len(problem.slots) >= 1 and all(slot.options for slot in problem.slots)
+
+    def _route_family(self, dataset_profile: DatasetProfile, metadata: Optional[dict], question_text: str = "") -> str:
         task_type = str(dataset_profile.task_type)
-        dataset_name = self._dataset_name(dataset_profile, metadata)
         if self._is_deductive_dataset(dataset_profile, metadata):
             return "deductive_reasoning"
         if task_type == "code_generation":
             return "code_repair"
+        if question_text and self._is_discrete_slot_problem(question_text, dataset_profile, metadata):
+            return "discrete_slot_calibration"
         if task_type == "graph_reasoning":
             return "graph_constrained"
-        if task_type == "structured_list" or dataset_name == "knowledge_crosswords":
+        if self._is_structural_dataset(dataset_profile, metadata):
             return "graph_constrained"
         return "adversarial"
+
+    def _resolve_route_family(
+        self,
+        dataset_profile: DatasetProfile,
+        metadata: Optional[dict],
+        question_text: str,
+    ) -> str:
+        route_fn = self._route_family
+        try:
+            return route_fn(dataset_profile, metadata, question_text)
+        except TypeError:
+            return route_fn(dataset_profile, metadata)
 
     def _sanitize_candidate(
         self,
@@ -333,7 +426,9 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             or (metadata or {}).get("mas_dataset_name")
             or ""
         ).strip().lower()
-        if str(getattr(self, "_v4_4_route_family", "")) == "deductive_reasoning" or metadata_name in DEDUCTIVE_DATASETS:
+        if str(getattr(self, "_v4_4_route_family", "")) in {"deductive_reasoning", "discrete_slot_calibration"}:
+            return MultiFidelityEvaluator._strip_hidden_reasoning(str(raw_text or "")).strip()
+        if metadata_name in DEDUCTIVE_DATASETS:
             return MultiFidelityEvaluator._strip_hidden_reasoning(str(raw_text or "")).strip()
         return super()._sanitize_candidate(question_text, raw_text, metadata=metadata)
 
@@ -346,7 +441,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         reference_answer: Optional[str],
         metadata: Optional[dict],
         dataset_profile: DatasetProfile,
-    ) -> str:
+        ) -> str:
         del reference_answer
         if self._is_deductive_dataset(dataset_profile, metadata):
             if node.role in {"solver", "solver_a", "solver_b", "generator", "reviser", "aggregator"} or node.node_id in graph.sink_node_ids:
@@ -367,6 +462,19 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                     "ISSUE: arithmetic_mismatch|algebra_mismatch|unsupported_transition|missing_final|none\n"
                     "FIX: <one sentence>"
                 )
+        if self._is_discrete_slot_problem(question_text, dataset_profile, metadata):
+            problem = parse_slot_problem(
+                question_text,
+                dataset_profile=dataset_profile,
+                metadata=metadata,
+            )
+            if problem.output_kind == "json_list":
+                return "Output exactly one JSON list, one value per slot in the given order. Do not include prose outside JSON."
+            return (
+                "Output exactly one line:\n"
+                "FINAL: <one allowed option label or option text>\n"
+                "Do not include prose outside FINAL."
+            )
         if self._is_structural_dataset(dataset_profile, metadata):
             dataset_name = self._dataset_name(dataset_profile, metadata)
             if dataset_name == "nlgraph":
@@ -410,6 +518,8 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
     ) -> str:
         del reference_answer
         if self._is_deductive_dataset(dataset_profile, metadata):
+            return MultiFidelityEvaluator._strip_hidden_reasoning(str(raw_output or "")).strip()
+        if self._is_discrete_slot_problem(question_text, dataset_profile, metadata):
             return MultiFidelityEvaluator._strip_hidden_reasoning(str(raw_output or "")).strip()
         if self._is_structural_dataset(dataset_profile, metadata):
             return MultiFidelityEvaluator._strip_hidden_reasoning(str(raw_output or "")).strip()
@@ -497,6 +607,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         verifier_roles = {"verifier", "critic", "judge"}
         repair_roles = {"solver", "solver_a", "solver_b", "generator", "reviser", "router", "aggregator"}
         graph_roles = {"solver", "solver_a", "solver_b", "generator", "aggregator", "reviser", "verifier", "critic", "judge"}
+        discrete_roles = {"solver", "solver_a", "solver_b", "generator", "aggregator", "reviser", "router", "verifier", "critic", "judge"}
         adversarial_roles = {"solver", "solver_a", "solver_b", "generator", "verifier", "critic", "judge", "aggregator", "reviser", "router"}
 
         if route_family == "code_repair":
@@ -506,6 +617,12 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             return role in allowed
         if route_family == "graph_constrained":
             allowed = set(graph_roles)
+            if execution_mode != "full":
+                allowed.discard("solver_b")
+                allowed.discard("judge")
+            return role in allowed
+        if route_family == "discrete_slot_calibration":
+            allowed = set(discrete_roles)
             if execution_mode != "full":
                 allowed.discard("solver_b")
                 allowed.discard("judge")
@@ -2151,6 +2268,407 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             )
         return selected_entry, selected_reason, extra
 
+    def _evaluate_slot_candidate(
+        self,
+        question_text: str,
+        entry: Dict[str, Any],
+        problem: SlotProblemIR,
+        dataset_profile: DatasetProfile,
+        metadata: Optional[dict],
+    ) -> SlotEval:
+        del question_text
+        del dataset_profile
+        del metadata
+        artifact = parse_slot_artifact(str(entry.get("text", "")), problem)
+        eval_obj = make_slot_eval(problem, artifact)
+        self._fill_slot_entry_fields(entry, eval_obj)
+        return eval_obj
+
+    def _fill_slot_entry_fields(self, entry: Dict[str, Any], eval_obj: SlotEval) -> None:
+        self._ensure_v4_4_entry_fields(entry)
+        entry["_slot_eval"] = eval_obj
+        entry["v4_4_route_family"] = "discrete_slot_calibration"
+        entry["discrete_slot_count"] = len(eval_obj.problem.slots)
+        entry["discrete_output_kind"] = eval_obj.problem.output_kind
+        entry["discrete_assignment"] = dict(eval_obj.artifact.assignment)
+        entry["discrete_assignment_signature"] = eval_obj.artifact.artifact_signature
+        entry["discrete_answer_source"] = eval_obj.artifact.answer_source
+        entry["discrete_contract_ok"] = eval_obj.artifact.contract_ok
+        entry["discrete_parser_confidence"] = eval_obj.artifact.parser_confidence
+        entry["discrete_fatal_count"] = len(eval_obj.residual.fatal)
+        entry["discrete_local_count"] = len(eval_obj.residual.local)
+        entry["discrete_fatal_kinds"] = list(eval_obj.residual.fatal)
+        entry["discrete_local_kinds"] = list(eval_obj.residual.local)
+        entry["discrete_invalid_slots"] = list(eval_obj.residual.invalid_slots)
+        entry["discrete_unstable_slots"] = list(eval_obj.residual.unstable_slots)
+        entry["v4_4_class_key"] = (
+            eval_obj.artifact.normalized_assignment,
+            tuple(eval_obj.residual.invalid_slots),
+            eval_obj.residual.residual_kind,
+        )
+
+    @staticmethod
+    def _slot_eval_for_entry(entry: Optional[Dict[str, Any]]) -> Optional[SlotEval]:
+        if entry is None:
+            return None
+        eval_obj = entry.get("_slot_eval")
+        return eval_obj if isinstance(eval_obj, SlotEval) else None
+
+    def _discrete_slot_rank_key(self, entry: Dict[str, Any]) -> Tuple[Any, ...]:
+        return (
+            -int(entry.get("discrete_fatal_count", 0)),
+            int(entry.get("occurrence_count", 0)),
+            int(entry.get("sink_support", 0)),
+            float(entry.get("quality_score", entry.get("candidate_model_score", 0.0))),
+            -int(entry.get("discrete_local_count", 0)),
+            int(bool(entry.get("stage1_anchor", False))),
+            str(entry.get("digest", "")),
+        )
+
+    def _collapse_slot_classes(self, verified_entries: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        groups: Dict[Tuple[Any, ...], List[Dict[str, Any]]] = defaultdict(list)
+        for entry in verified_entries:
+            groups[tuple(entry.get("v4_4_class_key") or ())].append(entry)
+
+        reps: List[Dict[str, Any]] = []
+        for members in groups.values():
+            members.sort(key=self._discrete_slot_rank_key, reverse=True)
+            rep = members[0]
+            rep["v4_4_class_size"] = len(members)
+            reps.append(rep)
+        reps.sort(key=self._discrete_slot_rank_key, reverse=True)
+        return reps
+
+    def _make_discrete_probe_entry(
+        self,
+        text: str,
+        *,
+        source: str,
+        probe_type: str,
+        parent: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        entry = self._init_candidate_entry(text)
+        self._ensure_v4_4_entry_fields(entry)
+        if parent is not None:
+            entry["source_roles"] = set(parent.get("source_roles", set()))
+            entry["source_node_ids"] = set(parent.get("source_node_ids", set()))
+            entry["turn_indices"] = set(parent.get("turn_indices", set()))
+            entry["candidate_model_score"] = float(parent.get("candidate_model_score", 0.5))
+            entry["candidate_model_uncertainty"] = float(parent.get("candidate_model_uncertainty", 0.2))
+            entry["support_score"] = float(parent.get("support_score", 0.5))
+            entry["sink_support"] = int(parent.get("sink_support", 0))
+            entry["occurrence_count"] = int(parent.get("occurrence_count", 0))
+            entry["parent_candidate_digest"] = str(parent.get("digest", ""))
+        entry["candidate_bank_source"] = source
+        entry["origin_role"] = "discrete_probe"
+        entry["repair_operator_type"] = probe_type
+        entry["discrete_probe_triggered"] = True
+        return entry
+
+    def _make_discrete_slot_update_entry(
+        self,
+        artifact: SlotArtifact,
+        *,
+        parent_entry: Dict[str, Any],
+        challenger: SlotChallenger,
+        probe: PairwiseSlotProbeResult,
+        problem: SlotProblemIR,
+    ) -> Dict[str, Any]:
+        entry = self._make_discrete_probe_entry(
+            artifact.raw_text,
+            source="discrete_slot_update",
+            probe_type="pairwise_slot_update",
+            parent=parent_entry,
+        )
+        entry["discrete_challenger_slot"] = challenger.slot_id
+        entry["discrete_anchor_value"] = challenger.anchor_value
+        entry["discrete_challenger_value"] = challenger.challenger_value
+        entry["discrete_challenger_source_count"] = challenger.source_count
+        entry["discrete_challenger_occurrence_count"] = challenger.occurrence_count
+        entry["discrete_challenger_sink_support"] = challenger.sink_support
+        entry["discrete_probe_winner"] = probe.winner
+        entry["discrete_probe_confidence"] = probe.confidence
+        entry["discrete_update_accepted"] = True
+        entry["discrete_update_slots"] = [challenger.slot_id]
+        eval_obj = make_slot_eval(problem, artifact)
+        self._fill_slot_entry_fields(entry, eval_obj)
+        return entry
+
+    def _run_discrete_slot_probe_model(
+        self,
+        *,
+        prompt: str,
+        dataset_profile: DatasetProfile,
+        extra_role_hint: str,
+    ) -> str:
+        if not self._by_id:
+            return ""
+        agent_id = "verifier" if "verifier" in self._by_id else next(iter(self._by_id))
+        agent = self._by_id[agent_id]
+        system_prompt = build_system_prompt(agent, self._graph_repair_slots(), extra_role_hint=extra_role_hint)
+        return str(
+            self.evaluator._cached_chat(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                runtime=self.evaluator._resolve_runtime("tier2", dataset_profile),
+            )
+            or ""
+        )
+
+    def _run_pairwise_slot_probe(
+        self,
+        *,
+        problem: SlotProblemIR,
+        anchor_entry: Dict[str, Any],
+        anchor_eval: SlotEval,
+        challenger: SlotChallenger,
+        dataset_profile: DatasetProfile,
+    ) -> Optional[Dict[str, Any]]:
+        prompt = build_pairwise_slot_probe_prompt(
+            problem=problem,
+            artifact=anchor_eval.artifact,
+            challenger=challenger,
+        )
+        raw = self._run_discrete_slot_probe_model(
+            prompt=prompt,
+            dataset_profile=dataset_profile,
+            extra_role_hint="discrete_slot_pairwise_probe",
+        )
+        if not raw:
+            return None
+        result = parse_slot_probe_result(raw)
+        entry = self._make_discrete_probe_entry(
+            raw,
+            source="discrete_probe",
+            probe_type="pairwise_slot_probe",
+            parent=anchor_entry,
+        )
+        entry["_slot_probe_result"] = result
+        entry["discrete_challenger_slot"] = challenger.slot_id
+        entry["discrete_anchor_value"] = challenger.anchor_value
+        entry["discrete_challenger_value"] = challenger.challenger_value
+        entry["discrete_challenger_source_count"] = challenger.source_count
+        entry["discrete_challenger_occurrence_count"] = challenger.occurrence_count
+        entry["discrete_challenger_sink_support"] = challenger.sink_support
+        entry["discrete_probe_winner"] = result.winner
+        entry["discrete_probe_confidence"] = result.confidence
+        return entry
+
+    def _select_best_discrete_slot_candidate(
+        self,
+        *,
+        question_text: str,
+        anchor_entry: Optional[Dict[str, Any]],
+        candidate_entries: Sequence[Dict[str, Any]],
+        dataset_profile: DatasetProfile,
+        metadata: Optional[dict],
+        budget_bucket: str,
+    ) -> Tuple[Optional[Dict[str, Any]], str, Dict[str, Any]]:
+        problem = parse_slot_problem(
+            question_text,
+            dataset_profile=dataset_profile,
+            metadata=metadata,
+        )
+        if not problem.slots:
+            selected = anchor_entry or (candidate_entries[0] if candidate_entries else None)
+            return selected, "v4_4_discrete_empty_problem", {
+                "v4_4_protocol_family": "discrete_slot_calibration",
+                "v4_4_execution_mode": "bypass",
+                "v4_4_budget_bucket": budget_bucket,
+                "v4_4_collapsed_class_count": 0,
+            }
+
+        verified: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        if anchor_entry is not None:
+            self._evaluate_slot_candidate(question_text, anchor_entry, problem, dataset_profile, metadata)
+            verified.append(anchor_entry)
+            seen.add(str(anchor_entry.get("digest", "")))
+        for entry in candidate_entries:
+            digest = str(entry.get("digest", ""))
+            if digest and digest in seen:
+                continue
+            self._evaluate_slot_candidate(question_text, entry, problem, dataset_profile, metadata)
+            verified.append(entry)
+            seen.add(digest)
+
+        if not verified:
+            return anchor_entry, "v4_4_discrete_empty_bank", {
+                "v4_4_protocol_family": "discrete_slot_calibration",
+                "v4_4_execution_mode": "bypass",
+                "v4_4_budget_bucket": budget_bucket,
+                "v4_4_collapsed_class_count": 0,
+            }
+
+        collapsed = self._collapse_slot_classes(verified)
+        anchor_eval = self._slot_eval_for_entry(anchor_entry)
+        probe_count = 0
+        accepted_count = 0
+        selected: Optional[Dict[str, Any]] = None
+        reason = ""
+
+        if anchor_entry is not None and anchor_eval is not None:
+            same_assignment = [
+                entry
+                for entry in verified
+                if str(entry.get("discrete_assignment_signature", "")) == anchor_eval.artifact.artifact_signature
+                and int(entry.get("discrete_fatal_count", 0)) == 0
+            ]
+            if same_assignment:
+                same_assignment.sort(key=self._discrete_slot_rank_key, reverse=True)
+                best = same_assignment[0]
+                best_eval = self._slot_eval_for_entry(best)
+                if (
+                    best_eval is not None
+                    and str(best.get("digest", "")) != str(anchor_entry.get("digest", ""))
+                    and slot_update_dominates(best_eval, anchor_eval)
+                ):
+                    selected = best
+                    reason = "v4_4_discrete_same_assignment_enrichment"
+
+            if selected is None and anchor_eval.residual.invalid_slots:
+                repaired = propose_membership_repair(
+                    problem=problem,
+                    anchor_entry=anchor_entry,
+                    anchor_eval=anchor_eval,
+                    candidate_entries=verified,
+                )
+                if repaired is not None:
+                    repaired["discrete_update_accepted"] = True
+                    repaired["discrete_update_slots"] = list(anchor_eval.residual.invalid_slots)
+                    selected = repaired
+                    reason = "v4_4_discrete_membership_local_repair"
+
+            if selected is None:
+                challengers = mine_slot_challengers(
+                    problem=problem,
+                    anchor_eval=anchor_eval,
+                    candidate_entries=verified,
+                )
+                limit = max(1, int(getattr(self.config, "v4_4_max_slot_challengers", 1)))
+                for challenger in challengers[:limit]:
+                    probe_count += 1
+                    probe_entry = self._run_pairwise_slot_probe(
+                        problem=problem,
+                        anchor_entry=anchor_entry,
+                        anchor_eval=anchor_eval,
+                        challenger=challenger,
+                        dataset_profile=dataset_profile,
+                    )
+                    probe = probe_entry.get("_slot_probe_result") if probe_entry is not None else None
+                    if not isinstance(probe, PairwiseSlotProbeResult):
+                        continue
+                    if accepts_pairwise_slot_update(
+                        problem=problem,
+                        anchor_eval=anchor_eval,
+                        challenger=challenger,
+                        probe=probe,
+                    ):
+                        updated_artifact = apply_slot_update(anchor_eval, challenger)
+                        updated_entry = self._make_discrete_slot_update_entry(
+                            updated_artifact,
+                            parent_entry=anchor_entry,
+                            challenger=challenger,
+                            probe=probe,
+                            problem=problem,
+                        )
+                        updated_eval = self._slot_eval_for_entry(updated_entry)
+                        if (
+                            updated_eval is not None
+                            and not updated_eval.residual.fatal
+                            and preserves_frozen_slots(
+                                anchor_eval.artifact.assignment,
+                                updated_eval.artifact.assignment,
+                                {challenger.slot_id},
+                            )
+                        ):
+                            accepted_count += 1
+                            selected = updated_entry
+                            reason = "v4_4_discrete_pairwise_slot_update"
+                            break
+
+            if selected is None:
+                selected = anchor_entry
+                reason = "v4_4_discrete_preserve_anchor_no_slot_certificate"
+        else:
+            clean = [entry for entry in verified if int(entry.get("discrete_fatal_count", 0)) == 0]
+            if clean:
+                clean.sort(key=self._discrete_slot_rank_key, reverse=True)
+                selected = clean[0]
+                reason = "v4_4_discrete_best_clean_no_anchor"
+            else:
+                selected = verified[0]
+                reason = "v4_4_discrete_no_clean_fallback"
+
+        execution_mode = self._apply_budget_bucket("lean" if (probe_count or accepted_count or reason != "v4_4_discrete_preserve_anchor_no_slot_certificate") else "bypass", budget_bucket)
+        selected_eval = self._slot_eval_for_entry(selected)
+        selected_digest = str((selected or {}).get("digest", ""))
+        anchor_digest = str((anchor_entry or {}).get("digest", ""))
+        extra = {
+            "v4_4_protocol_family": "discrete_slot_calibration",
+            "v4_4_execution_mode": execution_mode,
+            "v4_4_budget_bucket": budget_bucket,
+            "v4_4_stage1_anchor_present": bool(anchor_entry is not None),
+            "v4_4_stage1_anchor_used": bool(anchor_entry is not None and selected_digest == anchor_digest),
+            "v4_4_candidate_count": int(len(candidate_entries)),
+            "v4_4_collapsed_class_count": int(len(collapsed)),
+            "v4_4_selected_candidate_digest": selected_digest,
+            "v4_4_selected_candidate_source": self._candidate_source_label(selected or {}),
+            "v4_4_selected_quality_score": float(self._quality_score(selected or {})),
+            "v4_4_selected_model_uncertainty": float((selected or {}).get("candidate_model_uncertainty", 0.0)),
+            "v4_4_repair_branch_count": int(probe_count),
+            "v4_4_repair_improvement_count": int(accepted_count),
+            "discrete_probe_triggered": bool(probe_count),
+            "discrete_probe_winner": str((selected or {}).get("discrete_probe_winner", "")),
+            "discrete_probe_confidence": str((selected or {}).get("discrete_probe_confidence", "")),
+            "discrete_update_accepted": bool((selected or {}).get("discrete_update_accepted", False)),
+            "discrete_update_slots": list((selected or {}).get("discrete_update_slots", ())),
+            "v4_4_top_classes": [
+                {
+                    "class_key": self._public_class_key(tuple(item.get("v4_4_class_key", ()))),
+                    "size": int(item.get("v4_4_class_size", 1)),
+                    "contains_anchor": bool(anchor_digest and str(item.get("digest", "")) == anchor_digest),
+                    "representative_digest": str(item.get("digest", "")),
+                    "assignment_signature": str(item.get("discrete_assignment_signature", "")),
+                    "fatal_kinds": list(item.get("discrete_fatal_kinds", ())),
+                    "local_kinds": list(item.get("discrete_local_kinds", ())),
+                    "invalid_slots": list(item.get("discrete_invalid_slots", ())),
+                    "unstable_slots": list(item.get("discrete_unstable_slots", ())),
+                }
+                for item in collapsed[: self.config.max_logged_candidates]
+            ],
+        }
+        if selected_eval is not None:
+            extra.update(
+                {
+                    "discrete_slot_count": len(selected_eval.problem.slots),
+                    "discrete_output_kind": selected_eval.problem.output_kind,
+                    "discrete_assignment": dict(selected_eval.artifact.assignment),
+                    "discrete_assignment_signature": selected_eval.artifact.artifact_signature,
+                    "discrete_fatal_count": len(selected_eval.residual.fatal),
+                    "discrete_local_count": len(selected_eval.residual.local),
+                    "discrete_fatal_kinds": list(selected_eval.residual.fatal),
+                    "discrete_local_kinds": list(selected_eval.residual.local),
+                    "discrete_invalid_slots": list(selected_eval.residual.invalid_slots),
+                    "discrete_unstable_slots": list(selected_eval.residual.unstable_slots),
+                }
+            )
+        if anchor_entry is not None and anchor_eval is not None:
+            extra.update(
+                {
+                    "v4_4_stage1_anchor_digest": anchor_digest,
+                    "discrete_anchor_assignment": dict(anchor_eval.artifact.assignment),
+                    "discrete_anchor_invalid_slots": list(anchor_eval.residual.invalid_slots),
+                    "discrete_anchor_fatal_kinds": list(anchor_eval.residual.fatal),
+                    "discrete_anchor_local_kinds": list(anchor_eval.residual.local),
+                }
+            )
+        if selected is not None:
+            selected["v4_4_selection_reason"] = reason
+        return selected, reason, extra
+
     def _evaluate_structural_candidate(
         self,
         question_text: str,
@@ -3498,6 +4016,15 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         anchor: Optional[Dict[str, Any]],
         budget_bucket: str,
     ) -> Tuple[Optional[Dict[str, Any]], str, Dict[str, Any]]:
+        if self._is_discrete_slot_problem(question_text, dataset_profile, metadata):
+            return self._select_best_discrete_slot_candidate(
+                question_text=question_text,
+                anchor_entry=anchor,
+                candidate_entries=candidates,
+                dataset_profile=dataset_profile,
+                metadata=metadata,
+                budget_bucket=budget_bucket,
+            )
         if self._is_structural_dataset(dataset_profile, metadata):
             return self._select_best_structural_candidate(
                 question_text=question_text,
@@ -3837,7 +4364,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         anchor = bundle["anchor"]
         anchor_serialized = bundle["anchor_serialized"]
 
-        route_family = self._route_family(dataset_profile, metadata)
+        route_family = self._resolve_route_family(dataset_profile, metadata, question_text)
         budget_bucket = self._budget_bucket(metadata)
         self._v4_4_route_family = route_family
 
@@ -3864,6 +4391,15 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 metadata,
                 graph=getattr(self, "_v4_4_current_graph", None),
                 turn_traces=turn_traces,
+                budget_bucket=budget_bucket,
+            )
+        elif route_family == "discrete_slot_calibration":
+            selected, strategy, extra = self._select_best_discrete_slot_candidate(
+                question_text=question_text,
+                anchor_entry=anchor,
+                candidate_entries=candidates,
+                dataset_profile=dataset_profile,
+                metadata=metadata,
                 budget_bucket=budget_bucket,
             )
         elif route_family == "graph_constrained":
@@ -3906,6 +4442,22 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                     metadata=metadata,
                 )
             final_answer = answer_only_from_artifact(selected_eval.artifact)
+        elif selected is not None and route_family == "discrete_slot_calibration":
+            problem = parse_slot_problem(
+                question_text,
+                dataset_profile=dataset_profile,
+                metadata=metadata,
+            )
+            selected_eval = self._slot_eval_for_entry(selected)
+            if selected_eval is None:
+                selected_eval = self._evaluate_slot_candidate(
+                    question_text,
+                    selected,
+                    problem,
+                    dataset_profile,
+                    metadata,
+                )
+            final_answer = slot_assignment_final_answer(selected_eval)
         elif selected is not None and route_family == "graph_constrained" and self._is_structural_dataset(dataset_profile, metadata):
             selected_eval = self._structural_eval_for_entry(selected)
             if selected_eval is None:
@@ -3975,7 +4527,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
     ) -> Stage2RunResult:
         self._last_v4_4_selection = {}
         self._last_candidate_bundle = {}
-        self._v4_4_route_family = self._route_family(dataset_profile, metadata)
+        self._v4_4_route_family = self._resolve_route_family(dataset_profile, metadata, question_text)
         self._v4_4_execution_mode_hint = self._initial_mode_hint(self._budget_bucket(metadata))
         self._v4_4_focus_node_ids = set()
         self._v4_4_current_graph = graph
