@@ -1035,12 +1035,17 @@ def build_slot_challenger_proposal_prompt(
     artifact: SlotArtifact,
     max_challengers: int = 2,
 ) -> str:
-    del max_challengers
+    limit = max(1, int(max_challengers))
+    if len(problem.slots) > 1:
+        limit = min(limit, len(problem.slots))
+        proposal_rule = f"For multi-slot assignments, propose at most one challenger per slot and at most {limit} challengers total.\n"
+    else:
+        proposal_rule = f"For a single-slot finite-option problem, propose at most {limit} challengers for that slot.\n"
     return (
         "You are proposing possible challengers for finite-option slot calibration.\n\n"
         f"Problem:\n{problem.raw_question}\n\n"
         f"Current assignment:\n{_render_assignment_json(artifact.assignment, problem)}\n\n"
-        "For each slot, propose at most one challenger option that could strictly beat the current value.\n"
+        f"{proposal_rule}"
         "Do not decide the final answer. Only propose challengers for later pairwise verification.\n"
         "Preserve NOT, EXCEPT, LEAST, FALSE, INCORRECT, and other polarity cues.\n\n"
         "Return exactly one JSON object:\n"

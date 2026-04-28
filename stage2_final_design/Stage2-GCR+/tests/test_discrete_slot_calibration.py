@@ -7,6 +7,7 @@ from stage2_gcr_plus.discrete_slot_calibration import (
     PairwiseSlotProbeResult,
     SlotChallenger,
     accepts_pairwise_slot_update,
+    build_slot_challenger_proposal_prompt,
     make_slot_eval,
     parse_slot_challenger_proposal,
     parse_slot_artifact,
@@ -357,6 +358,74 @@ Question: pick one.
         challenger=challenger,
         probe=probe,
     )
+
+
+def test_proposal_challenger_can_update_with_audit_confirmation():
+    problem = parse_slot_problem(
+        """
+Question: pick one.
+1. alpha
+2. beta
+"""
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact("FINAL: 1", problem))
+    challenger = SlotChallenger(
+        slot_id="answer",
+        anchor_value="alpha",
+        challenger_value="beta",
+        occurrence_count=0,
+        sink_support=0,
+        source_count=0,
+        best_entry_digest="proposal_0",
+        best_entry={"candidate_bank_source": "slot_challenger_proposal"},
+    )
+    probe = PairwiseSlotProbeResult(
+        winner="challenger",
+        anchor_conflict=("anchor conflicts",),
+        challenger_conflict=(),
+        anchor_support=(),
+        challenger_support=("challenger supports",),
+        discriminator="key fact",
+        confidence="high",
+        raw="{}",
+        question_polarity="positive",
+        target_condition="matches key fact",
+        inverse_condition="does not match key fact",
+        anchor_satisfies_target="no",
+        challenger_satisfies_target="yes",
+        anchor_satisfies_inverse="yes",
+        challenger_satisfies_inverse="no",
+    )
+
+    assert accepts_pairwise_slot_update(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        challenger=challenger,
+        probe=probe,
+        audit=probe,
+        anchor_support=(1, 1, 0),
+        challenger_support=(0, 0, 0),
+    )
+
+
+def test_slot_challenger_proposal_prompt_uses_max_challengers():
+    problem = parse_slot_problem(
+        """
+Question: pick one.
+1. alpha
+2. beta
+3. gamma
+"""
+    )
+    artifact = parse_slot_artifact("FINAL: 1", problem)
+
+    prompt = build_slot_challenger_proposal_prompt(
+        problem=problem,
+        artifact=artifact,
+        max_challengers=2,
+    )
+
+    assert "propose at most 2 challengers" in prompt
 
 
 def test_single_label_final_answer_renders_label():
