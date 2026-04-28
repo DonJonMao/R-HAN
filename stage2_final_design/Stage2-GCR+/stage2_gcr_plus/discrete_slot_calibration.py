@@ -744,6 +744,91 @@ def mine_slot_challengers(
     return challengers
 
 
+def mine_slot_challengers_from_mentions(
+    *,
+    problem: SlotProblemIR,
+    anchor_eval: SlotEval,
+    candidate_entries: list[dict[str, Any]],
+) -> list[SlotChallenger]:
+    # Multi-slot mention attribution is ambiguous; keep this recall patch single-slot only.
+    if len(problem.slots) != 1:
+        return []
+
+    slot = problem.slots[0]
+    anchor_value = str(anchor_eval.artifact.assignment.get(slot.slot_id, "")).strip()
+    label_map = _label_to_option_map(slot)
+    buckets: dict[str, dict[str, Any]] = {}
+
+    for entry in candidate_entries:
+        raw = str(entry.get("text", "") or "")
+        if not raw:
+            continue
+
+        mentioned_values: set[str] = set()
+        for match in re.finditer(r"\bOPTION\s*[-:：]?\s*([A-Z]|\d+)\b", raw, flags=re.IGNORECASE):
+            value = label_map.get(_norm_label(match.group(1)))
+            if value:
+                mentioned_values.add(value)
+
+        norm_raw = _norm_text(raw)
+        for option in slot.options:
+            norm_option = _norm_text(option)
+            if norm_option and norm_option in norm_raw:
+                mentioned_values.add(option)
+
+        for value in mentioned_values:
+            if _norm_text(value) == _norm_text(anchor_value):
+                continue
+
+            key = _norm_text(value)
+            bucket = buckets.setdefault(
+                key,
+                {
+                    "value": value,
+                    "occurrence_count": 0,
+                    "sink_support": 0,
+                    "sources": set(),
+                    "best_entry": entry,
+                },
+            )
+            bucket["occurrence_count"] += max(1, int(entry.get("occurrence_count", 1)))
+            bucket["sink_support"] += int(entry.get("sink_support", 0))
+            bucket["sources"].add(
+                str(entry.get("origin_node_id") or entry.get("origin_role") or entry.get("digest") or "")
+            )
+
+            if _candidate_support_key(entry) > _candidate_support_key(bucket["best_entry"]):
+                bucket["best_entry"] = entry
+
+    challengers: list[SlotChallenger] = []
+    for bucket in buckets.values():
+        best_entry = dict(bucket["best_entry"])
+        best_entry["candidate_bank_source"] = "slot_text_mention"
+        challengers.append(
+            SlotChallenger(
+                slot_id=slot.slot_id,
+                anchor_value=anchor_value,
+                challenger_value=str(bucket["value"]),
+                occurrence_count=int(bucket["occurrence_count"]),
+                sink_support=int(bucket["sink_support"]),
+                source_count=len(bucket["sources"]),
+                best_entry_digest=str(best_entry.get("digest", "")),
+                best_entry=best_entry,
+            )
+        )
+
+    challengers.sort(
+        key=lambda item: (
+            item.source_count,
+            item.occurrence_count,
+            item.sink_support,
+            _candidate_support_key(item.best_entry),
+        ),
+        reverse=True,
+    )
+    return challengers
+
+
 def preserves_frozen_slots(
     anchor_assignment: dict[str, str],
     candidate_assignment: dict[str, str],
@@ -1029,6 +1114,21 @@ def accepts_pairwise_slot_update(
     return True
 
 
+def _slot_contract_payload(problem: SlotProblemIR) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for slot in problem.slots:
+        labels = slot.option_labels or _option_labels_for_length(len(slot.options))
+        rows.append(
+            {
+                "slot_id": slot.slot_id,
+                "slot_name": slot.slot_name,
+                "allowed_option_labels": list(labels),
+                "allowed_option_texts": list(slot.options),
+            }
+        )
+    return rows
+
+
 def build_slot_challenger_proposal_prompt(
     *,
     problem: SlotProblemIR,
@@ -1038,17 +1138,33 @@ def build_slot_challenger_proposal_prompt(
     limit = max(1, int(max_challengers))
     if len(problem.slots) > 1:
         limit = min(limit, len(problem.slots))
-        proposal_rule = f"For multi-slot assignments, propose at most one challenger per slot and at most {limit} challengers total.\n"
+        proposal_rule = (
+            f"For multi-slot assignments, propose at most one challenger per slot "
+            f"and at most {limit} challengers total.\n"
+        )
     else:
-        proposal_rule = f"For a single-slot finite-option problem, propose at most {limit} challengers for that slot.\n"
+        proposal_rule = (
+            f"For a single-slot finite-option problem, propose at most {limit} challengers "
+            "for that slot.\n"
+        )
+
+    slot_contract = _slot_contract_payload(problem)
+
     return (
-        "You are proposing possible challengers for finite-option slot calibration.\n\n"
+        "You are proposing possible challengers for finite-option slot calibration.\n"
+        "You are NOT deciding the final answer.\n"
+        "You are only proposing candidates for later pairwise verification and audit.\n\n"
         f"Problem:\n{problem.raw_question}\n\n"
         f"Current assignment:\n{_render_assignment_json(artifact.assignment, problem)}\n\n"
+        f"Slot contract:\n{json.dumps(slot_contract, ensure_ascii=False)}\n\n"
         f"{proposal_rule}"
-        "Do not decide the final answer. Only propose challengers for later pairwise verification.\n"
-        "Preserve NOT, EXCEPT, LEAST, FALSE, INCORRECT, and other polarity cues.\n\n"
-        "Return exactly one JSON object:\n"
+        "For every challenger:\n"
+        '- "slot_id" must be exactly one of the slot_id values in Slot contract.\n'
+        '- "value" must be either an allowed option label or an exact allowed option text for that slot.\n'
+        "- Do not invent values outside the allowed options.\n"
+        "- Do not output OPTION - N outside JSON.\n"
+        "- Preserve NOT, EXCEPT, LEAST, FALSE, INCORRECT, CANNOT, and other polarity cues.\n\n"
+        "Return exactly one JSON object and nothing else:\n"
         "{\n"
         '  "target_condition": "...",\n'
         '  "challengers": [\n'
@@ -1058,34 +1174,97 @@ def build_slot_challenger_proposal_prompt(
     )
 
 
+def _proposal_item_to_slot_value(item: Any, problem: SlotProblemIR) -> tuple[str, str, str] | None:
+    if isinstance(item, str):
+        if len(problem.slots) != 1:
+            return None
+        slot = problem.slots[0]
+        value = _normalize_single_slot_value(item, slot)
+        if not value:
+            return None
+        return slot.slot_id, value, ""
+
+    if not isinstance(item, dict):
+        return None
+
+    slot_id = (
+        item.get("slot_id")
+        or item.get("slot")
+        or item.get("slot_name")
+        or item.get("target_slot")
+        or item.get("blank")
+        or item.get("blank_id")
+    )
+    raw_value = (
+        item.get("value")
+        or item.get("option")
+        or item.get("answer")
+        or item.get("label")
+        or item.get("option_label")
+    )
+    reason = str(item.get("reason") or item.get("rationale") or "").strip()
+
+    if not slot_id and len(problem.slots) == 1:
+        slot_id = problem.slots[0].slot_id
+    if not slot_id or raw_value is None:
+        return None
+
+    raw_slot_id = str(slot_id).strip()
+    slot: SlotSpec | None = None
+    for candidate_slot in problem.slots:
+        if (
+            candidate_slot.slot_id == raw_slot_id
+            or candidate_slot.slot_name == raw_slot_id
+            or _norm_text(candidate_slot.slot_name) == _norm_text(raw_slot_id)
+        ):
+            slot = candidate_slot
+            break
+    if slot is None:
+        return None
+
+    value = _normalize_single_slot_value(raw_value, slot)
+    if not value:
+        value = _option_value_map(slot).get(_norm_text(raw_value), "")
+    if not value:
+        return None
+
+    return slot.slot_id, value, reason
+
+
 def parse_slot_challenger_proposal(text: str, problem: SlotProblemIR) -> tuple[str, list[dict[str, str]]]:
-    obj, _ = _extract_json_any(text)
-    if not isinstance(obj, dict):
-        return "", []
-    target_condition = str(obj.get("target_condition", "")).strip()
+    raw = _strip_hidden_reasoning(text)
+    obj, _ = _extract_json_any(raw)
+
+    target_condition = ""
+    raw_items: list[Any] = []
+
+    if isinstance(obj, dict):
+        target_condition = str(obj.get("target_condition") or "").strip()
+        if isinstance(obj.get("challengers"), list):
+            raw_items = list(obj.get("challengers") or [])
+        elif isinstance(obj.get("challenger"), (dict, str)):
+            raw_items = [obj.get("challenger")]
+        elif any(key in obj for key in ("slot_id", "slot", "value", "option", "answer", "label")):
+            raw_items = [obj]
+    elif isinstance(obj, list):
+        raw_items = list(obj)
+
+    if not raw_items and obj is None and len(problem.slots) == 1:
+        raw_items = [raw]
+
     proposals: list[dict[str, str]] = []
-    raw_challengers = obj.get("challengers") or []
-    if not isinstance(raw_challengers, list):
-        return target_condition, proposals
-    slot_ids = {slot.slot_id for slot in problem.slots}
-    slot_names = {slot.slot_name: slot.slot_id for slot in problem.slots}
-    for item in raw_challengers:
-        if not isinstance(item, dict):
+    seen: set[tuple[str, str]] = set()
+    for item in raw_items:
+        parsed = _proposal_item_to_slot_value(item, problem)
+        if not parsed:
             continue
-        raw_slot_id = str(item.get("slot_id", "")).strip()
-        slot_id = raw_slot_id if raw_slot_id in slot_ids else slot_names.get(raw_slot_id, raw_slot_id)
-        value = str(item.get("value", "")).strip()
-        reason = str(item.get("reason", "")).strip()
-        if not slot_id or not value:
+        slot_id, value, reason = parsed
+        key = (slot_id, _norm_text(value))
+        if key in seen:
             continue
-        try:
-            slot = _slot_by_id(problem, slot_id)
-        except KeyError:
-            continue
-        normalized = _normalize_single_slot_value(value, slot) if len(problem.slots) == 1 else _option_value_map(slot).get(_norm_text(value), "")
-        if not normalized:
-            continue
-        proposals.append({"slot_id": slot_id, "value": normalized, "reason": reason})
+        seen.add(key)
+        proposals.append({"slot_id": slot_id, "value": value, "reason": reason})
+
     return target_condition, proposals
 
 

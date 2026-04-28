@@ -43,6 +43,7 @@ from .discrete_slot_calibration import (
     build_slot_challenger_proposal_prompt,
     make_slot_eval,
     mine_slot_challengers,
+    mine_slot_challengers_from_mentions,
     parse_slot_artifact,
     parse_slot_challenger_proposal,
     parse_slot_problem,
@@ -143,6 +144,9 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         self._v4_4_sink_guard_ids: set[str] = set()
         self._v4_4_protected_ids: set[str] = set()
         self._v4_4_champion_provenance_ids: set[str] = set()
+        self._last_slot_proposal_raw_preview: str = ""
+        self._last_slot_proposal_parse_status: str = ""
+        self._last_slot_proposal_target_condition: str = ""
 
     @staticmethod
     def _graph_repair_slots() -> PromptSlots:
@@ -150,6 +154,16 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             reasoning_mode="stepwise",
             upstream_usage="summary",
             output_style="raw",
+            verification_mode="off",
+            finalization="answer_only",
+        )
+
+    @staticmethod
+    def _discrete_json_probe_slots() -> PromptSlots:
+        return PromptSlots(
+            reasoning_mode="direct",
+            upstream_usage="summary",
+            output_style="json",
             verification_mode="off",
             finalization="answer_only",
         )
@@ -256,6 +270,9 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry.setdefault("discrete_pairwise_reject_reason", "")
         entry.setdefault("discrete_challenger_proposal_triggered", False)
         entry.setdefault("discrete_challenger_proposal_count", 0)
+        entry.setdefault("discrete_challenger_proposal_raw_preview", "")
+        entry.setdefault("discrete_challenger_proposal_parse_status", "")
+        entry.setdefault("discrete_challenger_proposal_target_condition", "")
 
     @staticmethod
     def _stable_entry_tiebreak(entry: Dict[str, Any]) -> Tuple[int, str]:
@@ -387,6 +404,9 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "discrete_pairwise_reject_reason": str(entry.get("discrete_pairwise_reject_reason", "")),
                 "discrete_challenger_proposal_triggered": bool(entry.get("discrete_challenger_proposal_triggered", False)),
                 "discrete_challenger_proposal_count": int(entry.get("discrete_challenger_proposal_count", 0)),
+                "discrete_challenger_proposal_raw_preview": str(entry.get("discrete_challenger_proposal_raw_preview", "")),
+                "discrete_challenger_proposal_parse_status": str(entry.get("discrete_challenger_proposal_parse_status", "")),
+                "discrete_challenger_proposal_target_condition": str(entry.get("discrete_challenger_proposal_target_condition", "")),
             }
         )
         return payload
@@ -2581,12 +2601,21 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         prompt: str,
         dataset_profile: DatasetProfile,
         extra_role_hint: str,
+        json_contract: bool = True,
     ) -> str:
         if not self._by_id:
             return ""
         agent_id = "verifier" if "verifier" in self._by_id else next(iter(self._by_id))
         agent = self._by_id[agent_id]
-        system_prompt = build_system_prompt(agent, self._graph_repair_slots(), extra_role_hint=extra_role_hint)
+        slots = self._discrete_json_probe_slots() if json_contract else self._graph_repair_slots()
+        role_hint = (
+            extra_role_hint
+            + "\nYou must output exactly one compact JSON object. "
+            "Do not output OPTION - N, FINAL, markdown, prose, or explanation outside JSON."
+            if json_contract
+            else extra_role_hint
+        )
+        system_prompt = build_system_prompt(agent, slots, extra_role_hint=role_hint)
         return str(
             self.evaluator._cached_chat(
                 [
@@ -2676,6 +2705,9 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
     ) -> List[SlotChallenger]:
         del question_text
         del metadata
+        self._last_slot_proposal_raw_preview = ""
+        self._last_slot_proposal_parse_status = ""
+        self._last_slot_proposal_target_condition = ""
         max_challengers = 2 if len(problem.slots) == 1 else min(2, len(problem.slots))
         prompt = build_slot_challenger_proposal_prompt(
             problem=problem,
@@ -2688,8 +2720,12 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             extra_role_hint="slot_challenger_proposal",
         )
         if not raw:
+            self._last_slot_proposal_parse_status = "empty_raw"
             return []
-        _, proposals = parse_slot_challenger_proposal(raw, problem)
+        target_condition, proposals = parse_slot_challenger_proposal(raw, problem)
+        self._last_slot_proposal_raw_preview = raw[:500]
+        self._last_slot_proposal_parse_status = "parsed" if proposals else "parsed_empty"
+        self._last_slot_proposal_target_condition = target_condition
         challengers: List[SlotChallenger] = []
         for index, item in enumerate(proposals[:max_challengers]):
             slot_id = str(item.get("slot_id", "")).strip()
@@ -2928,6 +2964,9 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         audit_count = 0
         proposal_triggered = False
         proposal_count = 0
+        proposal_raw_preview = ""
+        proposal_parse_status = ""
+        proposal_target_condition = ""
         last_reject_reason = ""
         selected: Optional[Dict[str, Any]] = None
         reason = ""
@@ -2970,6 +3009,12 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                     anchor_eval=anchor_eval,
                     candidate_entries=verified,
                 )
+                mention_challengers = mine_slot_challengers_from_mentions(
+                    problem=problem,
+                    anchor_eval=anchor_eval,
+                    candidate_entries=verified,
+                )
+                mined_challengers = self._merge_proposed_challengers(mined_challengers, mention_challengers)
                 support_table = self._slot_value_support_table(
                     problem=problem,
                     anchor_eval=anchor_eval,
@@ -3010,6 +3055,14 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                         metadata=metadata,
                     )
                     proposal_count = len(proposed)
+                    proposal_raw_preview = self._last_slot_proposal_raw_preview
+                    proposal_parse_status = self._last_slot_proposal_parse_status
+                    proposal_target_condition = self._last_slot_proposal_target_condition
+                    anchor_entry["discrete_challenger_proposal_triggered"] = True
+                    anchor_entry["discrete_challenger_proposal_count"] = proposal_count
+                    anchor_entry["discrete_challenger_proposal_raw_preview"] = proposal_raw_preview
+                    anchor_entry["discrete_challenger_proposal_parse_status"] = proposal_parse_status
+                    anchor_entry["discrete_challenger_proposal_target_condition"] = proposal_target_condition
                     (
                         selected,
                         proposal_probe_count,
@@ -3038,6 +3091,9 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 anchor_entry["discrete_pairwise_reject_reason"] = last_reject_reason
                 anchor_entry["discrete_challenger_proposal_triggered"] = proposal_triggered
                 anchor_entry["discrete_challenger_proposal_count"] = proposal_count
+                anchor_entry["discrete_challenger_proposal_raw_preview"] = proposal_raw_preview
+                anchor_entry["discrete_challenger_proposal_parse_status"] = proposal_parse_status
+                anchor_entry["discrete_challenger_proposal_target_condition"] = proposal_target_condition
                 selected = anchor_entry
                 reason = "v4_4_discrete_preserve_anchor_no_slot_certificate"
         else:
@@ -3095,6 +3151,18 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             "discrete_pairwise_reject_reason": str((selected or {}).get("discrete_pairwise_reject_reason", last_reject_reason)),
             "discrete_challenger_proposal_triggered": bool(proposal_triggered),
             "discrete_challenger_proposal_count": int(proposal_count),
+            "discrete_challenger_proposal_raw_preview": str(
+                (selected or {}).get("discrete_challenger_proposal_raw_preview", proposal_raw_preview)
+            ),
+            "discrete_challenger_proposal_parse_status": str(
+                (selected or {}).get("discrete_challenger_proposal_parse_status", proposal_parse_status)
+            ),
+            "discrete_challenger_proposal_target_condition": str(
+                (selected or {}).get(
+                    "discrete_challenger_proposal_target_condition",
+                    proposal_target_condition,
+                )
+            ),
             "v4_4_top_classes": [
                 {
                     "class_key": self._public_class_key(tuple(item.get("v4_4_class_key", ()))),

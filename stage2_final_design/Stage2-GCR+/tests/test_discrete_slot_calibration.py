@@ -9,6 +9,7 @@ from stage2_gcr_plus.discrete_slot_calibration import (
     accepts_pairwise_slot_update,
     build_slot_challenger_proposal_prompt,
     make_slot_eval,
+    mine_slot_challengers_from_mentions,
     parse_slot_challenger_proposal,
     parse_slot_artifact,
     parse_slot_problem,
@@ -426,6 +427,94 @@ Question: pick one.
     )
 
     assert "propose at most 2 challengers" in prompt
+
+
+def test_proposal_parser_single_slot_raw_option_label():
+    problem = parse_slot_problem(
+        """
+Question: What happens to money supply?
+1. no change in the money supply
+8. a reduction of the money supply by $30,000
+"""
+    )
+
+    _, proposals = parse_slot_challenger_proposal("OPTION - 8", problem)
+
+    assert proposals
+    assert proposals[0]["slot_id"] == "answer"
+    assert proposals[0]["value"] == "a reduction of the money supply by $30,000"
+
+
+def test_proposal_parser_single_slot_final_option_label():
+    problem = parse_slot_problem(
+        """
+Question: What happens to money supply?
+1. no change in the money supply
+8. a reduction of the money supply by $30,000
+"""
+    )
+
+    _, proposals = parse_slot_challenger_proposal("FINAL: OPTION - 8", problem)
+
+    assert proposals[0]["value"] == "a reduction of the money supply by $30,000"
+
+
+def test_proposal_parser_accepts_slot_aliases():
+    problem = parse_slot_problem(
+        """
+Question: What happens?
+1. no change
+8. reduction by 30000
+"""
+    )
+
+    raw = '{"challengers":[{"slot":"answer","option":"8","reason":"multiplier"}]}'
+    _, proposals = parse_slot_challenger_proposal(raw, problem)
+
+    assert proposals[0]["slot_id"] == "answer"
+    assert proposals[0]["value"] == "reduction by 30000"
+
+
+def test_proposal_parser_drops_value_outside_allowed_options():
+    problem = parse_slot_problem(
+        """
+Question: What happens?
+1. no change
+8. reduction by 30000
+"""
+    )
+
+    raw = '{"challengers":[{"slot_id":"answer","value":"not in options"}]}'
+    _, proposals = parse_slot_challenger_proposal(raw, problem)
+
+    assert proposals == []
+
+
+def test_discrete_json_probe_slots_request_json_output():
+    slots = Stage2RuntimeV44._discrete_json_probe_slots()
+
+    assert slots.output_style == "json"
+    assert slots.reasoning_mode == "direct"
+
+
+def test_single_slot_mention_mining_extracts_option_text():
+    problem = parse_slot_problem(
+        """
+Question: untreated dental caries prevalence?
+3. 70%
+9. 40%
+"""
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact("FINAL: 3", problem))
+    entries = [{"text": "The correct prevalence is 40%.", "digest": "x"}]
+
+    challengers = mine_slot_challengers_from_mentions(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        candidate_entries=entries,
+    )
+
+    assert any(ch.challenger_value == "40%" for ch in challengers)
 
 
 def test_single_label_final_answer_renders_label():
