@@ -16,12 +16,16 @@ from stage2_gcr_plus.discrete_slot_calibration import (
     build_factor_ir,
     build_kc_fd_ccs_certificates,
     build_kc_constraints,
+    build_mmlu_factor_evals_from_matrix,
     build_mmlu_option_matrix_certificates,
+    build_contrastive_rescue_certificate_prompt,
     build_slot_challenger_proposal_prompt,
     challenger_from_certificate,
     fd_ccs_policy_for_dataset,
     pairwise_probe_from_certificate,
     parse_kc_factor_certificate_result,
+    parse_contrastive_rescue_certificate_result,
+    parse_fd_ccs_factor_eval_rows,
     make_slot_eval,
     mine_multislot_mentions_safely,
     mine_slot_challengers_from_mentions,
@@ -31,6 +35,7 @@ from stage2_gcr_plus.discrete_slot_calibration import (
     preserves_frozen_slots,
     slot_assignment_final_answer,
     slot_update_dominates,
+    summarize_fd_ccs_generation,
 )
 from stage2_gcr_plus.runtime_v44 import Stage2RuntimeV44
 
@@ -565,7 +570,7 @@ Question: Which option satisfies the beta target?
     )
 
     assert certs
-    assert certs[0].certificate_kind == "contrastive_factor_certificate"
+    assert certs[0].certificate_kind == "fd_ccs_factor_group_contrast"
     assert certs[0].challenger_value == "beta"
     assert certs[0].discriminator == "satisfies the beta target"
     assert certs[0].challenger_support
@@ -604,7 +609,7 @@ Question: Which of the following is not an abnormal breathing pattern?
     assert all(cert.challenger_value != "Hyperventilation" for cert in certs)
 
 
-def test_mmlu_option_matrix_requires_support_and_discriminator():
+def test_mmlu_option_matrix_lifts_stable_empty_support_to_auditable_certificate():
     problem = parse_slot_problem(
         """
 Question: Which option satisfies the beta target?
@@ -632,7 +637,9 @@ Question: Which option satisfies the beta target?
         matrix_texts=[matrix, matrix, matrix],
     )
 
-    assert certs == []
+    assert certs
+    assert certs[0].challenger_support
+    assert any(atom.source == "llm_vote_summary" for atom in certs[0].challenger_support)
 
 
 def test_certified_update_requires_audit_confirmation():
@@ -713,7 +720,7 @@ def test_kc_factor_certificate_parser_accepts_joint_update():
     certs = parse_kc_factor_certificate_result(raw, problem, anchor_eval)
 
     assert certs
-    assert certs[0].certificate_kind == "contrastive_factor_certificate"
+    assert certs[0].certificate_kind == "fd_ccs_factor_group_contrast"
     assert set(certs[0].changed_slots) == {"blank 1", "blank 2"}
     assert accepts_kc_certificate(problem=problem, cert=certs[0])
 
@@ -744,10 +751,110 @@ Question: Which option satisfies the beta target?
     assert ir.variables == ("answer",)
     assert ir.domains["answer"] == ("alpha", "beta", "gamma")
     assert any(factor.factor_id == "mmlu_target_condition" for factor in ir.factors)
+    assert all(factor.group_id == "mmlu_correctness" for factor in ir.factors)
     assert {item["answer"] for item in candidates} == {"beta", "gamma"}
 
 
-def test_fd_ccs_contrast_certificate_requires_same_factor_flip():
+def test_mmlu_factor_matrix_evaluates_all_rubric_factors():
+    problem = parse_slot_problem(
+        """
+Question: Which option satisfies the beta target?
+1. alpha
+2. beta
+"""
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact("FINAL: 1", problem))
+    rubric = {
+        "target_condition": "selects the beta-compatible option",
+        "must_have": ["has beta property"],
+        "disqualifiers": ["uses alpha distractor"],
+    }
+    ir = build_factor_ir(problem=problem, anchor_eval=anchor_eval, dataset_name="mmlu_pro", rubric=rubric)
+    matrix = """
+{
+  "target_condition": "selects the beta-compatible option",
+  "options": [
+    {
+      "label": "1",
+      "option_value": "alpha",
+      "overall_status": "violated",
+      "factor_evals": [
+        {"factor_id": "mmlu_disqualifier_1", "status": "violated",
+         "support": [], "conflict": ["alpha triggers the distractor disqualifier"],
+         "conflict_key": "alpha_disqualifier", "source_kind": "definition", "confidence": 0.8}
+      ]
+    },
+    {
+      "label": "2",
+      "option_value": "beta",
+      "overall_status": "satisfied",
+      "factor_evals": [
+        {"factor_id": "mmlu_must_have_1", "status": "satisfied",
+         "support": ["beta has the required beta property"], "conflict": [],
+         "support_key": "beta_property", "source_kind": "definition", "confidence": 0.8}
+      ]
+    }
+  ]
+}
+"""
+    parsed = parse_fd_ccs_factor_eval_rows(matrix, problem, ir)
+    evals = build_mmlu_factor_evals_from_matrix(ir=ir, problem=problem, matrix_texts=[matrix, matrix, matrix])
+    cert = build_contrast_certificate(
+        problem=problem,
+        ir=ir,
+        anchor_assignment=dict(anchor_eval.artifact.assignment),
+        candidate_assignment={"answer": "beta"},
+        factor_evals=evals,
+        policy=fd_ccs_policy_for_dataset("mmlu_pro"),
+        candidate_bank_size=1,
+    )
+
+    assert any(key[1] == "mmlu_must_have_1" for key in parsed)
+    assert any(key[1] == "mmlu_disqualifier_1" for key in parsed)
+    assert cert is not None
+    assert cert.certificate_kind == "fd_ccs_factor_group_contrast"
+    assert cert.anchor_conflict
+    assert cert.challenger_support
+
+
+def test_evidence_lifting_keeps_non_repeated_support_when_votes_stable():
+    problem = parse_slot_problem(
+        """
+Question: Which option satisfies the beta target?
+1. alpha
+2. beta
+"""
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact("FINAL: 1", problem))
+    rubric = {"target_condition": "satisfies the beta target"}
+    matrices = []
+    for idx in range(3):
+        matrices.append(
+            f"""
+{{
+  "target_condition": "satisfies the beta target",
+  "options": [
+    {{"label": "1", "option_value": "alpha", "satisfies_target": "no",
+      "support": [], "conflict": ["alpha fails beta in wording {idx}"], "decisive_relation": ""}},
+    {{"label": "2", "option_value": "beta", "satisfies_target": "yes",
+      "support": ["beta support phrasing {idx}"], "conflict": [], "decisive_relation": ""}}
+  ]
+}}
+"""
+        )
+    certs = build_mmlu_option_matrix_certificates(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        rubric=rubric,
+        matrix_texts=matrices,
+    )
+
+    assert certs
+    assert any(atom.source == "llm_vote_summary" for atom in certs[0].challenger_support)
+    assert any(atom.source == "llm_vote_summary" for atom in certs[0].anchor_conflict)
+
+
+def test_fd_ccs_contrast_certificate_builds_factor_group_flip():
     problem = parse_slot_problem(
         """
 Question: Which option satisfies the beta target?
@@ -781,6 +888,92 @@ Question: Which option satisfies the beta target?
     assert certs[0].score_margin > 0
 
 
+def test_contrastive_rescue_parser_builds_auditable_certificate():
+    problem = parse_slot_problem(
+        """
+Question: Which option satisfies the beta target?
+1. alpha
+2. beta
+"""
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact("FINAL: 1", problem))
+    ir = build_factor_ir(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        dataset_name="mmlu_pro",
+        rubric={"target_condition": "satisfies the beta target"},
+    )
+    evals = build_mmlu_factor_evals_from_matrix(ir=ir, problem=problem, matrix_texts=[])
+    prompt = build_contrastive_rescue_certificate_prompt(
+        problem=problem,
+        ir=ir,
+        anchor_assignment=dict(anchor_eval.artifact.assignment),
+        candidate_assignment={"answer": "beta"},
+        factor_evals=evals,
+    )
+    raw = """
+{
+  "valid_certificate": true,
+  "target_condition": "satisfies the beta target",
+  "discriminator": "beta property where challenger passes and anchor fails",
+  "anchor_conflict": ["alpha lacks beta property"],
+  "challenger_support": ["beta has beta property"],
+  "challenger_conflict": [],
+  "changed_slots": ["answer"],
+  "score_margin_explanation": "medium confidence contrast",
+  "confidence": "medium"
+}
+"""
+    cert = parse_contrastive_rescue_certificate_result(
+        raw,
+        problem=problem,
+        ir=ir,
+        anchor_assignment=dict(anchor_eval.artifact.assignment),
+        candidate_assignment={"answer": "beta"},
+        factor_evals=evals,
+        candidate_bank_size=1,
+    )
+
+    assert "constructing a contrastive certificate" in prompt
+    assert cert is not None
+    assert cert.certificate_kind == "fd_ccs_contrastive_rescue"
+    assert cert.score_margin >= 1.0
+    assert cert.challenger_support
+
+
+def test_fd_ccs_diagnostics_reports_no_certificate_reason():
+    problem = parse_slot_problem(
+        """
+Question: Which option satisfies the beta target?
+1. alpha
+2. beta
+"""
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact("FINAL: 1", problem))
+    ir = build_factor_ir(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        dataset_name="mmlu_pro",
+        rubric={"target_condition": "satisfies the beta target"},
+    )
+    candidate = {"answer": "beta"}
+    evals = build_mmlu_factor_evals_from_matrix(ir=ir, problem=problem, matrix_texts=[])
+    diagnostics = summarize_fd_ccs_generation(
+        problem=problem,
+        ir=ir,
+        candidate_assignments=[candidate],
+        factor_evals=evals,
+        certs=[],
+        raw_texts=[],
+        policy=fd_ccs_policy_for_dataset("mmlu_pro"),
+        rubric={"target_condition": "satisfies the beta target"},
+    )
+
+    assert diagnostics["candidate_bank_size"] == 1
+    assert diagnostics["empty_cert_reason"] == "no_matrix_raw"
+    assert "anchor_eval_status_hist" in diagnostics
+
+
 def test_fd_ccs_kc_duplicate_factor_builds_contrast_certificate():
     problem = parse_slot_problem(
         "Fill blanks.",
@@ -812,7 +1005,7 @@ def test_fd_ccs_kc_duplicate_factor_builds_contrast_certificate():
     )
 
     assert cert is not None
-    assert cert.certificate_kind == "contrastive_factor_certificate"
+    assert cert.certificate_kind == "fd_ccs_factor_group_contrast"
     assert cert.anchor_conflict
     assert cert.challenger_support
     assert cert.discriminator

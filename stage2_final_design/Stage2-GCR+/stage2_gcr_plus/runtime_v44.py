@@ -43,10 +43,14 @@ from .discrete_slot_calibration import (
     accepts_pairwise_slot_update,
     apply_slot_certificate,
     apply_slot_update,
+    aggregate_fd_ccs_factor_evals,
+    build_contrast_certificates,
+    build_contrastive_rescue_certificate_prompt,
     build_fd_ccs_candidate_bank,
     build_fd_ccs_factor_eval_prompt,
     build_factor_ir,
     build_kc_fd_ccs_certificates,
+    build_mmlu_factor_evals_from_matrix,
     build_mmlu_option_matrix_certificates,
     build_mmlu_option_matrix_prompt,
     build_mmlu_rubric_prompt,
@@ -60,6 +64,7 @@ from .discrete_slot_calibration import (
     mine_slot_challengers_from_mentions,
     mine_multislot_mentions_safely,
     pairwise_probe_from_certificate,
+    parse_contrastive_rescue_certificate_result,
     parse_mmlu_rubric_result,
     parse_slot_artifact,
     parse_slot_challenger_proposal,
@@ -67,8 +72,10 @@ from .discrete_slot_calibration import (
     parse_slot_probe_result,
     preserves_frozen_slots,
     propose_membership_repair,
+    rank_fd_ccs_candidates_by_soft_score,
     slot_assignment_final_answer,
     slot_update_dominates,
+    summarize_fd_ccs_generation,
     _detect_question_polarity,
     _norm_text,
 )
@@ -311,6 +318,27 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry.setdefault("kc_score_margin", 0.0)
         entry.setdefault("joint_update_slots", [])
         entry.setdefault("accept_blocker", "")
+        entry.setdefault("rubric_parse_status", "")
+        entry.setdefault("rubric_target_condition_nonempty", False)
+        entry.setdefault("matrix_raw_count", 0)
+        entry.setdefault("matrix_parse_status", "")
+        entry.setdefault("matrix_row_count", 0)
+        entry.setdefault("matrix_option_covered_count", 0)
+        entry.setdefault("matrix_factor_eval_count", 0)
+        entry.setdefault("anchor_eval_status_hist", {})
+        entry.setdefault("candidate_eval_status_hist", [])
+        entry.setdefault("same_factor_flip_count", 0)
+        entry.setdefault("factor_group_flip_count", 0)
+        entry.setdefault("support_lift_count", 0)
+        entry.setdefault("conflict_lift_count", 0)
+        entry.setdefault("empty_cert_reason", "")
+        entry.setdefault("top_candidate_value", "")
+        entry.setdefault("top_candidate_soft_score", 0.0)
+        entry.setdefault("top_candidate_support_count", 0)
+        entry.setdefault("top_candidate_anchor_conflict_count", 0)
+        entry.setdefault("rescue_triggered", False)
+        entry.setdefault("rescue_cert_count", 0)
+        entry.setdefault("rescue_parse_status", "")
 
     @staticmethod
     def _stable_entry_tiebreak(entry: Dict[str, Any]) -> Tuple[int, str]:
@@ -473,6 +501,27 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "kc_score_margin": float(entry.get("kc_score_margin", 0.0)),
                 "joint_update_slots": list(entry.get("joint_update_slots", ())),
                 "accept_blocker": str(entry.get("accept_blocker", "")),
+                "rubric_parse_status": str(entry.get("rubric_parse_status", "")),
+                "rubric_target_condition_nonempty": bool(entry.get("rubric_target_condition_nonempty", False)),
+                "matrix_raw_count": int(entry.get("matrix_raw_count", 0)),
+                "matrix_parse_status": str(entry.get("matrix_parse_status", "")),
+                "matrix_row_count": int(entry.get("matrix_row_count", 0)),
+                "matrix_option_covered_count": int(entry.get("matrix_option_covered_count", 0)),
+                "matrix_factor_eval_count": int(entry.get("matrix_factor_eval_count", 0)),
+                "anchor_eval_status_hist": dict(entry.get("anchor_eval_status_hist", {})),
+                "candidate_eval_status_hist": list(entry.get("candidate_eval_status_hist", ())),
+                "same_factor_flip_count": int(entry.get("same_factor_flip_count", 0)),
+                "factor_group_flip_count": int(entry.get("factor_group_flip_count", 0)),
+                "support_lift_count": int(entry.get("support_lift_count", 0)),
+                "conflict_lift_count": int(entry.get("conflict_lift_count", 0)),
+                "empty_cert_reason": str(entry.get("empty_cert_reason", "")),
+                "top_candidate_value": str(entry.get("top_candidate_value", "")),
+                "top_candidate_soft_score": float(entry.get("top_candidate_soft_score", 0.0)),
+                "top_candidate_support_count": int(entry.get("top_candidate_support_count", 0)),
+                "top_candidate_anchor_conflict_count": int(entry.get("top_candidate_anchor_conflict_count", 0)),
+                "rescue_triggered": bool(entry.get("rescue_triggered", False)),
+                "rescue_cert_count": int(entry.get("rescue_cert_count", 0)),
+                "rescue_parse_status": str(entry.get("rescue_parse_status", "")),
             }
         )
         return payload
@@ -2718,6 +2767,37 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry["kc_anchor_violations"] = len(cert.anchor_conflict)
         entry["kc_challenger_violations"] = len(cert.challenger_conflict)
 
+    @staticmethod
+    def _fill_fd_ccs_diagnostic_fields(entry: Dict[str, Any], diagnostics: Dict[str, Any]) -> None:
+        for key in (
+            "rubric_parse_status",
+            "rubric_target_condition_nonempty",
+            "candidate_universe_size",
+            "candidate_bank_size",
+            "factor_count",
+            "matrix_raw_count",
+            "matrix_parse_status",
+            "matrix_row_count",
+            "matrix_option_covered_count",
+            "matrix_factor_eval_count",
+            "anchor_eval_status_hist",
+            "candidate_eval_status_hist",
+            "same_factor_flip_count",
+            "factor_group_flip_count",
+            "support_lift_count",
+            "conflict_lift_count",
+            "empty_cert_reason",
+            "top_candidate_value",
+            "top_candidate_soft_score",
+            "top_candidate_support_count",
+            "top_candidate_anchor_conflict_count",
+            "rescue_triggered",
+            "rescue_cert_count",
+            "rescue_parse_status",
+        ):
+            if key in diagnostics:
+                entry[key] = diagnostics[key]
+
     def _run_discrete_slot_probe_model(
         self,
         *,
@@ -2776,6 +2856,12 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "You are auditing a proposed answer change.\n"
                 "Default decision is KEEP ANCHOR unless the challenger clearly satisfies the target condition and the anchor clearly violates it.\n"
                 "Pay special attention to NOT, EXCEPT, LEAST, FALSE, INCORRECT, and other polarity cues.\n\n"
+                "Do not search for a new answer. Validate only whether the supplied certificate proves: "
+                "(1) the exact target/constraint group being tested; "
+                "(2) the anchor violates that same target/constraint group; "
+                "(3) the challenger satisfies it; "
+                "(4) the challenger introduces no stronger conflict; "
+                "(5) the discriminator is non-trivial and not merely a paraphrase.\n\n"
                 + prompt
             )
         raw = self._run_discrete_slot_probe_model(
@@ -2979,6 +3065,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                     prompt=build_mmlu_option_matrix_prompt(
                         problem=problem,
                         rubric=rubric,
+                        ir=ir,
                         sample_index=index + 1,
                     ),
                     dataset_profile=dataset_profile,
@@ -2986,11 +3073,79 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 )
                 if raw:
                     matrix_texts.append(raw)
-            certs = build_mmlu_option_matrix_certificates(
+            factor_evals = build_mmlu_factor_evals_from_matrix(
+                ir=ir,
                 problem=problem,
-                anchor_eval=anchor_eval,
-                rubric=rubric,
                 matrix_texts=matrix_texts,
+            )
+            certs = build_contrast_certificates(
+                problem=problem,
+                ir=ir,
+                candidate_assignments=candidate_assignments,
+                factor_evals=factor_evals,
+                policy=policy,
+            )
+            rescue_triggered = False
+            rescue_cert_count = 0
+            rescue_parse_status = ""
+            if not certs and candidate_assignments and policy.allow_contrastive_rescue:
+                rescue_triggered = True
+                rescue_parse_status = "parsed_empty"
+                for candidate, _ in rank_fd_ccs_candidates_by_soft_score(
+                    ir=ir,
+                    candidate_assignments=candidate_assignments,
+                    factor_evals=factor_evals,
+                )[: policy.max_rescue_candidates]:
+                    raw = self._run_discrete_slot_probe_model(
+                        prompt=build_contrastive_rescue_certificate_prompt(
+                            problem=problem,
+                            ir=ir,
+                            anchor_assignment=dict(anchor_eval.artifact.assignment),
+                            candidate_assignment=candidate,
+                            factor_evals=factor_evals,
+                        ),
+                        dataset_profile=dataset_profile,
+                        extra_role_hint="fd_ccs_mmlu_contrastive_rescue_certificate",
+                    )
+                    if not raw:
+                        rescue_parse_status = "empty_raw" if rescue_parse_status != "parsed" else rescue_parse_status
+                        continue
+                    cert = parse_contrastive_rescue_certificate_result(
+                        raw,
+                        problem=problem,
+                        ir=ir,
+                        anchor_assignment=dict(anchor_eval.artifact.assignment),
+                        candidate_assignment=candidate,
+                        factor_evals=factor_evals,
+                        candidate_bank_size=len(candidate_assignments),
+                    )
+                    if cert is not None:
+                        certs.append(cert)
+                        rescue_parse_status = "parsed"
+                rescue_cert_count = len(certs)
+                certs.sort(
+                    key=lambda item: (
+                        item.score_margin,
+                        item.shared_discriminator_count,
+                        len(item.challenger_support),
+                        item.calibrator_p_accept,
+                    ),
+                    reverse=True,
+                )
+            diagnostics.update(
+                summarize_fd_ccs_generation(
+                    problem=problem,
+                    ir=ir,
+                    candidate_assignments=candidate_assignments,
+                    factor_evals=factor_evals,
+                    certs=certs,
+                    raw_texts=matrix_texts,
+                    policy=policy,
+                    rubric=rubric,
+                    rescue_triggered=rescue_triggered,
+                    rescue_cert_count=rescue_cert_count,
+                    rescue_parse_status=rescue_parse_status,
+                )
             )
             return certs, universe_size, diagnostics
 
@@ -3040,12 +3195,82 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             )
             if raw:
                 eval_texts.append(raw)
-        certs = build_kc_fd_ccs_certificates(
+        factor_evals = aggregate_fd_ccs_factor_evals(
             problem=problem,
-            anchor_eval=anchor_eval,
-            candidate_assignments=candidate_assignments,
+            ir=ir,
+            assignments=assignments_for_eval,
             eval_texts=eval_texts,
+            include_deterministic=True,
+            evidence_lift=policy.allow_llm_evidence_lift,
+        )
+        certs = build_contrast_certificates(
+            problem=problem,
+            ir=ir,
+            candidate_assignments=candidate_assignments,
             policy=policy,
+            factor_evals=factor_evals,
+        )
+        rescue_triggered = False
+        rescue_cert_count = 0
+        rescue_parse_status = ""
+        if not certs and candidate_assignments and policy.allow_contrastive_rescue:
+            rescue_triggered = True
+            rescue_parse_status = "parsed_empty"
+            for candidate, _ in rank_fd_ccs_candidates_by_soft_score(
+                ir=ir,
+                candidate_assignments=candidate_assignments,
+                factor_evals=factor_evals,
+            )[: policy.max_rescue_candidates]:
+                raw = self._run_discrete_slot_probe_model(
+                    prompt=build_contrastive_rescue_certificate_prompt(
+                        problem=problem,
+                        ir=ir,
+                        anchor_assignment=dict(anchor_eval.artifact.assignment),
+                        candidate_assignment=candidate,
+                        factor_evals=factor_evals,
+                    ),
+                    dataset_profile=dataset_profile,
+                    extra_role_hint="fd_ccs_kc_contrastive_rescue_certificate",
+                )
+                if not raw:
+                    rescue_parse_status = "empty_raw" if rescue_parse_status != "parsed" else rescue_parse_status
+                    continue
+                cert = parse_contrastive_rescue_certificate_result(
+                    raw,
+                    problem=problem,
+                    ir=ir,
+                    anchor_assignment=dict(anchor_eval.artifact.assignment),
+                    candidate_assignment=candidate,
+                    factor_evals=factor_evals,
+                    candidate_bank_size=len(candidate_assignments),
+                )
+                if cert is not None:
+                    certs.append(cert)
+                    rescue_parse_status = "parsed"
+            rescue_cert_count = len(certs)
+            certs.sort(
+                key=lambda item: (
+                    item.score_margin,
+                    item.shared_discriminator_count,
+                    len(item.challenger_support),
+                    item.calibrator_p_accept,
+                ),
+                reverse=True,
+            )
+        diagnostics.update(
+            summarize_fd_ccs_generation(
+                problem=problem,
+                ir=ir,
+                candidate_assignments=candidate_assignments,
+                factor_evals=factor_evals,
+                certs=certs,
+                raw_texts=eval_texts,
+                policy=policy,
+                rubric=None,
+                rescue_triggered=rescue_triggered,
+                rescue_cert_count=rescue_cert_count,
+                rescue_parse_status=rescue_parse_status,
+            )
         )
         return certs, universe_size, diagnostics
 
@@ -3471,6 +3696,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             anchor_entry["cert_bank_size"] = len(certificates)
             anchor_entry["accept_blocker"] = last_reject_reason
             anchor_entry["discrete_pairwise_reject_reason"] = last_reject_reason
+            self._fill_fd_ccs_diagnostic_fields(anchor_entry, fd_ccs_diagnostics)
             if certificates:
                 self._fill_certificate_entry_fields(
                     anchor_entry,
@@ -3532,6 +3758,27 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             "kc_score_margin": float((selected or {}).get("kc_score_margin", 0.0)),
             "joint_update_slots": list((selected or {}).get("joint_update_slots", ())),
             "accept_blocker": str((selected or {}).get("accept_blocker", last_reject_reason)),
+            "rubric_parse_status": str((selected or {}).get("rubric_parse_status", fd_ccs_diagnostics.get("rubric_parse_status", ""))),
+            "rubric_target_condition_nonempty": bool((selected or {}).get("rubric_target_condition_nonempty", fd_ccs_diagnostics.get("rubric_target_condition_nonempty", False))),
+            "matrix_raw_count": int((selected or {}).get("matrix_raw_count", fd_ccs_diagnostics.get("matrix_raw_count", 0))),
+            "matrix_parse_status": str((selected or {}).get("matrix_parse_status", fd_ccs_diagnostics.get("matrix_parse_status", ""))),
+            "matrix_row_count": int((selected or {}).get("matrix_row_count", fd_ccs_diagnostics.get("matrix_row_count", 0))),
+            "matrix_option_covered_count": int((selected or {}).get("matrix_option_covered_count", fd_ccs_diagnostics.get("matrix_option_covered_count", 0))),
+            "matrix_factor_eval_count": int((selected or {}).get("matrix_factor_eval_count", fd_ccs_diagnostics.get("matrix_factor_eval_count", 0))),
+            "anchor_eval_status_hist": dict((selected or {}).get("anchor_eval_status_hist", fd_ccs_diagnostics.get("anchor_eval_status_hist", {}))),
+            "candidate_eval_status_hist": list((selected or {}).get("candidate_eval_status_hist", fd_ccs_diagnostics.get("candidate_eval_status_hist", []))),
+            "same_factor_flip_count": int((selected or {}).get("same_factor_flip_count", fd_ccs_diagnostics.get("same_factor_flip_count", 0))),
+            "factor_group_flip_count": int((selected or {}).get("factor_group_flip_count", fd_ccs_diagnostics.get("factor_group_flip_count", 0))),
+            "support_lift_count": int((selected or {}).get("support_lift_count", fd_ccs_diagnostics.get("support_lift_count", 0))),
+            "conflict_lift_count": int((selected or {}).get("conflict_lift_count", fd_ccs_diagnostics.get("conflict_lift_count", 0))),
+            "empty_cert_reason": str((selected or {}).get("empty_cert_reason", fd_ccs_diagnostics.get("empty_cert_reason", ""))),
+            "top_candidate_value": str((selected or {}).get("top_candidate_value", fd_ccs_diagnostics.get("top_candidate_value", ""))),
+            "top_candidate_soft_score": float((selected or {}).get("top_candidate_soft_score", fd_ccs_diagnostics.get("top_candidate_soft_score", 0.0))),
+            "top_candidate_support_count": int((selected or {}).get("top_candidate_support_count", fd_ccs_diagnostics.get("top_candidate_support_count", 0))),
+            "top_candidate_anchor_conflict_count": int((selected or {}).get("top_candidate_anchor_conflict_count", fd_ccs_diagnostics.get("top_candidate_anchor_conflict_count", 0))),
+            "rescue_triggered": bool((selected or {}).get("rescue_triggered", fd_ccs_diagnostics.get("rescue_triggered", False))),
+            "rescue_cert_count": int((selected or {}).get("rescue_cert_count", fd_ccs_diagnostics.get("rescue_cert_count", 0))),
+            "rescue_parse_status": str((selected or {}).get("rescue_parse_status", fd_ccs_diagnostics.get("rescue_parse_status", ""))),
             "v4_4_top_classes": [
                 {
                     "class_key": self._public_class_key(tuple(item.get("v4_4_class_key", ()))),
