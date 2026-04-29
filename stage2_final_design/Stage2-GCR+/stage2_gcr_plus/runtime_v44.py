@@ -38,25 +38,28 @@ from .discrete_slot_calibration import (
     SlotChallenger,
     SlotEval,
     SlotProblemIR,
+    accepts_contrast_certificate,
     accepts_certified_slot_update,
     accepts_pairwise_slot_update,
     apply_slot_certificate,
     apply_slot_update,
-    beam_search_kc_assignments,
-    build_kc_factor_certificate_prompt,
+    build_fd_ccs_candidate_bank,
+    build_fd_ccs_factor_eval_prompt,
+    build_factor_ir,
+    build_kc_fd_ccs_certificates,
     build_mmlu_option_matrix_certificates,
     build_mmlu_option_matrix_prompt,
     build_mmlu_rubric_prompt,
     build_pairwise_slot_probe_prompt,
     build_slot_challenger_proposal_prompt,
     challenger_from_certificate,
+    fd_ccs_policy_for_dataset,
     kc_candidate_universe_size,
     make_slot_eval,
     mine_slot_challengers,
     mine_slot_challengers_from_mentions,
     mine_multislot_mentions_safely,
     pairwise_probe_from_certificate,
-    parse_kc_factor_certificate_result,
     parse_mmlu_rubric_result,
     parse_slot_artifact,
     parse_slot_challenger_proposal,
@@ -289,10 +292,19 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry.setdefault("discrete_challenger_proposal_target_condition", "")
         entry.setdefault("certificate_kind", "")
         entry.setdefault("candidate_universe_size", 0)
+        entry.setdefault("candidate_bank_size", 0)
+        entry.setdefault("factor_count", 0)
         entry.setdefault("cert_bank_size", 0)
         entry.setdefault("option_matrix_yes_votes", 0)
         entry.setdefault("option_matrix_no_votes", 0)
         entry.setdefault("evidence_atom_count", 0)
+        entry.setdefault("anchor_conflict_count", 0)
+        entry.setdefault("challenger_support_count", 0)
+        entry.setdefault("shared_discriminator_count", 0)
+        entry.setdefault("score_margin", 0.0)
+        entry.setdefault("vote_margin", 0.0)
+        entry.setdefault("audit_agree", False)
+        entry.setdefault("calibrator_p_accept", 0.0)
         entry.setdefault("target_condition_consistency", "")
         entry.setdefault("kc_anchor_violations", 0)
         entry.setdefault("kc_challenger_violations", 0)
@@ -442,10 +454,19 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "discrete_challenger_proposal_target_condition": str(entry.get("discrete_challenger_proposal_target_condition", "")),
                 "certificate_kind": str(entry.get("certificate_kind", "")),
                 "candidate_universe_size": int(entry.get("candidate_universe_size", 0)),
+                "candidate_bank_size": int(entry.get("candidate_bank_size", 0)),
+                "factor_count": int(entry.get("factor_count", 0)),
                 "cert_bank_size": int(entry.get("cert_bank_size", 0)),
                 "option_matrix_yes_votes": int(entry.get("option_matrix_yes_votes", 0)),
                 "option_matrix_no_votes": int(entry.get("option_matrix_no_votes", 0)),
                 "evidence_atom_count": int(entry.get("evidence_atom_count", 0)),
+                "anchor_conflict_count": int(entry.get("anchor_conflict_count", 0)),
+                "challenger_support_count": int(entry.get("challenger_support_count", 0)),
+                "shared_discriminator_count": int(entry.get("shared_discriminator_count", 0)),
+                "score_margin": float(entry.get("score_margin", 0.0)),
+                "vote_margin": float(entry.get("vote_margin", 0.0)),
+                "audit_agree": bool(entry.get("audit_agree", False)),
+                "calibrator_p_accept": float(entry.get("calibrator_p_accept", 0.0)),
                 "target_condition_consistency": str(entry.get("target_condition_consistency", "")),
                 "kc_anchor_violations": int(entry.get("kc_anchor_violations", 0)),
                 "kc_challenger_violations": int(entry.get("kc_challenger_violations", 0)),
@@ -2670,10 +2691,19 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
     ) -> None:
         entry["certificate_kind"] = cert.certificate_kind
         entry["candidate_universe_size"] = int(candidate_universe_size)
+        entry["candidate_bank_size"] = int(cert.candidate_bank_size or candidate_universe_size)
+        entry["factor_count"] = int(cert.factor_count)
         entry["cert_bank_size"] = int(cert_bank_size)
         entry["option_matrix_yes_votes"] = sum(1 for item in cert.challenger_target_votes if str(item).lower() == "yes")
         entry["option_matrix_no_votes"] = sum(1 for item in cert.anchor_target_votes if str(item).lower() == "no")
         entry["evidence_atom_count"] = len(cert.challenger_support) + len(cert.anchor_conflict) + len(cert.challenger_conflict)
+        entry["anchor_conflict_count"] = len(cert.anchor_conflict)
+        entry["challenger_support_count"] = len(cert.challenger_support)
+        entry["shared_discriminator_count"] = int(cert.shared_discriminator_count)
+        entry["score_margin"] = float(cert.score_margin)
+        entry["vote_margin"] = float(cert.vote_margin)
+        entry["calibrator_p_accept"] = float(cert.calibrator_p_accept)
+        entry["audit_agree"] = bool(entry.get("audit_agree", False))
         entry["target_condition_consistency"] = cert.target_condition_consistency
         entry["kc_score_margin"] = float(cert.score_margin)
         entry["joint_update_slots"] = list(cert.changed_slots)
@@ -2685,9 +2715,8 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry["discrete_probe_discriminator"] = cert.discriminator
         entry["discrete_probe_anchor_support_count"] = len(cert.anchor_conflict)
         entry["discrete_probe_challenger_support_count"] = len(cert.challenger_support)
-        if cert.certificate_kind == "kc_factor_graph":
-            entry["kc_anchor_violations"] = len(cert.anchor_conflict)
-            entry["kc_challenger_violations"] = len(cert.challenger_conflict)
+        entry["kc_anchor_violations"] = len(cert.anchor_conflict)
+        entry["kc_challenger_violations"] = len(cert.challenger_conflict)
 
     def _run_discrete_slot_probe_model(
         self,
@@ -2873,31 +2902,12 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         anchor_eval: SlotEval,
         dataset_profile: DatasetProfile,
     ) -> Tuple[List[SlotCertificate], int]:
-        universe_size = len(problem.slots[0].options) if len(problem.slots) == 1 else 0
-        rubric_raw = self._run_discrete_slot_probe_model(
-            prompt=build_mmlu_rubric_prompt(problem=problem),
-            dataset_profile=dataset_profile,
-            extra_role_hint="mmlu_option_rubric_extraction",
-        )
-        rubric = parse_mmlu_rubric_result(rubric_raw)
-        matrix_texts: List[str] = []
-        for index in range(3):
-            raw = self._run_discrete_slot_probe_model(
-                prompt=build_mmlu_option_matrix_prompt(
-                    problem=problem,
-                    rubric=rubric,
-                    sample_index=index + 1,
-                ),
-                dataset_profile=dataset_profile,
-                extra_role_hint=f"mmlu_option_matrix_evidence_pass_{index + 1}",
-            )
-            if raw:
-                matrix_texts.append(raw)
-        certs = build_mmlu_option_matrix_certificates(
+        certs, universe_size, _ = self._run_fd_ccs_certificate_bank(
+            route_family="mmlu_option_matrix_calibration",
             problem=problem,
             anchor_eval=anchor_eval,
-            rubric=rubric,
-            matrix_texts=matrix_texts,
+            verified=(),
+            dataset_profile=dataset_profile,
         )
         return certs, universe_size
 
@@ -2909,11 +2919,93 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         verified: Sequence[Dict[str, Any]],
         dataset_profile: DatasetProfile,
     ) -> Tuple[List[SlotCertificate], int]:
-        candidate_assignments = beam_search_kc_assignments(
+        certs, universe_size, _ = self._run_fd_ccs_certificate_bank(
+            route_family="kc_factor_slot_calibration",
             problem=problem,
             anchor_eval=anchor_eval,
+            verified=verified,
+            dataset_profile=dataset_profile,
+        )
+        return certs, universe_size
+
+    def _run_fd_ccs_certificate_bank(
+        self,
+        *,
+        route_family: str,
+        problem: SlotProblemIR,
+        anchor_eval: SlotEval,
+        verified: Sequence[Dict[str, Any]],
+        dataset_profile: DatasetProfile,
+    ) -> Tuple[List[SlotCertificate], int, Dict[str, Any]]:
+        dataset_name = "knowledge_crosswords" if route_family == "kc_factor_slot_calibration" else "mmlu_pro"
+        policy = fd_ccs_policy_for_dataset(dataset_name)
+        diagnostics: Dict[str, Any] = {
+            "factor_count": 0,
+            "candidate_bank_size": 0,
+            "candidate_universe_size": 0,
+        }
+
+        if dataset_name == "mmlu_pro":
+            universe_size = len(problem.slots[0].options) if len(problem.slots) == 1 else 0
+            rubric_raw = self._run_discrete_slot_probe_model(
+                prompt=build_mmlu_rubric_prompt(problem=problem),
+                dataset_profile=dataset_profile,
+                extra_role_hint="fd_ccs_mmlu_rubric_extraction",
+            )
+            rubric = parse_mmlu_rubric_result(rubric_raw)
+            ir = build_factor_ir(
+                problem=problem,
+                anchor_eval=anchor_eval,
+                dataset_name=dataset_name,
+                rubric=rubric,
+            )
+            candidate_assignments = build_fd_ccs_candidate_bank(
+                problem=problem,
+                anchor_eval=anchor_eval,
+                ir=ir,
+                candidate_entries=(),
+                policy=policy,
+            )
+            diagnostics.update(
+                {
+                    "factor_count": len(ir.factors),
+                    "candidate_bank_size": len(candidate_assignments),
+                    "candidate_universe_size": universe_size,
+                }
+            )
+            matrix_texts: List[str] = []
+            for index in range(policy.vote_k):
+                raw = self._run_discrete_slot_probe_model(
+                    prompt=build_mmlu_option_matrix_prompt(
+                        problem=problem,
+                        rubric=rubric,
+                        sample_index=index + 1,
+                    ),
+                    dataset_profile=dataset_profile,
+                    extra_role_hint=f"fd_ccs_mmlu_option_matrix_evidence_pass_{index + 1}",
+                )
+                if raw:
+                    matrix_texts.append(raw)
+            certs = build_mmlu_option_matrix_certificates(
+                problem=problem,
+                anchor_eval=anchor_eval,
+                rubric=rubric,
+                matrix_texts=matrix_texts,
+            )
+            return certs, universe_size, diagnostics
+
+        ir = build_factor_ir(
+            problem=problem,
+            anchor_eval=anchor_eval,
+            dataset_name=dataset_name,
+            rubric=None,
+        )
+        candidate_assignments = build_fd_ccs_candidate_bank(
+            problem=problem,
+            anchor_eval=anchor_eval,
+            ir=ir,
             candidate_entries=verified,
-            max_assignments=64,
+            policy=policy,
         )
         for challenger in mine_multislot_mentions_safely(
             problem=problem,
@@ -2924,17 +3016,38 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             assignment[challenger.slot_id] = challenger.challenger_value
             if assignment not in candidate_assignments:
                 candidate_assignments.append(assignment)
-        raw = self._run_discrete_slot_probe_model(
-            prompt=build_kc_factor_certificate_prompt(
-                problem=problem,
-                anchor_eval=anchor_eval,
-                candidate_assignments=candidate_assignments,
-            ),
-            dataset_profile=dataset_profile,
-            extra_role_hint="kc_factor_graph_certificate_builder",
+        candidate_assignments = candidate_assignments[: policy.max_candidate_assignments]
+        universe_size = kc_candidate_universe_size(problem)
+        diagnostics.update(
+            {
+                "factor_count": len(ir.factors),
+                "candidate_bank_size": len(candidate_assignments),
+                "candidate_universe_size": universe_size,
+            }
         )
-        certs = parse_kc_factor_certificate_result(raw, problem, anchor_eval) if raw else []
-        return certs, kc_candidate_universe_size(problem)
+        eval_texts: List[str] = []
+        assignments_for_eval = [dict(anchor_eval.artifact.assignment), *candidate_assignments]
+        for index in range(policy.vote_k):
+            raw = self._run_discrete_slot_probe_model(
+                prompt=build_fd_ccs_factor_eval_prompt(
+                    problem=problem,
+                    ir=ir,
+                    assignments=assignments_for_eval,
+                    sample_index=index + 1,
+                ),
+                dataset_profile=dataset_profile,
+                extra_role_hint=f"fd_ccs_kc_factor_eval_pass_{index + 1}",
+            )
+            if raw:
+                eval_texts.append(raw)
+        certs = build_kc_fd_ccs_certificates(
+            problem=problem,
+            anchor_eval=anchor_eval,
+            candidate_assignments=candidate_assignments,
+            eval_texts=eval_texts,
+            policy=policy,
+        )
+        return certs, universe_size, diagnostics
 
     @staticmethod
     def _certificate_reject_reason(
@@ -2947,9 +3060,11 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         if not cert.challenger_support:
             return "reject_no_challenger_support"
         if not cert.anchor_conflict:
-            return "reject_anchor_not_conflicted"
+            return "reject_no_anchor_conflict"
         if cert.challenger_conflict:
-            return "reject_challenger_has_conflict"
+            return "reject_challenger_conflict"
+        if cert.score_margin <= 0:
+            return "reject_low_margin"
         if audit is None:
             return "reject_audit_disagree"
         if audit.winner != "challenger":
@@ -2960,10 +3075,6 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             return "reject_audit_disagree"
         if audit.challenger_satisfies_inverse == "yes" or audit.challenger_conflict:
             return "reject_audit_disagree"
-        if cert.certificate_kind == "kc_factor_graph" and cert.score_margin < 0.5:
-            return "reject_constraint_not_improved"
-        if cert.score_margin <= 0:
-            return "reject_certificate_margin"
         return "reject_certificate"
 
     def _make_certified_slot_update_entry(
@@ -2991,9 +3102,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             problem=problem,
         )
         entry["discrete_challenger_source"] = cert.certificate_kind
-        entry["v4_4_route_family"] = (
-            "kc_factor_slot_calibration" if cert.certificate_kind == "kc_factor_graph" else "mmlu_option_matrix_calibration"
-        )
+        entry["v4_4_route_family"] = "kc_factor_slot_calibration" if len(problem.slots) > 1 else "mmlu_option_matrix_calibration"
         entry["discrete_update_slots"] = list(cert.changed_slots or (cert.slot_id,))
         self._fill_certificate_entry_fields(
             entry,
@@ -3047,6 +3156,24 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             if not isinstance(audit, PairwiseSlotProbeResult):
                 last_reject_reason = "reject_audit_disagree"
                 continue
+            decision = accepts_contrast_certificate(problem=problem, cert=cert, audit=audit)
+            audit_agree = bool(
+                audit.winner == "challenger"
+                and audit.confidence in {"high", "medium"}
+                and audit.challenger_satisfies_target == "yes"
+                and audit.anchor_satisfies_target == "no"
+                and audit.challenger_satisfies_inverse != "yes"
+                and not audit.challenger_conflict
+            )
+            if audit_entry is not None:
+                audit_entry["audit_agree"] = audit_agree
+                audit_entry["calibrator_p_accept"] = float(decision.calibrator_p_accept)
+            if not decision.accepted:
+                last_reject_reason = decision.reason
+                if audit_entry is not None:
+                    audit_entry["accept_blocker"] = last_reject_reason
+                    audit_entry["discrete_pairwise_reject_reason"] = last_reject_reason
+                continue
             if not accepts_certified_slot_update(problem=problem, cert=cert, probe=probe, audit=audit):
                 last_reject_reason = self._certificate_reject_reason(cert, audit=audit)
                 if audit_entry is not None:
@@ -3062,6 +3189,8 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 cert_bank_size=cert_bank_size,
                 candidate_universe_size=candidate_universe_size,
             )
+            updated_entry["audit_agree"] = audit_agree
+            updated_entry["calibrator_p_accept"] = float(decision.calibrator_p_accept)
             updated_eval = self._slot_eval_for_entry(updated_entry)
             if (
                 updated_eval is not None
@@ -3286,6 +3415,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         last_reject_reason = ""
         candidate_universe_size = 0
         certificates: List[SlotCertificate] = []
+        fd_ccs_diagnostics: Dict[str, Any] = {}
 
         if anchor_eval.residual.invalid_slots:
             repaired = propose_membership_repair(
@@ -3301,19 +3431,13 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 reason = "v4_4_discrete_membership_local_repair"
 
         if selected is None:
-            if certificate_family == "mmlu_option_matrix_calibration":
-                certificates, candidate_universe_size = self._run_mmlu_certificate_bank(
-                    problem=problem,
-                    anchor_eval=anchor_eval,
-                    dataset_profile=dataset_profile,
-                )
-            elif certificate_family == "kc_factor_slot_calibration":
-                certificates, candidate_universe_size = self._run_kc_certificate_bank(
-                    problem=problem,
-                    anchor_eval=anchor_eval,
-                    verified=verified,
-                    dataset_profile=dataset_profile,
-                )
+            certificates, candidate_universe_size, fd_ccs_diagnostics = self._run_fd_ccs_certificate_bank(
+                route_family=certificate_family,
+                problem=problem,
+                anchor_eval=anchor_eval,
+                verified=verified,
+                dataset_profile=dataset_profile,
+            )
             limit = max(len(certificates), max(1, int(getattr(self.config, "v4_4_max_slot_challengers", 1))))
             (
                 selected,
@@ -3342,6 +3466,8 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         if selected is None:
             anchor_entry["certificate_kind"] = certificates[0].certificate_kind if certificates else ""
             anchor_entry["candidate_universe_size"] = candidate_universe_size
+            anchor_entry["candidate_bank_size"] = int(fd_ccs_diagnostics.get("candidate_bank_size", 0))
+            anchor_entry["factor_count"] = int(fd_ccs_diagnostics.get("factor_count", 0))
             anchor_entry["cert_bank_size"] = len(certificates)
             anchor_entry["accept_blocker"] = last_reject_reason
             anchor_entry["discrete_pairwise_reject_reason"] = last_reject_reason
@@ -3387,10 +3513,19 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             "discrete_audit_confidence": str((selected or {}).get("discrete_audit_confidence", "")),
             "certificate_kind": str((selected or {}).get("certificate_kind", "")),
             "candidate_universe_size": int((selected or {}).get("candidate_universe_size", candidate_universe_size)),
+            "candidate_bank_size": int((selected or {}).get("candidate_bank_size", fd_ccs_diagnostics.get("candidate_bank_size", 0))),
+            "factor_count": int((selected or {}).get("factor_count", fd_ccs_diagnostics.get("factor_count", 0))),
             "cert_bank_size": int((selected or {}).get("cert_bank_size", len(certificates))),
             "option_matrix_yes_votes": int((selected or {}).get("option_matrix_yes_votes", 0)),
             "option_matrix_no_votes": int((selected or {}).get("option_matrix_no_votes", 0)),
             "evidence_atom_count": int((selected or {}).get("evidence_atom_count", 0)),
+            "anchor_conflict_count": int((selected or {}).get("anchor_conflict_count", 0)),
+            "challenger_support_count": int((selected or {}).get("challenger_support_count", 0)),
+            "shared_discriminator_count": int((selected or {}).get("shared_discriminator_count", 0)),
+            "score_margin": float((selected or {}).get("score_margin", 0.0)),
+            "vote_margin": float((selected or {}).get("vote_margin", 0.0)),
+            "audit_agree": bool((selected or {}).get("audit_agree", False)),
+            "calibrator_p_accept": float((selected or {}).get("calibrator_p_accept", 0.0)),
             "target_condition_consistency": str((selected or {}).get("target_condition_consistency", "")),
             "kc_anchor_violations": int((selected or {}).get("kc_anchor_violations", 0)),
             "kc_challenger_violations": int((selected or {}).get("kc_challenger_violations", 0)),

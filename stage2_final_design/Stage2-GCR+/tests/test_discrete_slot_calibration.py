@@ -6,13 +6,20 @@ from types import SimpleNamespace
 from stage2_gcr_plus.discrete_slot_calibration import (
     PairwiseSlotProbeResult,
     SlotChallenger,
+    accepts_contrast_certificate,
     accepts_certified_slot_update,
     accepts_pairwise_slot_update,
     accepts_kc_certificate,
+    aggregate_fd_ccs_factor_evals,
+    build_contrast_certificate,
+    build_fd_ccs_candidate_bank,
+    build_factor_ir,
+    build_kc_fd_ccs_certificates,
     build_kc_constraints,
     build_mmlu_option_matrix_certificates,
     build_slot_challenger_proposal_prompt,
     challenger_from_certificate,
+    fd_ccs_policy_for_dataset,
     pairwise_probe_from_certificate,
     parse_kc_factor_certificate_result,
     make_slot_eval,
@@ -558,9 +565,9 @@ Question: Which option satisfies the beta target?
     )
 
     assert certs
-    assert certs[0].certificate_kind == "mmlu_option_matrix"
+    assert certs[0].certificate_kind == "contrastive_factor_certificate"
     assert certs[0].challenger_value == "beta"
-    assert certs[0].discriminator == "beta property"
+    assert certs[0].discriminator == "satisfies the beta target"
     assert certs[0].challenger_support
     assert certs[0].anchor_conflict
 
@@ -706,9 +713,136 @@ def test_kc_factor_certificate_parser_accepts_joint_update():
     certs = parse_kc_factor_certificate_result(raw, problem, anchor_eval)
 
     assert certs
-    assert certs[0].certificate_kind == "kc_factor_graph"
+    assert certs[0].certificate_kind == "contrastive_factor_certificate"
     assert set(certs[0].changed_slots) == {"blank 1", "blank 2"}
     assert accepts_kc_certificate(problem=problem, cert=certs[0])
+
+
+def test_fd_ccs_mmlu_factor_ir_enumerates_all_non_anchor_options():
+    problem = parse_slot_problem(
+        """
+Question: Which option satisfies the beta target?
+1. alpha
+2. beta
+3. gamma
+"""
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact("FINAL: 1", problem))
+    ir = build_factor_ir(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        dataset_name="mmlu_pro",
+        rubric={"target_condition": "satisfies the beta target", "must_have": ["beta property"]},
+    )
+    candidates = build_fd_ccs_candidate_bank(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        ir=ir,
+        policy=fd_ccs_policy_for_dataset("mmlu_pro"),
+    )
+
+    assert ir.variables == ("answer",)
+    assert ir.domains["answer"] == ("alpha", "beta", "gamma")
+    assert any(factor.factor_id == "mmlu_target_condition" for factor in ir.factors)
+    assert {item["answer"] for item in candidates} == {"beta", "gamma"}
+
+
+def test_fd_ccs_contrast_certificate_requires_same_factor_flip():
+    problem = parse_slot_problem(
+        """
+Question: Which option satisfies the beta target?
+1. alpha
+2. beta
+"""
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact("FINAL: 1", problem))
+    matrix = """
+{
+  "target_condition": "satisfies the beta target",
+  "options": [
+    {"label": "1", "option_value": "alpha", "satisfies_target": "no",
+     "support": [], "conflict": ["alpha lacks beta"], "decisive_relation": "beta property"},
+    {"label": "2", "option_value": "beta", "satisfies_target": "yes",
+     "support": ["beta has beta"], "conflict": [], "decisive_relation": "beta property"}
+  ]
+}
+"""
+    certs = build_mmlu_option_matrix_certificates(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        rubric={"target_condition": "satisfies the beta target"},
+        matrix_texts=[matrix, matrix, matrix],
+    )
+
+    assert certs
+    assert certs[0].shared_discriminator_count == 1
+    assert certs[0].factor_count >= 1
+    assert certs[0].candidate_bank_size == 1
+    assert certs[0].score_margin > 0
+
+
+def test_fd_ccs_kc_duplicate_factor_builds_contrast_certificate():
+    problem = parse_slot_problem(
+        "Fill blanks.",
+        metadata={
+            "options_by_blank": {
+                "blank 1": ["Film_X", "Film_Y"],
+                "blank 2": ["Film_X", "Film_Y"],
+            }
+        },
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact('["Film_X","Film_X"]', problem))
+    candidate = {"blank 1": "Film_X", "blank 2": "Film_Y"}
+    ir = build_factor_ir(problem=problem, anchor_eval=anchor_eval, dataset_name="knowledge_crosswords")
+    evals = aggregate_fd_ccs_factor_evals(
+        problem=problem,
+        ir=ir,
+        assignments=[dict(anchor_eval.artifact.assignment), candidate],
+        eval_texts=[],
+        include_deterministic=True,
+    )
+    cert = build_contrast_certificate(
+        problem=problem,
+        ir=ir,
+        anchor_assignment=dict(anchor_eval.artifact.assignment),
+        candidate_assignment=candidate,
+        factor_evals=evals,
+        policy=fd_ccs_policy_for_dataset("knowledge_crosswords"),
+        candidate_bank_size=1,
+    )
+
+    assert cert is not None
+    assert cert.certificate_kind == "contrastive_factor_certificate"
+    assert cert.anchor_conflict
+    assert cert.challenger_support
+    assert cert.discriminator
+
+
+def test_unified_contrast_accept_rejects_challenger_conflict():
+    problem = parse_slot_problem(
+        "Fill blanks.",
+        metadata={
+            "options_by_blank": {
+                "blank 1": ["Film_X", "Film_Y"],
+                "blank 2": ["Film_X", "Film_Y"],
+            }
+        },
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact('["Film_X","Film_X"]', problem))
+    cert = build_kc_fd_ccs_certificates(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        candidate_assignments=[{"blank 1": "Film_X", "blank 2": "Film_Y"}],
+        eval_texts=[],
+        policy=fd_ccs_policy_for_dataset("knowledge_crosswords"),
+    )[0]
+    policy = replace(fd_ccs_policy_for_dataset("knowledge_crosswords"), require_audit=False)
+    bad = replace(cert, challenger_conflict=cert.anchor_conflict)
+
+    assert accepts_contrast_certificate(problem=problem, cert=cert, policy=policy).accepted
+    decision = accepts_contrast_certificate(problem=problem, cert=bad, policy=policy)
+    assert not decision.accepted
+    assert decision.reason == "reject_challenger_conflict"
 
 
 def test_safe_multislot_mention_mining_extracts_unique_slot_option():
