@@ -6,9 +6,17 @@ from types import SimpleNamespace
 from stage2_gcr_plus.discrete_slot_calibration import (
     PairwiseSlotProbeResult,
     SlotChallenger,
+    accepts_certified_slot_update,
     accepts_pairwise_slot_update,
+    accepts_kc_certificate,
+    build_kc_constraints,
+    build_mmlu_option_matrix_certificates,
     build_slot_challenger_proposal_prompt,
+    challenger_from_certificate,
+    pairwise_probe_from_certificate,
+    parse_kc_factor_certificate_result,
     make_slot_eval,
+    mine_multislot_mentions_safely,
     mine_slot_challengers_from_mentions,
     parse_slot_challenger_proposal,
     parse_slot_artifact,
@@ -517,6 +525,214 @@ Question: untreated dental caries prevalence?
     assert any(ch.challenger_value == "40%" for ch in challengers)
 
 
+def test_mmlu_option_matrix_builds_certified_challenger():
+    problem = parse_slot_problem(
+        """
+Question: Which option satisfies the beta target?
+1. alpha
+2. beta
+3. gamma
+"""
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact("FINAL: 1", problem))
+    rubric = {"target_condition": "satisfies the beta target"}
+    matrix = """
+{
+  "target_condition": "satisfies the beta target",
+  "options": [
+    {"label": "1", "option_value": "alpha", "satisfies_target": "no",
+     "support": [], "conflict": ["alpha lacks the beta property"], "decisive_relation": "beta property"},
+    {"label": "2", "option_value": "beta", "satisfies_target": "yes",
+     "support": ["beta has the beta property"], "conflict": [], "decisive_relation": "beta property"},
+    {"label": "3", "option_value": "gamma", "satisfies_target": "no",
+     "support": [], "conflict": ["gamma lacks the beta property"], "decisive_relation": "beta property"}
+  ]
+}
+"""
+
+    certs = build_mmlu_option_matrix_certificates(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        rubric=rubric,
+        matrix_texts=[matrix, matrix, matrix],
+    )
+
+    assert certs
+    assert certs[0].certificate_kind == "mmlu_option_matrix"
+    assert certs[0].challenger_value == "beta"
+    assert certs[0].discriminator == "beta property"
+    assert certs[0].challenger_support
+    assert certs[0].anchor_conflict
+
+
+def test_mmlu_option_matrix_blocks_negative_inverse_challenger():
+    problem = parse_slot_problem(
+        """
+Question: Which of the following is not an abnormal breathing pattern?
+1. Hyperventilation
+2. Anaerobic respiration
+"""
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact("FINAL: 2", problem))
+    rubric = {"target_condition": "is not an abnormal breathing pattern"}
+    matrix = """
+{
+  "target_condition": "is not an abnormal breathing pattern",
+  "options": [
+    {"label": "1", "option_value": "Hyperventilation", "satisfies_target": "no",
+     "support": [], "conflict": ["hyperventilation is an abnormal breathing pattern"], "decisive_relation": "abnormal breathing pattern"},
+    {"label": "2", "option_value": "Anaerobic respiration", "satisfies_target": "yes",
+     "support": ["anaerobic respiration is not an abnormal breathing pattern in this list"], "conflict": [], "decisive_relation": "not abnormal breathing pattern"}
+  ]
+}
+"""
+
+    certs = build_mmlu_option_matrix_certificates(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        rubric=rubric,
+        matrix_texts=[matrix, matrix, matrix],
+    )
+
+    assert all(cert.challenger_value != "Hyperventilation" for cert in certs)
+
+
+def test_mmlu_option_matrix_requires_support_and_discriminator():
+    problem = parse_slot_problem(
+        """
+Question: Which option satisfies the beta target?
+1. alpha
+2. beta
+"""
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact("FINAL: 1", problem))
+    matrix = """
+{
+  "target_condition": "satisfies the beta target",
+  "options": [
+    {"label": "1", "option_value": "alpha", "satisfies_target": "no",
+     "support": [], "conflict": ["alpha fails"], "decisive_relation": "beta property"},
+    {"label": "2", "option_value": "beta", "satisfies_target": "yes",
+     "support": [], "conflict": [], "decisive_relation": ""}
+  ]
+}
+"""
+
+    certs = build_mmlu_option_matrix_certificates(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        rubric={"target_condition": "satisfies the beta target"},
+        matrix_texts=[matrix, matrix, matrix],
+    )
+
+    assert certs == []
+
+
+def test_certified_update_requires_audit_confirmation():
+    problem = parse_slot_problem(
+        """
+Question: Which option satisfies the beta target?
+1. alpha
+2. beta
+"""
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact("FINAL: 1", problem))
+    matrix = """
+{
+  "target_condition": "satisfies the beta target",
+  "options": [
+    {"label": "1", "option_value": "alpha", "satisfies_target": "no",
+     "support": [], "conflict": ["alpha fails"], "decisive_relation": "beta property"},
+    {"label": "2", "option_value": "beta", "satisfies_target": "yes",
+     "support": ["beta passes"], "conflict": [], "decisive_relation": "beta property"}
+  ]
+}
+"""
+    cert = build_mmlu_option_matrix_certificates(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        rubric={"target_condition": "satisfies the beta target"},
+        matrix_texts=[matrix, matrix, matrix],
+    )[0]
+    probe = pairwise_probe_from_certificate(cert, problem)
+
+    assert not accepts_certified_slot_update(
+        problem=problem,
+        cert=cert,
+        probe=probe,
+        audit=replace(probe, winner="anchor"),
+    )
+
+
+def test_kc_constraints_extracted_from_question():
+    problem = parse_slot_problem(
+        "Fill blanks in triples. Sources: ['blank 1', 'Actor_A']. Relations: ['actedIn', 'actedIn']. "
+        "Targets: ['Film_X', 'blank 2']. Blanks: ['blank 1', 'blank 2']. "
+        "Options: {'blank 1': ['Actor_A', 'Actor_B'], 'blank 2': ['Film_X', 'Film_Y']}.",
+    )
+
+    constraints = build_kc_constraints(problem)
+
+    assert len(constraints) == 2
+    assert constraints[0].subject == "blank 1"
+    assert constraints[0].predicate == "actedIn"
+    assert constraints[0].object == "Film_X"
+
+
+def test_kc_factor_certificate_parser_accepts_joint_update():
+    problem = parse_slot_problem(
+        "Fill blanks in triples. Sources: ['blank 1', 'Actor_A']. Relations: ['actedIn', 'actedIn']. "
+        "Targets: ['Film_X', 'blank 2']. Blanks: ['blank 1', 'blank 2']. "
+        "Options: {'blank 1': ['Actor_A', 'Actor_B'], 'blank 2': ['Film_X', 'Film_Y']}.",
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact('["Actor_B","Film_Y"]', problem))
+    raw = """
+{
+  "certificates": [
+    {
+      "changed_slots": ["blank 1", "blank 2"],
+      "challenger_assignment": {"blank 1": "Actor_A", "blank 2": "Film_X"},
+      "target_condition": "satisfies the supplied KG constraints",
+      "discriminator": "actedIn constraints",
+      "support_edges": ["Actor_A actedIn Film_X"],
+      "anchor_conflict_edges": ["Actor_B does not satisfy the actedIn constraint"],
+      "new_conflict_edges": [],
+      "score_margin": 2.0
+    }
+  ]
+}
+"""
+
+    certs = parse_kc_factor_certificate_result(raw, problem, anchor_eval)
+
+    assert certs
+    assert certs[0].certificate_kind == "kc_factor_graph"
+    assert set(certs[0].changed_slots) == {"blank 1", "blank 2"}
+    assert accepts_kc_certificate(problem=problem, cert=certs[0])
+
+
+def test_safe_multislot_mention_mining_extracts_unique_slot_option():
+    problem = parse_slot_problem(
+        "Fill blanks.",
+        metadata={
+            "options_by_blank": {
+                "blank 1": ["Actor_A", "Actor_B"],
+                "blank 2": ["Film_X", "Film_Y"],
+            }
+        },
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact('["Actor_B","Film_Y"]', problem))
+    entries = [{"text": "The evidence points to Actor_A for the actor slot.", "digest": "x"}]
+
+    challengers = mine_multislot_mentions_safely(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        candidate_entries=entries,
+    )
+
+    assert any(ch.slot_id == "blank 1" and ch.challenger_value == "Actor_A" for ch in challengers)
+
+
 def test_single_label_final_answer_renders_label():
     q = """
 Question: Which is correct?
@@ -560,7 +776,7 @@ def test_route_family_prefers_discrete_slot_calibration_over_structural():
 
     route = runtime._route_family(profile, metadata, "Fill blanks.")
 
-    assert route == "discrete_slot_calibration"
+    assert route == "kc_factor_slot_calibration"
 
 
 def test_route_family_uses_discrete_slot_calibration_for_mmlu_pro():
@@ -577,7 +793,7 @@ Question: Which is correct?
 
     route = runtime._route_family(profile, metadata, question)
 
-    assert route == "discrete_slot_calibration"
+    assert route == "mmlu_option_matrix_calibration"
 
 
 def test_route_family_keeps_nlgraph_in_structural_route():

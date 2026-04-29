@@ -32,18 +32,32 @@ from .deductive_reasoning import (
     verify_deductive_artifact,
 )
 from .discrete_slot_calibration import (
+    SlotCertificate,
     PairwiseSlotProbeResult,
     SlotArtifact,
     SlotChallenger,
     SlotEval,
     SlotProblemIR,
+    accepts_certified_slot_update,
     accepts_pairwise_slot_update,
+    apply_slot_certificate,
     apply_slot_update,
+    beam_search_kc_assignments,
+    build_kc_factor_certificate_prompt,
+    build_mmlu_option_matrix_certificates,
+    build_mmlu_option_matrix_prompt,
+    build_mmlu_rubric_prompt,
     build_pairwise_slot_probe_prompt,
     build_slot_challenger_proposal_prompt,
+    challenger_from_certificate,
+    kc_candidate_universe_size,
     make_slot_eval,
     mine_slot_challengers,
     mine_slot_challengers_from_mentions,
+    mine_multislot_mentions_safely,
+    pairwise_probe_from_certificate,
+    parse_kc_factor_certificate_result,
+    parse_mmlu_rubric_result,
     parse_slot_artifact,
     parse_slot_challenger_proposal,
     parse_slot_problem,
@@ -273,6 +287,18 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry.setdefault("discrete_challenger_proposal_raw_preview", "")
         entry.setdefault("discrete_challenger_proposal_parse_status", "")
         entry.setdefault("discrete_challenger_proposal_target_condition", "")
+        entry.setdefault("certificate_kind", "")
+        entry.setdefault("candidate_universe_size", 0)
+        entry.setdefault("cert_bank_size", 0)
+        entry.setdefault("option_matrix_yes_votes", 0)
+        entry.setdefault("option_matrix_no_votes", 0)
+        entry.setdefault("evidence_atom_count", 0)
+        entry.setdefault("target_condition_consistency", "")
+        entry.setdefault("kc_anchor_violations", 0)
+        entry.setdefault("kc_challenger_violations", 0)
+        entry.setdefault("kc_score_margin", 0.0)
+        entry.setdefault("joint_update_slots", [])
+        entry.setdefault("accept_blocker", "")
 
     @staticmethod
     def _stable_entry_tiebreak(entry: Dict[str, Any]) -> Tuple[int, str]:
@@ -283,7 +309,14 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
 
     def _candidate_source_label(self, entry: Dict[str, Any]) -> str:
         source = str(entry.get("candidate_bank_source", "")).strip()
-        if source in {"deductive_probe", "structural_probe", "discrete_probe", "discrete_slot_update"}:
+        if source in {
+            "deductive_probe",
+            "structural_probe",
+            "discrete_probe",
+            "discrete_slot_update",
+            "mmlu_option_matrix",
+            "kc_factor_graph",
+        }:
             return source
         return super()._candidate_source_label(entry)
 
@@ -407,6 +440,18 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 "discrete_challenger_proposal_raw_preview": str(entry.get("discrete_challenger_proposal_raw_preview", "")),
                 "discrete_challenger_proposal_parse_status": str(entry.get("discrete_challenger_proposal_parse_status", "")),
                 "discrete_challenger_proposal_target_condition": str(entry.get("discrete_challenger_proposal_target_condition", "")),
+                "certificate_kind": str(entry.get("certificate_kind", "")),
+                "candidate_universe_size": int(entry.get("candidate_universe_size", 0)),
+                "cert_bank_size": int(entry.get("cert_bank_size", 0)),
+                "option_matrix_yes_votes": int(entry.get("option_matrix_yes_votes", 0)),
+                "option_matrix_no_votes": int(entry.get("option_matrix_no_votes", 0)),
+                "evidence_atom_count": int(entry.get("evidence_atom_count", 0)),
+                "target_condition_consistency": str(entry.get("target_condition_consistency", "")),
+                "kc_anchor_violations": int(entry.get("kc_anchor_violations", 0)),
+                "kc_challenger_violations": int(entry.get("kc_challenger_violations", 0)),
+                "kc_score_margin": float(entry.get("kc_score_margin", 0.0)),
+                "joint_update_slots": list(entry.get("joint_update_slots", ())),
+                "accept_blocker": str(entry.get("accept_blocker", "")),
             }
         )
         return payload
@@ -457,10 +502,15 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
 
     def _route_family(self, dataset_profile: DatasetProfile, metadata: Optional[dict], question_text: str = "") -> str:
         task_type = str(dataset_profile.task_type)
+        dataset_name = self._dataset_name(dataset_profile, metadata)
         if self._is_deductive_dataset(dataset_profile, metadata):
             return "deductive_reasoning"
         if task_type == "code_generation":
             return "code_repair"
+        if dataset_name == "knowledge_crosswords" and question_text and self._is_discrete_slot_problem(question_text, dataset_profile, metadata):
+            return "kc_factor_slot_calibration"
+        if dataset_name == "mmlu_pro" and question_text and self._is_discrete_slot_problem(question_text, dataset_profile, metadata):
+            return "mmlu_option_matrix_calibration"
         if question_text and self._is_discrete_slot_problem(question_text, dataset_profile, metadata):
             return "discrete_slot_calibration"
         if task_type == "graph_reasoning":
@@ -494,7 +544,12 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             or (metadata or {}).get("mas_dataset_name")
             or ""
         ).strip().lower()
-        if str(getattr(self, "_v4_4_route_family", "")) in {"deductive_reasoning", "discrete_slot_calibration"}:
+        if str(getattr(self, "_v4_4_route_family", "")) in {
+            "deductive_reasoning",
+            "discrete_slot_calibration",
+            "mmlu_option_matrix_calibration",
+            "kc_factor_slot_calibration",
+        }:
             return MultiFidelityEvaluator._strip_hidden_reasoning(str(raw_text or "")).strip()
         if metadata_name in DEDUCTIVE_DATASETS:
             return MultiFidelityEvaluator._strip_hidden_reasoning(str(raw_text or "")).strip()
@@ -689,7 +744,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 allowed.discard("solver_b")
                 allowed.discard("judge")
             return role in allowed
-        if route_family == "discrete_slot_calibration":
+        if route_family in {"discrete_slot_calibration", "mmlu_option_matrix_calibration", "kc_factor_slot_calibration"}:
             allowed = set(discrete_roles)
             if execution_mode != "full":
                 allowed.discard("solver_b")
@@ -2449,6 +2504,12 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         source = str(challenger.best_entry.get("candidate_bank_source", "")).strip()
         if source == "slot_challenger_proposal" or str(challenger.best_entry_digest).startswith("proposal_"):
             return "proposal"
+        if source == "slot_text_mention":
+            return "mention"
+        if source == "safe_multislot_mention":
+            return "mention"
+        if source in {"mmlu_option_matrix", "kc_factor_graph", "candidate_pool", "mention"}:
+            return source
         return "mined"
 
     @staticmethod
@@ -2589,11 +2650,44 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             entry["discrete_anchor_sink_support"] = anchor_support[2]
         if challenger_support is not None:
             entry["discrete_challenger_support_dominates"] = challenger_support > (anchor_support or (0, 0, 0))
+        cert = challenger.best_entry.get("_slot_certificate")
+        if isinstance(cert, SlotCertificate):
+            self._fill_certificate_entry_fields(entry, cert, cert_bank_size=1)
         entry["discrete_update_accepted"] = True
         entry["discrete_update_slots"] = [challenger.slot_id]
         eval_obj = make_slot_eval(problem, artifact)
         self._fill_slot_entry_fields(entry, eval_obj)
         return entry
+
+    def _fill_certificate_entry_fields(
+        self,
+        entry: Dict[str, Any],
+        cert: SlotCertificate,
+        *,
+        cert_bank_size: int,
+        candidate_universe_size: int = 0,
+        accept_blocker: str = "",
+    ) -> None:
+        entry["certificate_kind"] = cert.certificate_kind
+        entry["candidate_universe_size"] = int(candidate_universe_size)
+        entry["cert_bank_size"] = int(cert_bank_size)
+        entry["option_matrix_yes_votes"] = sum(1 for item in cert.challenger_target_votes if str(item).lower() == "yes")
+        entry["option_matrix_no_votes"] = sum(1 for item in cert.anchor_target_votes if str(item).lower() == "no")
+        entry["evidence_atom_count"] = len(cert.challenger_support) + len(cert.anchor_conflict) + len(cert.challenger_conflict)
+        entry["target_condition_consistency"] = cert.target_condition_consistency
+        entry["kc_score_margin"] = float(cert.score_margin)
+        entry["joint_update_slots"] = list(cert.changed_slots)
+        entry["accept_blocker"] = accept_blocker
+        entry["discrete_challenger_slot"] = cert.slot_id
+        entry["discrete_anchor_value"] = cert.anchor_value
+        entry["discrete_challenger_value"] = cert.challenger_value
+        entry["discrete_probe_target_condition"] = cert.target_condition
+        entry["discrete_probe_discriminator"] = cert.discriminator
+        entry["discrete_probe_anchor_support_count"] = len(cert.anchor_conflict)
+        entry["discrete_probe_challenger_support_count"] = len(cert.challenger_support)
+        if cert.certificate_kind == "kc_factor_graph":
+            entry["kc_anchor_violations"] = len(cert.anchor_conflict)
+            entry["kc_challenger_violations"] = len(cert.challenger_conflict)
 
     def _run_discrete_slot_probe_model(
         self,
@@ -2641,10 +2735,12 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
     ) -> Optional[Dict[str, Any]]:
         del question_text
         del metadata
+        certificate = challenger.best_entry.get("_slot_certificate")
         prompt = build_pairwise_slot_probe_prompt(
             problem=problem,
             artifact=anchor_eval.artifact,
             challenger=challenger,
+            certificate=certificate if isinstance(certificate, SlotCertificate) else None,
         )
         if mode == "audit":
             prompt = (
@@ -2769,6 +2865,217 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             merged.append(item)
             seen.add(key)
         return merged
+
+    def _run_mmlu_certificate_bank(
+        self,
+        *,
+        problem: SlotProblemIR,
+        anchor_eval: SlotEval,
+        dataset_profile: DatasetProfile,
+    ) -> Tuple[List[SlotCertificate], int]:
+        universe_size = len(problem.slots[0].options) if len(problem.slots) == 1 else 0
+        rubric_raw = self._run_discrete_slot_probe_model(
+            prompt=build_mmlu_rubric_prompt(problem=problem),
+            dataset_profile=dataset_profile,
+            extra_role_hint="mmlu_option_rubric_extraction",
+        )
+        rubric = parse_mmlu_rubric_result(rubric_raw)
+        matrix_texts: List[str] = []
+        for index in range(3):
+            raw = self._run_discrete_slot_probe_model(
+                prompt=build_mmlu_option_matrix_prompt(
+                    problem=problem,
+                    rubric=rubric,
+                    sample_index=index + 1,
+                ),
+                dataset_profile=dataset_profile,
+                extra_role_hint=f"mmlu_option_matrix_evidence_pass_{index + 1}",
+            )
+            if raw:
+                matrix_texts.append(raw)
+        certs = build_mmlu_option_matrix_certificates(
+            problem=problem,
+            anchor_eval=anchor_eval,
+            rubric=rubric,
+            matrix_texts=matrix_texts,
+        )
+        return certs, universe_size
+
+    def _run_kc_certificate_bank(
+        self,
+        *,
+        problem: SlotProblemIR,
+        anchor_eval: SlotEval,
+        verified: Sequence[Dict[str, Any]],
+        dataset_profile: DatasetProfile,
+    ) -> Tuple[List[SlotCertificate], int]:
+        candidate_assignments = beam_search_kc_assignments(
+            problem=problem,
+            anchor_eval=anchor_eval,
+            candidate_entries=verified,
+            max_assignments=64,
+        )
+        for challenger in mine_multislot_mentions_safely(
+            problem=problem,
+            anchor_eval=anchor_eval,
+            candidate_entries=verified,
+        ):
+            assignment = dict(anchor_eval.artifact.assignment)
+            assignment[challenger.slot_id] = challenger.challenger_value
+            if assignment not in candidate_assignments:
+                candidate_assignments.append(assignment)
+        raw = self._run_discrete_slot_probe_model(
+            prompt=build_kc_factor_certificate_prompt(
+                problem=problem,
+                anchor_eval=anchor_eval,
+                candidate_assignments=candidate_assignments,
+            ),
+            dataset_profile=dataset_profile,
+            extra_role_hint="kc_factor_graph_certificate_builder",
+        )
+        certs = parse_kc_factor_certificate_result(raw, problem, anchor_eval) if raw else []
+        return certs, kc_candidate_universe_size(problem)
+
+    @staticmethod
+    def _certificate_reject_reason(
+        cert: SlotCertificate,
+        *,
+        audit: Optional[PairwiseSlotProbeResult] = None,
+    ) -> str:
+        if not cert.discriminator:
+            return "reject_no_discriminator"
+        if not cert.challenger_support:
+            return "reject_no_challenger_support"
+        if not cert.anchor_conflict:
+            return "reject_anchor_not_conflicted"
+        if cert.challenger_conflict:
+            return "reject_challenger_has_conflict"
+        if audit is None:
+            return "reject_audit_disagree"
+        if audit.winner != "challenger":
+            return "reject_audit_disagree"
+        if audit.confidence not in {"high", "medium"}:
+            return "reject_audit_disagree"
+        if audit.challenger_satisfies_target != "yes" or audit.anchor_satisfies_target != "no":
+            return "reject_audit_disagree"
+        if audit.challenger_satisfies_inverse == "yes" or audit.challenger_conflict:
+            return "reject_audit_disagree"
+        if cert.certificate_kind == "kc_factor_graph" and cert.score_margin < 0.5:
+            return "reject_constraint_not_improved"
+        if cert.score_margin <= 0:
+            return "reject_certificate_margin"
+        return "reject_certificate"
+
+    def _make_certified_slot_update_entry(
+        self,
+        *,
+        cert: SlotCertificate,
+        anchor_entry: Dict[str, Any],
+        anchor_eval: SlotEval,
+        problem: SlotProblemIR,
+        audit: PairwiseSlotProbeResult,
+        cert_bank_size: int,
+        candidate_universe_size: int,
+    ) -> Dict[str, Any]:
+        challenger = challenger_from_certificate(cert)
+        probe = pairwise_probe_from_certificate(cert, problem)
+        artifact = apply_slot_certificate(anchor_eval, cert)
+        entry = self._make_discrete_slot_update_entry(
+            artifact,
+            parent_entry=anchor_entry,
+            challenger=challenger,
+            probe=probe,
+            audit=audit,
+            anchor_support=(1, 1, 0),
+            challenger_support=(cert.source_count, len(cert.challenger_support), int(cert.score_margin)),
+            problem=problem,
+        )
+        entry["discrete_challenger_source"] = cert.certificate_kind
+        entry["v4_4_route_family"] = (
+            "kc_factor_slot_calibration" if cert.certificate_kind == "kc_factor_graph" else "mmlu_option_matrix_calibration"
+        )
+        entry["discrete_update_slots"] = list(cert.changed_slots or (cert.slot_id,))
+        self._fill_certificate_entry_fields(
+            entry,
+            cert,
+            cert_bank_size=cert_bank_size,
+            candidate_universe_size=candidate_universe_size,
+        )
+        return entry
+
+    def _try_slot_certificates_with_audit(
+        self,
+        *,
+        question_text: str,
+        problem: SlotProblemIR,
+        anchor_entry: Dict[str, Any],
+        anchor_eval: SlotEval,
+        certificates: Sequence[SlotCertificate],
+        dataset_profile: DatasetProfile,
+        metadata: Optional[dict],
+        candidate_universe_size: int,
+        limit: int,
+    ) -> Tuple[Optional[Dict[str, Any]], int, int, int, str]:
+        probe_count = 0
+        audit_count = 0
+        accepted_count = 0
+        last_reject_reason = ""
+        cert_bank_size = len(certificates)
+        for cert in certificates[:limit]:
+            probe_count += 1
+            challenger = challenger_from_certificate(cert)
+            probe = pairwise_probe_from_certificate(cert, problem)
+            audit_count += 1
+            audit_entry = self._run_pairwise_slot_probe(
+                question_text=question_text,
+                problem=problem,
+                anchor_entry=anchor_entry,
+                anchor_eval=anchor_eval,
+                challenger=challenger,
+                metadata=metadata,
+                dataset_profile=dataset_profile,
+                mode="audit",
+            )
+            audit = audit_entry.get("_slot_probe_result") if audit_entry is not None else None
+            if audit_entry is not None:
+                self._fill_certificate_entry_fields(
+                    audit_entry,
+                    cert,
+                    cert_bank_size=cert_bank_size,
+                    candidate_universe_size=candidate_universe_size,
+                )
+            if not isinstance(audit, PairwiseSlotProbeResult):
+                last_reject_reason = "reject_audit_disagree"
+                continue
+            if not accepts_certified_slot_update(problem=problem, cert=cert, probe=probe, audit=audit):
+                last_reject_reason = self._certificate_reject_reason(cert, audit=audit)
+                if audit_entry is not None:
+                    audit_entry["accept_blocker"] = last_reject_reason
+                    audit_entry["discrete_pairwise_reject_reason"] = last_reject_reason
+                continue
+            updated_entry = self._make_certified_slot_update_entry(
+                cert=cert,
+                anchor_entry=anchor_entry,
+                anchor_eval=anchor_eval,
+                problem=problem,
+                audit=audit,
+                cert_bank_size=cert_bank_size,
+                candidate_universe_size=candidate_universe_size,
+            )
+            updated_eval = self._slot_eval_for_entry(updated_entry)
+            if (
+                updated_eval is not None
+                and not updated_eval.residual.fatal
+                and preserves_frozen_slots(
+                    anchor_eval.artifact.assignment,
+                    updated_eval.artifact.assignment,
+                    set(cert.changed_slots or (cert.slot_id,)),
+                )
+            ):
+                accepted_count += 1
+                return updated_entry, probe_count, audit_count, accepted_count, last_reject_reason
+            last_reject_reason = "reject_certificate_contract"
+        return None, probe_count, audit_count, accepted_count, last_reject_reason
 
     def _try_slot_challengers_with_audit(
         self,
@@ -2910,6 +3217,228 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 return updated_entry, probe_count, audit_count, accepted_count, last_reject_reason
 
         return None, probe_count, audit_count, accepted_count, last_reject_reason
+
+    def _select_best_certified_slot_candidate(
+        self,
+        *,
+        question_text: str,
+        anchor_entry: Optional[Dict[str, Any]],
+        candidate_entries: Sequence[Dict[str, Any]],
+        dataset_profile: DatasetProfile,
+        metadata: Optional[dict],
+        budget_bucket: str,
+        certificate_family: str,
+    ) -> Tuple[Optional[Dict[str, Any]], str, Dict[str, Any]]:
+        problem = parse_slot_problem(
+            question_text,
+            dataset_profile=dataset_profile,
+            metadata=metadata,
+        )
+        if not problem.slots:
+            selected = anchor_entry or (candidate_entries[0] if candidate_entries else None)
+            return selected, f"v4_4_{certificate_family}_empty_problem", {
+                "v4_4_protocol_family": certificate_family,
+                "v4_4_execution_mode": "bypass",
+                "v4_4_budget_bucket": budget_bucket,
+                "v4_4_collapsed_class_count": 0,
+            }
+
+        verified: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        if anchor_entry is not None:
+            self._evaluate_slot_candidate(question_text, anchor_entry, problem, dataset_profile, metadata)
+            verified.append(anchor_entry)
+            seen.add(str(anchor_entry.get("digest", "")))
+        for entry in candidate_entries:
+            digest = str(entry.get("digest", ""))
+            if digest and digest in seen:
+                continue
+            self._evaluate_slot_candidate(question_text, entry, problem, dataset_profile, metadata)
+            verified.append(entry)
+            seen.add(digest)
+
+        if not verified:
+            return anchor_entry, f"v4_4_{certificate_family}_empty_bank", {
+                "v4_4_protocol_family": certificate_family,
+                "v4_4_execution_mode": "bypass",
+                "v4_4_budget_bucket": budget_bucket,
+                "v4_4_collapsed_class_count": 0,
+            }
+
+        collapsed = self._collapse_slot_classes(verified)
+        anchor_eval = self._slot_eval_for_entry(anchor_entry)
+        if anchor_entry is None or anchor_eval is None:
+            clean = [entry for entry in verified if int(entry.get("discrete_fatal_count", 0)) == 0]
+            clean.sort(key=self._discrete_slot_rank_key, reverse=True)
+            selected = clean[0] if clean else verified[0]
+            return selected, f"v4_4_{certificate_family}_no_anchor_fallback", {
+                "v4_4_protocol_family": certificate_family,
+                "v4_4_execution_mode": "bypass",
+                "v4_4_budget_bucket": budget_bucket,
+                "v4_4_collapsed_class_count": int(len(collapsed)),
+            }
+
+        selected: Optional[Dict[str, Any]] = None
+        reason = ""
+        probe_count = 0
+        audit_count = 0
+        accepted_count = 0
+        last_reject_reason = ""
+        candidate_universe_size = 0
+        certificates: List[SlotCertificate] = []
+
+        if anchor_eval.residual.invalid_slots:
+            repaired = propose_membership_repair(
+                problem=problem,
+                anchor_entry=anchor_entry,
+                anchor_eval=anchor_eval,
+                candidate_entries=verified,
+            )
+            if repaired is not None:
+                repaired["discrete_update_accepted"] = True
+                repaired["discrete_update_slots"] = list(anchor_eval.residual.invalid_slots)
+                selected = repaired
+                reason = "v4_4_discrete_membership_local_repair"
+
+        if selected is None:
+            if certificate_family == "mmlu_option_matrix_calibration":
+                certificates, candidate_universe_size = self._run_mmlu_certificate_bank(
+                    problem=problem,
+                    anchor_eval=anchor_eval,
+                    dataset_profile=dataset_profile,
+                )
+            elif certificate_family == "kc_factor_slot_calibration":
+                certificates, candidate_universe_size = self._run_kc_certificate_bank(
+                    problem=problem,
+                    anchor_eval=anchor_eval,
+                    verified=verified,
+                    dataset_profile=dataset_profile,
+                )
+            limit = max(len(certificates), max(1, int(getattr(self.config, "v4_4_max_slot_challengers", 1))))
+            (
+                selected,
+                probe_count,
+                audit_count,
+                accepted_count,
+                last_reject_reason,
+            ) = self._try_slot_certificates_with_audit(
+                question_text=question_text,
+                problem=problem,
+                anchor_entry=anchor_entry,
+                anchor_eval=anchor_eval,
+                certificates=certificates,
+                dataset_profile=dataset_profile,
+                metadata=metadata,
+                candidate_universe_size=candidate_universe_size,
+                limit=limit,
+            )
+            if selected is not None:
+                reason = (
+                    "v4_4_kc_factor_slot_update"
+                    if certificate_family == "kc_factor_slot_calibration"
+                    else "v4_4_mmlu_option_matrix_slot_update"
+                )
+
+        if selected is None:
+            anchor_entry["certificate_kind"] = certificates[0].certificate_kind if certificates else ""
+            anchor_entry["candidate_universe_size"] = candidate_universe_size
+            anchor_entry["cert_bank_size"] = len(certificates)
+            anchor_entry["accept_blocker"] = last_reject_reason
+            anchor_entry["discrete_pairwise_reject_reason"] = last_reject_reason
+            if certificates:
+                self._fill_certificate_entry_fields(
+                    anchor_entry,
+                    certificates[0],
+                    cert_bank_size=len(certificates),
+                    candidate_universe_size=candidate_universe_size,
+                    accept_blocker=last_reject_reason,
+                )
+            selected = anchor_entry
+            reason = f"v4_4_{certificate_family}_preserve_anchor_no_certificate"
+
+        execution_mode = self._apply_budget_bucket("lean" if (probe_count or accepted_count or selected is not anchor_entry) else "bypass", budget_bucket)
+        selected_eval = self._slot_eval_for_entry(selected)
+        selected_digest = str((selected or {}).get("digest", ""))
+        anchor_digest = str((anchor_entry or {}).get("digest", ""))
+        extra = {
+            "v4_4_protocol_family": certificate_family,
+            "v4_4_route_family": certificate_family,
+            "v4_4_execution_mode": execution_mode,
+            "v4_4_budget_bucket": budget_bucket,
+            "v4_4_stage1_anchor_present": True,
+            "v4_4_stage1_anchor_used": bool(selected_digest == anchor_digest),
+            "v4_4_candidate_count": int(len(candidate_entries)),
+            "v4_4_collapsed_class_count": int(len(collapsed)),
+            "v4_4_selected_candidate_digest": selected_digest,
+            "v4_4_selected_candidate_source": self._candidate_source_label(selected or {}),
+            "v4_4_selected_quality_score": float(self._quality_score(selected or {})),
+            "v4_4_selected_model_uncertainty": float((selected or {}).get("candidate_model_uncertainty", 0.0)),
+            "v4_4_repair_branch_count": int(probe_count),
+            "v4_4_repair_improvement_count": int(accepted_count),
+            "discrete_probe_triggered": bool(probe_count),
+            "discrete_challenger_source": str((selected or {}).get("discrete_challenger_source", "")),
+            "discrete_probe_winner": str((selected or {}).get("discrete_probe_winner", "")),
+            "discrete_probe_confidence": str((selected or {}).get("discrete_probe_confidence", "")),
+            "discrete_update_accepted": bool((selected or {}).get("discrete_update_accepted", False)),
+            "discrete_update_slots": list((selected or {}).get("discrete_update_slots", ())),
+            "discrete_pairwise_reject_reason": str((selected or {}).get("discrete_pairwise_reject_reason", last_reject_reason)),
+            "discrete_audit_triggered": bool(audit_count),
+            "discrete_audit_winner": str((selected or {}).get("discrete_audit_winner", "")),
+            "discrete_audit_confidence": str((selected or {}).get("discrete_audit_confidence", "")),
+            "certificate_kind": str((selected or {}).get("certificate_kind", "")),
+            "candidate_universe_size": int((selected or {}).get("candidate_universe_size", candidate_universe_size)),
+            "cert_bank_size": int((selected or {}).get("cert_bank_size", len(certificates))),
+            "option_matrix_yes_votes": int((selected or {}).get("option_matrix_yes_votes", 0)),
+            "option_matrix_no_votes": int((selected or {}).get("option_matrix_no_votes", 0)),
+            "evidence_atom_count": int((selected or {}).get("evidence_atom_count", 0)),
+            "target_condition_consistency": str((selected or {}).get("target_condition_consistency", "")),
+            "kc_anchor_violations": int((selected or {}).get("kc_anchor_violations", 0)),
+            "kc_challenger_violations": int((selected or {}).get("kc_challenger_violations", 0)),
+            "kc_score_margin": float((selected or {}).get("kc_score_margin", 0.0)),
+            "joint_update_slots": list((selected or {}).get("joint_update_slots", ())),
+            "accept_blocker": str((selected or {}).get("accept_blocker", last_reject_reason)),
+            "v4_4_top_classes": [
+                {
+                    "class_key": self._public_class_key(tuple(item.get("v4_4_class_key", ()))),
+                    "size": int(item.get("v4_4_class_size", 1)),
+                    "contains_anchor": bool(anchor_digest and str(item.get("digest", "")) == anchor_digest),
+                    "representative_digest": str(item.get("digest", "")),
+                    "assignment_signature": str(item.get("discrete_assignment_signature", "")),
+                    "fatal_kinds": list(item.get("discrete_fatal_kinds", ())),
+                    "local_kinds": list(item.get("discrete_local_kinds", ())),
+                    "invalid_slots": list(item.get("discrete_invalid_slots", ())),
+                    "unstable_slots": list(item.get("discrete_unstable_slots", ())),
+                }
+                for item in collapsed[: self.config.max_logged_candidates]
+            ],
+        }
+        if selected_eval is not None:
+            extra.update(
+                {
+                    "discrete_slot_count": len(selected_eval.problem.slots),
+                    "discrete_output_kind": selected_eval.problem.output_kind,
+                    "discrete_assignment": dict(selected_eval.artifact.assignment),
+                    "discrete_assignment_signature": selected_eval.artifact.artifact_signature,
+                    "discrete_fatal_count": len(selected_eval.residual.fatal),
+                    "discrete_local_count": len(selected_eval.residual.local),
+                    "discrete_fatal_kinds": list(selected_eval.residual.fatal),
+                    "discrete_local_kinds": list(selected_eval.residual.local),
+                    "discrete_invalid_slots": list(selected_eval.residual.invalid_slots),
+                    "discrete_unstable_slots": list(selected_eval.residual.unstable_slots),
+                }
+            )
+        extra.update(
+            {
+                "v4_4_stage1_anchor_digest": anchor_digest,
+                "discrete_anchor_assignment": dict(anchor_eval.artifact.assignment),
+                "discrete_anchor_invalid_slots": list(anchor_eval.residual.invalid_slots),
+                "discrete_anchor_fatal_kinds": list(anchor_eval.residual.fatal),
+                "discrete_anchor_local_kinds": list(anchor_eval.residual.local),
+            }
+        )
+        if selected is not None:
+            selected["v4_4_selection_reason"] = reason
+        return selected, reason, extra
 
     def _select_best_discrete_slot_candidate(
         self,
@@ -4931,6 +5460,16 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 turn_traces=turn_traces,
                 budget_bucket=budget_bucket,
             )
+        elif route_family in {"mmlu_option_matrix_calibration", "kc_factor_slot_calibration"}:
+            selected, strategy, extra = self._select_best_certified_slot_candidate(
+                question_text=question_text,
+                anchor_entry=anchor,
+                candidate_entries=candidates,
+                dataset_profile=dataset_profile,
+                metadata=metadata,
+                budget_bucket=budget_bucket,
+                certificate_family=route_family,
+            )
         elif route_family == "discrete_slot_calibration":
             selected, strategy, extra = self._select_best_discrete_slot_candidate(
                 question_text=question_text,
@@ -4980,7 +5519,11 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                     metadata=metadata,
                 )
             final_answer = answer_only_from_artifact(selected_eval.artifact)
-        elif selected is not None and route_family == "discrete_slot_calibration":
+        elif selected is not None and route_family in {
+            "discrete_slot_calibration",
+            "mmlu_option_matrix_calibration",
+            "kc_factor_slot_calibration",
+        }:
             problem = parse_slot_problem(
                 question_text,
                 dataset_profile=dataset_profile,
