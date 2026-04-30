@@ -52,9 +52,11 @@ from .discrete_slot_calibration import (
     build_kc_fd_ccs_certificates,
     build_mmlu_factor_evals_from_matrix,
     build_mmlu_independent_answer_vote_prompt,
+    build_mmlu_matrix_json_repair_prompt,
     build_mmlu_option_matrix_certificates,
     build_mmlu_option_matrix_prompt,
     build_mmlu_rubric_prompt,
+    build_mmlu_vote_pair_factor_certificate_prompt,
     build_pairwise_slot_probe_prompt,
     build_slot_challenger_proposal_prompt,
     challenger_from_certificate,
@@ -66,8 +68,10 @@ from .discrete_slot_calibration import (
     mine_multislot_mentions_safely,
     pairwise_probe_from_certificate,
     parse_contrastive_rescue_hint_result,
+    parse_fd_ccs_factor_eval_rows,
     parse_mmlu_independent_answer_vote_result,
     parse_mmlu_rubric_result,
+    parse_mmlu_vote_pair_factor_certificate,
     parse_slot_artifact,
     parse_slot_challenger_proposal,
     parse_slot_problem,
@@ -77,6 +81,7 @@ from .discrete_slot_calibration import (
     rank_fd_ccs_candidates_by_soft_score,
     slot_assignment_final_answer,
     slot_update_dominates,
+    summarize_mmlu_independent_votes,
     summarize_fd_ccs_generation,
     _detect_question_polarity,
     _norm_text,
@@ -324,6 +329,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry.setdefault("rubric_target_condition_nonempty", False)
         entry.setdefault("matrix_raw_count", 0)
         entry.setdefault("matrix_parse_status", "")
+        entry.setdefault("matrix_repair_count", 0)
         entry.setdefault("matrix_row_count", 0)
         entry.setdefault("matrix_option_covered_count", 0)
         entry.setdefault("matrix_factor_eval_count", 0)
@@ -342,8 +348,10 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry.setdefault("rescue_cert_count", 0)
         entry.setdefault("rescue_parse_status", "")
         entry.setdefault("native_corroborated", False)
+        entry.setdefault("evidence_source_set", [])
         entry.setdefault("trusted_source_count", 0)
         entry.setdefault("untrusted_source_count", 0)
+        entry.setdefault("deterministic_factor_eval_count", 0)
         entry.setdefault("independent_candidate_votes", 0)
         entry.setdefault("independent_anchor_votes", 0)
         entry.setdefault("independent_other_votes", 0)
@@ -2767,8 +2775,10 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry["joint_update_slots"] = list(cert.changed_slots)
         entry["accept_blocker"] = accept_blocker
         entry["native_corroborated"] = bool(cert.native_corroborated)
+        entry["evidence_source_set"] = list(cert.evidence_source_set)
         entry["trusted_source_count"] = int(cert.trusted_source_count)
         entry["untrusted_source_count"] = int(cert.untrusted_source_count)
+        entry["deterministic_factor_eval_count"] = int(cert.deterministic_factor_eval_count)
         entry["matrix_parse_status"] = cert.matrix_parse_status or entry.get("matrix_parse_status", "")
         entry["matrix_option_covered_count"] = int(cert.matrix_option_covered_count or entry.get("matrix_option_covered_count", 0))
         entry["factor_group_flip_count"] = int(cert.factor_group_flip_count or entry.get("factor_group_flip_count", 0))
@@ -2783,8 +2793,8 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry["discrete_probe_discriminator"] = cert.discriminator
         entry["discrete_probe_anchor_support_count"] = len(cert.anchor_conflict)
         entry["discrete_probe_challenger_support_count"] = len(cert.challenger_support)
-        entry["kc_anchor_violations"] = len(cert.anchor_conflict)
-        entry["kc_challenger_violations"] = len(cert.challenger_conflict)
+        entry["kc_anchor_violations"] = int(cert.kc_anchor_violations or len(cert.anchor_conflict))
+        entry["kc_challenger_violations"] = int(cert.kc_challenger_violations or len(cert.challenger_conflict))
 
     @staticmethod
     def _fill_fd_ccs_diagnostic_fields(entry: Dict[str, Any], diagnostics: Dict[str, Any]) -> None:
@@ -2796,6 +2806,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             "factor_count",
             "matrix_raw_count",
             "matrix_parse_status",
+            "matrix_repair_count",
             "matrix_row_count",
             "matrix_option_covered_count",
             "matrix_factor_eval_count",
@@ -2814,8 +2825,10 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             "rescue_cert_count",
             "rescue_parse_status",
             "native_corroborated",
+            "evidence_source_set",
             "trusted_source_count",
             "untrusted_source_count",
+            "deterministic_factor_eval_count",
             "independent_candidate_votes",
             "independent_anchor_votes",
             "independent_other_votes",
@@ -3081,6 +3094,8 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
     ) -> SlotCertificate:
         if len(problem.slots) != 1 or policy.independent_vote_k <= 0:
             return cert
+        if cert.verifier_vote_k >= int(policy.independent_vote_k):
+            return cert
         slot_id = problem.slots[0].slot_id
         anchor_value = dict(cert.anchor_assignment).get(slot_id, cert.anchor_value)
         challenger_value = dict(cert.challenger_assignment).get(slot_id, cert.challenger_value)
@@ -3110,6 +3125,81 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             independent_other_votes=other_votes,
             verifier_vote_k=int(policy.independent_vote_k),
         )
+
+    def _collect_mmlu_independent_vote_summary(
+        self,
+        *,
+        problem: SlotProblemIR,
+        anchor_eval: SlotEval,
+        dataset_profile: DatasetProfile,
+        policy: Any,
+    ) -> Any:
+        if len(problem.slots) != 1 or policy.independent_vote_k <= 0:
+            return summarize_mmlu_independent_votes(
+                (),
+                problem=problem,
+                anchor_value=dict(anchor_eval.artifact.assignment).get(problem.slots[0].slot_id, "") if problem.slots else "",
+            )
+        votes: List[str] = []
+        reasons: List[str] = []
+        for index in range(policy.independent_vote_k):
+            raw = self._run_discrete_slot_probe_model(
+                prompt=build_mmlu_independent_answer_vote_prompt(problem=problem, sample_index=index + 1),
+                dataset_profile=dataset_profile,
+                extra_role_hint=f"fd_ccs_mmlu_independent_answer_vote_{index + 1}",
+            )
+            vote = parse_mmlu_independent_answer_vote_result(raw, problem)
+            votes.append(vote)
+            if raw:
+                try:
+                    obj = json.loads(raw.strip())
+                    if isinstance(obj, dict) and str(obj.get("decisive_reason") or "").strip():
+                        reasons.append(str(obj.get("decisive_reason")).strip())
+                except Exception:
+                    pass
+        return summarize_mmlu_independent_votes(
+            votes,
+            problem=problem,
+            anchor_value=dict(anchor_eval.artifact.assignment).get(problem.slots[0].slot_id, ""),
+            reasons=reasons,
+        )
+
+    def _repair_mmlu_matrix_texts(
+        self,
+        *,
+        raw_texts: Sequence[str],
+        problem: SlotProblemIR,
+        ir: Any,
+        dataset_profile: DatasetProfile,
+    ) -> Tuple[List[str], List[str], int, str]:
+        parseable: List[str] = []
+        diagnostic_texts: List[str] = list(raw_texts)
+        repair_count = 0
+        parse_failed_count = 0
+        for raw in raw_texts:
+            if parse_fd_ccs_factor_eval_rows(raw, problem=problem, ir=ir):
+                parseable.append(raw)
+                continue
+            parse_failed_count += 1
+            repaired = self._run_discrete_slot_probe_model(
+                prompt=build_mmlu_matrix_json_repair_prompt(raw=raw, problem=problem, ir=ir),
+                dataset_profile=dataset_profile,
+                extra_role_hint="fd_ccs_mmlu_matrix_json_repair",
+            )
+            if repaired:
+                diagnostic_texts.append(repaired)
+            if repaired and parse_fd_ccs_factor_eval_rows(repaired, problem=problem, ir=ir):
+                parseable.append(repaired)
+                repair_count += 1
+        if repair_count:
+            status = "json_repaired"
+        elif parseable:
+            status = "parsed"
+        elif parse_failed_count:
+            status = "matrix_parse_failed"
+        else:
+            status = "no_matrix_raw"
+        return parseable, diagnostic_texts, repair_count, status
 
     def _run_fd_ccs_certificate_bank(
         self,
@@ -3170,10 +3260,16 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 )
                 if raw:
                     matrix_texts.append(raw)
+            parseable_matrix_texts, diagnostic_matrix_texts, matrix_repair_count, matrix_parse_status = self._repair_mmlu_matrix_texts(
+                raw_texts=matrix_texts,
+                problem=problem,
+                ir=ir,
+                dataset_profile=dataset_profile,
+            )
             factor_evals = build_mmlu_factor_evals_from_matrix(
                 ir=ir,
                 problem=problem,
-                matrix_texts=matrix_texts,
+                matrix_texts=parseable_matrix_texts,
             )
             certs = build_contrast_certificates(
                 problem=problem,
@@ -3182,6 +3278,54 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 factor_evals=factor_evals,
                 policy=policy,
             )
+            vote_summary = self._collect_mmlu_independent_vote_summary(
+                problem=problem,
+                anchor_eval=anchor_eval,
+                dataset_profile=dataset_profile,
+                policy=policy,
+            )
+            if (
+                vote_summary.majority_value
+                and vote_summary.candidate_votes >= int(policy.independent_min_candidate_votes)
+                and vote_summary.anchor_votes <= int(policy.independent_max_anchor_votes)
+            ):
+                candidate_assignment = {problem.slots[0].slot_id: vote_summary.majority_value}
+                candidate_assignments = self._merge_fd_ccs_assignments(
+                    candidate_assignments,
+                    [candidate_assignment],
+                    limit=policy.max_candidate_assignments,
+                )
+                vote_pair_raw = self._run_discrete_slot_probe_model(
+                    prompt=build_mmlu_vote_pair_factor_certificate_prompt(
+                        problem=problem,
+                        anchor_eval=anchor_eval,
+                        candidate_value=vote_summary.majority_value,
+                        rubric=rubric,
+                        vote_summary=vote_summary,
+                    ),
+                    dataset_profile=dataset_profile,
+                    extra_role_hint="fd_ccs_mmlu_vote_pair_factor_certificate",
+                )
+                vote_pair_cert = parse_mmlu_vote_pair_factor_certificate(
+                    vote_pair_raw,
+                    problem=problem,
+                    anchor_eval=anchor_eval,
+                    candidate_value=vote_summary.majority_value,
+                    vote_summary=vote_summary,
+                    rubric=rubric,
+                    candidate_bank_size=len(candidate_assignments),
+                )
+                if vote_pair_cert is not None:
+                    certs.append(vote_pair_cert)
+                    certs.sort(
+                        key=lambda item: (
+                            item.score_margin,
+                            item.shared_discriminator_count,
+                            len(item.challenger_support),
+                            item.calibrator_p_accept,
+                        ),
+                        reverse=True,
+                    )
             rescue_triggered = False
             rescue_cert_count = 0
             rescue_parse_status = ""
@@ -3237,11 +3381,24 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                         if raw:
                             rescue_matrix_texts.append(raw)
                     if rescue_matrix_texts:
+                        rescue_parseable, rescue_diagnostic, rescue_repair_count, rescue_matrix_status = self._repair_mmlu_matrix_texts(
+                            raw_texts=rescue_matrix_texts,
+                            problem=problem,
+                            ir=ir,
+                            dataset_profile=dataset_profile,
+                        )
                         matrix_texts.extend(rescue_matrix_texts)
+                        diagnostic_matrix_texts.extend(rescue_diagnostic)
+                        parseable_matrix_texts.extend(rescue_parseable)
+                        matrix_repair_count += rescue_repair_count
+                        if rescue_matrix_status == "json_repaired":
+                            matrix_parse_status = "json_repaired"
+                        elif matrix_parse_status == "no_matrix_raw":
+                            matrix_parse_status = rescue_matrix_status
                         factor_evals = build_mmlu_factor_evals_from_matrix(
                             ir=ir,
                             problem=problem,
-                            matrix_texts=matrix_texts,
+                            matrix_texts=parseable_matrix_texts,
                         )
                         certs = build_contrast_certificates(
                             problem=problem,
@@ -3258,7 +3415,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                     candidate_assignments=candidate_assignments,
                     factor_evals=factor_evals,
                     certs=certs,
-                    raw_texts=matrix_texts,
+                    raw_texts=diagnostic_matrix_texts,
                     policy=policy,
                     rubric=rubric,
                     rescue_triggered=rescue_triggered,
@@ -3266,6 +3423,13 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                     rescue_parse_status=rescue_parse_status,
                 )
             )
+            diagnostics["matrix_repair_count"] = int(matrix_repair_count)
+            if matrix_parse_status in {"json_repaired", "matrix_parse_failed", "no_matrix_raw"}:
+                diagnostics["matrix_parse_status"] = matrix_parse_status
+            diagnostics["independent_candidate_votes"] = int(vote_summary.candidate_votes)
+            diagnostics["independent_anchor_votes"] = int(vote_summary.anchor_votes)
+            diagnostics["independent_other_votes"] = int(vote_summary.other_votes)
+            diagnostics["verifier_vote_k"] = int(vote_summary.vote_k)
             certs = self._annotate_fd_ccs_certs(certs, diagnostics)
             return certs, universe_size, diagnostics
 
@@ -3943,6 +4107,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             "rubric_target_condition_nonempty": bool((selected or {}).get("rubric_target_condition_nonempty", fd_ccs_diagnostics.get("rubric_target_condition_nonempty", False))),
             "matrix_raw_count": int((selected or {}).get("matrix_raw_count", fd_ccs_diagnostics.get("matrix_raw_count", 0))),
             "matrix_parse_status": str((selected or {}).get("matrix_parse_status", fd_ccs_diagnostics.get("matrix_parse_status", ""))),
+            "matrix_repair_count": int((selected or {}).get("matrix_repair_count", fd_ccs_diagnostics.get("matrix_repair_count", 0))),
             "matrix_row_count": int((selected or {}).get("matrix_row_count", fd_ccs_diagnostics.get("matrix_row_count", 0))),
             "matrix_option_covered_count": int((selected or {}).get("matrix_option_covered_count", fd_ccs_diagnostics.get("matrix_option_covered_count", 0))),
             "matrix_factor_eval_count": int((selected or {}).get("matrix_factor_eval_count", fd_ccs_diagnostics.get("matrix_factor_eval_count", 0))),
@@ -3960,6 +4125,8 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             "rescue_triggered": bool((selected or {}).get("rescue_triggered", fd_ccs_diagnostics.get("rescue_triggered", False))),
             "rescue_cert_count": int((selected or {}).get("rescue_cert_count", fd_ccs_diagnostics.get("rescue_cert_count", 0))),
             "rescue_parse_status": str((selected or {}).get("rescue_parse_status", fd_ccs_diagnostics.get("rescue_parse_status", ""))),
+            "evidence_source_set": list((selected or {}).get("evidence_source_set", fd_ccs_diagnostics.get("evidence_source_set", []))),
+            "deterministic_factor_eval_count": int((selected or {}).get("deterministic_factor_eval_count", fd_ccs_diagnostics.get("deterministic_factor_eval_count", 0))),
             "v4_4_top_classes": [
                 {
                     "class_key": self._public_class_key(tuple(item.get("v4_4_class_key", ()))),

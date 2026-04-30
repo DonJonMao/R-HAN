@@ -125,6 +125,7 @@ class SlotCertificate:
     vote_margin: float = 0.0
     calibrator_p_accept: float = 0.0
     native_corroborated: bool = False
+    evidence_source_set: tuple[str, ...] = ()
     trusted_source_count: int = 0
     untrusted_source_count: int = 0
     matrix_parse_status: str = ""
@@ -134,6 +135,9 @@ class SlotCertificate:
     independent_anchor_votes: int = 0
     independent_other_votes: int = 0
     verifier_vote_k: int = 0
+    kc_anchor_violations: int = 0
+    kc_challenger_violations: int = 0
+    deterministic_factor_eval_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -203,6 +207,17 @@ class ContrastDecision:
     accepted: bool
     reason: str
     calibrator_p_accept: float
+
+
+@dataclass(frozen=True)
+class MMLUVoteSummary:
+    majority_value: str
+    candidate_votes: int
+    anchor_votes: int
+    other_votes: int
+    abstain_votes: int
+    vote_k: int
+    reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1507,6 +1522,205 @@ def parse_mmlu_independent_answer_vote_result(text: str, problem: SlotProblemIR)
     return _normalize_single_slot_value(text, slot)
 
 
+def summarize_mmlu_independent_votes(
+    votes: Sequence[str],
+    *,
+    problem: SlotProblemIR,
+    anchor_value: str,
+    reasons: Sequence[str] = (),
+) -> MMLUVoteSummary:
+    if len(problem.slots) != 1:
+        return MMLUVoteSummary("", 0, 0, 0, len(votes), len(votes), tuple(reasons))
+    slot = problem.slots[0]
+    normalized_anchor = _normalize_single_slot_value(anchor_value, slot) or str(anchor_value or "").strip()
+    counts: dict[str, int] = {}
+    abstain_votes = 0
+    for vote in votes:
+        normalized = _normalize_single_slot_value(vote, slot) or _option_value_map(slot).get(_norm_text(vote), "")
+        if not normalized:
+            abstain_votes += 1
+            continue
+        counts[normalized] = counts.get(normalized, 0) + 1
+    majority_value = ""
+    majority_count = 0
+    for value, count in counts.items():
+        if count > majority_count:
+            majority_value = value
+            majority_count = count
+    anchor_votes = counts.get(normalized_anchor, 0)
+    candidate_votes = 0 if _norm_text(majority_value) == _norm_text(normalized_anchor) else majority_count
+    other_votes = sum(
+        count
+        for value, count in counts.items()
+        if _norm_text(value) not in {_norm_text(majority_value), _norm_text(normalized_anchor)}
+    )
+    if _norm_text(majority_value) == _norm_text(normalized_anchor):
+        other_votes = sum(count for value, count in counts.items() if _norm_text(value) != _norm_text(normalized_anchor))
+    return MMLUVoteSummary(
+        majority_value=majority_value,
+        candidate_votes=candidate_votes,
+        anchor_votes=anchor_votes,
+        other_votes=other_votes,
+        abstain_votes=abstain_votes,
+        vote_k=len(votes),
+        reasons=tuple(str(item).strip() for item in reasons if str(item).strip()),
+    )
+
+
+def build_mmlu_vote_pair_factor_certificate_prompt(
+    *,
+    problem: SlotProblemIR,
+    anchor_eval: SlotEval,
+    candidate_value: str,
+    rubric: dict[str, Any],
+    vote_summary: MMLUVoteSummary,
+) -> str:
+    anchor_assignment = dict(anchor_eval.artifact.assignment)
+    payload = {
+        "anchor_assignment": anchor_assignment,
+        "candidate_assignment": {problem.slots[0].slot_id: candidate_value} if problem.slots else {},
+        "independent_vote_summary": {
+            "majority_value": vote_summary.majority_value,
+            "candidate_votes": vote_summary.candidate_votes,
+            "anchor_votes": vote_summary.anchor_votes,
+            "other_votes": vote_summary.other_votes,
+            "abstain_votes": vote_summary.abstain_votes,
+            "vote_k": vote_summary.vote_k,
+            "reasons": list(vote_summary.reasons),
+        },
+        "rubric": _jsonable(rubric),
+    }
+    return (
+        "You are constructing a native MMLU-Pro factor certificate.\n"
+        "Do not search for a different answer. Do not use or create a rescue certificate.\n"
+        "Evaluate only whether the independently-voted candidate strictly defeats the anchor under the target factors.\n\n"
+        f"Problem:\n{problem.raw_question}\n\n"
+        f"Slot contract:\n{json.dumps(_slot_contract_payload(problem), ensure_ascii=False)}\n\n"
+        f"Payload:\n{json.dumps(_jsonable(payload), ensure_ascii=False)}\n\n"
+        "Return JSON only:\n"
+        "{\n"
+        '  "valid_certificate": true,\n'
+        '  "target_condition": "...",\n'
+        '  "decisive_factor": "mmlu_target_condition|mmlu_must_have_i|mmlu_disqualifier_i|mmlu_polarity|calculation|comparison",\n'
+        '  "anchor_status": "violated|satisfied|unknown",\n'
+        '  "candidate_status": "satisfied|violated|unknown",\n'
+        '  "anchor_conflict": ["atomic reason anchor fails"],\n'
+        '  "candidate_support": ["atomic reason candidate satisfies"],\n'
+        '  "candidate_conflict": [],\n'
+        '  "discriminator": "minimal target-level distinction",\n'
+        '  "confidence": "high|medium|low"\n'
+        "}\n"
+    )
+
+
+def parse_mmlu_vote_pair_factor_certificate(
+    text: str,
+    *,
+    problem: SlotProblemIR,
+    anchor_eval: SlotEval,
+    candidate_value: str,
+    vote_summary: MMLUVoteSummary,
+    rubric: dict[str, Any] | None = None,
+    candidate_bank_size: int = 0,
+) -> SlotCertificate | None:
+    if len(problem.slots) != 1:
+        return None
+    slot = problem.slots[0]
+    candidate_value = _normalize_single_slot_value(candidate_value, slot) or _option_value_map(slot).get(_norm_text(candidate_value), "")
+    if not candidate_value or not _value_in_slot_options(candidate_value, slot):
+        return None
+    anchor_assignment = dict(anchor_eval.artifact.assignment)
+    anchor_value = str(anchor_assignment.get(slot.slot_id, "")).strip()
+    if not anchor_value or _norm_text(anchor_value) == _norm_text(candidate_value):
+        return None
+    obj, _ = _extract_json_any(text)
+    if not isinstance(obj, dict) or not bool(obj.get("valid_certificate", False)):
+        return None
+    anchor_status = _normalize_factor_status(obj.get("anchor_status"))
+    candidate_status = _normalize_factor_status(obj.get("candidate_status"))
+    if anchor_status != "violated" or candidate_status != "satisfied":
+        return None
+    target_condition = str(obj.get("target_condition") or (rubric or {}).get("target_condition") or "").strip()
+    discriminator = str(obj.get("discriminator") or obj.get("decisive_factor") or "").strip()
+    anchor_conflict_text = _str_tuple(obj.get("anchor_conflict"))
+    candidate_support_text = _str_tuple(obj.get("candidate_support") or obj.get("challenger_support"))
+    candidate_conflict_text = _str_tuple(obj.get("candidate_conflict") or obj.get("challenger_conflict"))
+    if not target_condition or not discriminator or not anchor_conflict_text or not candidate_support_text:
+        return None
+    if candidate_conflict_text:
+        return None
+    confidence = str(obj.get("confidence") or "medium").strip().lower()
+    confidence_margin = {"high": 2.0, "medium": 1.5, "low": 1.0}.get(confidence, 1.0)
+    vote_margin = float(vote_summary.candidate_votes - vote_summary.anchor_votes)
+    score_margin = max(1.0, confidence_margin, vote_margin)
+    challenger_assignment = {slot.slot_id: candidate_value}
+    raw_payload = {
+        "fd_ccs": True,
+        "dataset_name": "mmlu_pro",
+        "vote_pair": True,
+        "anchor_assignment": anchor_assignment,
+        "challenger_assignment": challenger_assignment,
+        "independent_candidate_votes": vote_summary.candidate_votes,
+        "independent_anchor_votes": vote_summary.anchor_votes,
+        "independent_other_votes": vote_summary.other_votes,
+        "verifier_vote_k": vote_summary.vote_k,
+        "confidence": confidence,
+    }
+    cert = SlotCertificate(
+        slot_id=slot.slot_id,
+        anchor_value=anchor_value,
+        challenger_value=candidate_value,
+        target_condition=target_condition,
+        discriminator=discriminator,
+        challenger_support=_evidence_atoms(
+            slot_id=slot.slot_id,
+            value=candidate_value,
+            relation=target_condition,
+            statements=candidate_support_text,
+            polarity="support",
+            source="mmlu_vote_pair_factor",
+            source_id="fd_ccs_mmlu_vote_pair_contrast",
+            confidence=0.85 if confidence == "high" else 0.75,
+        ),
+        anchor_conflict=_evidence_atoms(
+            slot_id=slot.slot_id,
+            value=anchor_value,
+            relation=target_condition,
+            statements=anchor_conflict_text,
+            polarity="conflict",
+            source="mmlu_vote_pair_factor",
+            source_id="fd_ccs_mmlu_vote_pair_contrast",
+            confidence=0.85 if confidence == "high" else 0.75,
+        ),
+        challenger_conflict=(),
+        anchor_target_votes=tuple("no" for _ in range(max(1, vote_summary.anchor_votes))),
+        challenger_target_votes=tuple("yes" for _ in range(max(1, vote_summary.candidate_votes))),
+        score_margin=score_margin,
+        source_count=2,
+        certificate_kind="fd_ccs_mmlu_vote_pair_contrast",
+        changed_slots=(slot.slot_id,),
+        anchor_assignment=_assignment_tuple(anchor_assignment),
+        challenger_assignment=_assignment_tuple(challenger_assignment),
+        target_condition_consistency="consistent",
+        raw=json.dumps(_jsonable(raw_payload), ensure_ascii=False),
+        factor_count=1,
+        candidate_bank_size=int(candidate_bank_size),
+        shared_discriminator_count=1,
+        vote_margin=vote_margin,
+        native_corroborated=True,
+        evidence_source_set=("mmlu_independent_vote", "mmlu_vote_pair_factor"),
+        trusted_source_count=2,
+        untrusted_source_count=0,
+        matrix_parse_status="vote_pair_native",
+        factor_group_flip_count=1,
+        independent_candidate_votes=int(vote_summary.candidate_votes),
+        independent_anchor_votes=int(vote_summary.anchor_votes),
+        independent_other_votes=int(vote_summary.other_votes),
+        verifier_vote_k=int(vote_summary.vote_k),
+    )
+    return _with_calibrator_score(cert, audit_agree=False)
+
+
 def build_mmlu_option_matrix_prompt(
     *,
     problem: SlotProblemIR,
@@ -1593,6 +1807,21 @@ def _iter_option_rows(raw_options: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _unwrap_mmlu_matrix_obj(obj: Any) -> Any:
+    if not isinstance(obj, dict):
+        return obj
+    for key in ("option_evals", "options", "rows", "option_matrix"):
+        if key in obj:
+            return obj
+    for wrapper in ("result", "data", "matrix", "output", "answer", "json"):
+        inner = obj.get(wrapper)
+        if isinstance(inner, dict):
+            unwrapped = _unwrap_mmlu_matrix_obj(inner)
+            if isinstance(unwrapped, dict):
+                return unwrapped
+    return obj
+
+
 def _normalize_mmlu_option_ref(row: dict[str, Any], slot: SlotSpec) -> str:
     refs = [
         row.get("option_value"),
@@ -1615,6 +1844,40 @@ def _normalize_mmlu_option_ref(row: dict[str, Any], slot: SlotSpec) -> str:
     return ""
 
 
+def build_mmlu_matrix_json_repair_prompt(*, raw: str, problem: SlotProblemIR, ir: FactorIR) -> str:
+    labels = []
+    if len(problem.slots) == 1:
+        slot = problem.slots[0]
+        labels = list(slot.option_labels or _option_labels_for_length(len(slot.options)))
+    factor_ids = [factor.factor_id for factor in ir.factors]
+    return (
+        "You are a JSON repair tool for an MMLU-Pro finite-domain matrix.\n"
+        "Convert the raw model output into the exact schema below. Do not solve the problem again. "
+        "Do not change any labels, statuses, support, or conflict claims. "
+        "If a field is missing, use an empty string or U.\n\n"
+        f"Allowed option labels:\n{json.dumps(labels, ensure_ascii=False)}\n\n"
+        f"Allowed factor ids:\n{json.dumps(factor_ids, ensure_ascii=False)}\n\n"
+        "Required schema:\n"
+        "{\n"
+        '  "schema": "fd_ccs_mmlu_matrix_v2",\n'
+        '  "target_condition": "...",\n'
+        '  "option_evals": {\n'
+        '    "1": {\n'
+        '      "status": "S|V|U",\n'
+        '      "confidence": 0.0,\n'
+        '      "decisive_factor": "mmlu_target_condition",\n'
+        '      "support": "",\n'
+        '      "conflict": "",\n'
+        '      "support_key": "",\n'
+        '      "conflict_key": "",\n'
+        '      "source_kind": "unknown"\n'
+        "    }\n"
+        "  }\n"
+        "}\n\n"
+        f"Raw output:\n{raw}\n"
+    )
+
+
 def _normalize_factor_status(value: Any) -> str:
     text = str(value or "").strip().lower()
     if text in {"s", "sat", "satisfied", "yes", "true", "y"}:
@@ -1630,6 +1893,7 @@ def _parse_mmlu_option_matrix_rows(text: str, problem: SlotProblemIR) -> tuple[s
     slot = problem.slots[0]
     raw = _strip_hidden_reasoning(text)
     obj, _ = _extract_json_any(raw)
+    obj = _unwrap_mmlu_matrix_obj(obj)
     if not isinstance(obj, dict):
         return "", []
     target_condition = str(obj.get("target_condition") or "").strip()
@@ -1674,6 +1938,7 @@ def parse_fd_ccs_factor_eval_rows(
 
     slot = problem.slots[0]
     obj, _ = _extract_json_any(text)
+    obj = _unwrap_mmlu_matrix_obj(obj)
     if not isinstance(obj, dict):
         return parsed
     raw_options = _iter_option_rows(obj.get("option_evals") or obj.get("options") or obj.get("rows") or obj.get("option_matrix") or [])
@@ -2832,9 +3097,17 @@ def build_contrast_certificate(
         shared_discriminator_count=len(shared_factors),
         vote_margin=vote_margin,
         native_corroborated=True,
+        evidence_source_set=tuple(sorted(trusted_sources | untrusted_sources)),
         trusted_source_count=max(1, len(trusted_sources)),
         untrusted_source_count=len(untrusted_sources),
         factor_group_flip_count=1,
+        kc_anchor_violations=len(anchor_conflict) if ir.dataset_name == "knowledge_crosswords" else 0,
+        kc_challenger_violations=len(all_challenger_conflicts) if ir.dataset_name == "knowledge_crosswords" else 0,
+        deterministic_factor_eval_count=sum(
+            1
+            for atom in (*challenger_support, *anchor_conflict, *all_challenger_conflicts)
+            if atom.source in {"deterministic", "slot_contract", "kg_constraint", "question_graph", "relevant_knowledge"}
+        ),
     )
     return _with_calibrator_score(cert, audit_agree=False)
 
@@ -3056,6 +3329,7 @@ def parse_contrastive_rescue_certificate_result(
         shared_discriminator_count=1,
         vote_margin=2.0 if confidence in {"high", "medium"} else 1.0,
         native_corroborated=False,
+        evidence_source_set=("llm_vote_summary",),
         trusted_source_count=0,
         untrusted_source_count=1,
     )
@@ -3345,7 +3619,11 @@ def accepts_contrast_certificate(
     if policy.dataset_name == "mmlu_pro":
         if policy.require_native_factor_flip and cert.factor_group_flip_count <= 0:
             return ContrastDecision(False, "reject_no_native_factor_flip", p_accept)
-        if policy.min_matrix_option_coverage and cert.matrix_option_covered_count < policy.min_matrix_option_coverage:
+        if (
+            cert.certificate_kind == "fd_ccs_factor_group_contrast"
+            and policy.min_matrix_option_coverage
+            and cert.matrix_option_covered_count < policy.min_matrix_option_coverage
+        ):
             return ContrastDecision(False, "reject_low_matrix_coverage", p_accept)
         if policy.require_independent_verifier:
             if cert.verifier_vote_k <= 0:
@@ -3729,6 +4007,12 @@ def parse_kc_factor_certificate_result(
             candidate_bank_size=0,
             shared_discriminator_count=1,
             vote_margin=1.0,
+            native_corroborated=False,
+            evidence_source_set=("llm_probe",),
+            trusted_source_count=0,
+            untrusted_source_count=1,
+            kc_anchor_violations=1,
+            kc_challenger_violations=0,
         )
         certificates.append(_with_calibrator_score(cert, audit_agree=False))
     certificates.sort(key=lambda item: (item.score_margin, len(item.changed_slots), len(item.challenger_support)), reverse=True)

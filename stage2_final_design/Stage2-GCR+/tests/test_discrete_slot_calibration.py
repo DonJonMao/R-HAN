@@ -17,8 +17,10 @@ from stage2_gcr_plus.discrete_slot_calibration import (
     build_kc_fd_ccs_certificates,
     build_kc_constraints,
     build_mmlu_factor_evals_from_matrix,
+    build_mmlu_matrix_json_repair_prompt,
     build_mmlu_option_matrix_certificates,
     build_contrastive_rescue_certificate_prompt,
+    build_mmlu_vote_pair_factor_certificate_prompt,
     build_slot_challenger_proposal_prompt,
     challenger_from_certificate,
     fd_ccs_policy_for_dataset,
@@ -27,6 +29,7 @@ from stage2_gcr_plus.discrete_slot_calibration import (
     parse_contrastive_rescue_certificate_result,
     parse_contrastive_rescue_hint_result,
     parse_fd_ccs_factor_eval_rows,
+    parse_mmlu_vote_pair_factor_certificate,
     make_slot_eval,
     mine_multislot_mentions_safely,
     mine_slot_challengers_from_mentions,
@@ -37,6 +40,7 @@ from stage2_gcr_plus.discrete_slot_calibration import (
     slot_assignment_final_answer,
     slot_update_dominates,
     summarize_fd_ccs_generation,
+    summarize_mmlu_independent_votes,
 )
 from stage2_gcr_plus.runtime_v44 import Stage2RuntimeV44
 
@@ -995,6 +999,121 @@ Question: Which option satisfies the beta target?
     assert len({key[0] for key in parsed}) == 2
     assert cert is not None
     assert cert.native_corroborated
+
+
+def test_mmlu_matrix_parser_unwraps_result_option_evals():
+    problem = parse_slot_problem(
+        """
+Question: Which option satisfies the beta target?
+1. alpha
+2. beta
+"""
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact("FINAL: 1", problem))
+    ir = build_factor_ir(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        dataset_name="mmlu_pro",
+        rubric={"target_condition": "satisfies the beta target"},
+    )
+    matrix = """
+{
+  "result": {
+    "target_condition": "satisfies the beta target",
+    "option_evals": {
+      "OPTION - 1": {"status": "V", "conflict": "alpha lacks beta", "decisive_factor": "mmlu_target_condition"},
+      "OPTION - 2": {"status": "S", "support": "beta has beta", "decisive_factor": "mmlu_target_condition"}
+    }
+  }
+}
+"""
+    parsed = parse_fd_ccs_factor_eval_rows(matrix, problem, ir)
+
+    assert len({key[0] for key in parsed}) == 2
+
+
+def test_mmlu_matrix_json_repair_prompt_is_format_only():
+    problem = parse_slot_problem(
+        """
+Question: Which option satisfies the beta target?
+1. alpha
+2. beta
+"""
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact("FINAL: 1", problem))
+    ir = build_factor_ir(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        dataset_name="mmlu_pro",
+        rubric={"target_condition": "satisfies the beta target"},
+    )
+    prompt = build_mmlu_matrix_json_repair_prompt(raw="Option 2 satisfies; option 1 violates.", problem=problem, ir=ir)
+
+    assert "Do not solve the problem again" in prompt
+    assert "fd_ccs_mmlu_matrix_v2" in prompt
+    assert "Option 2 satisfies" in prompt
+
+
+def test_mmlu_vote_pair_contrast_builds_native_certificate_without_matrix_coverage():
+    problem = parse_slot_problem(
+        """
+Question: Which option satisfies the beta target?
+1. alpha
+2. beta
+"""
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact("FINAL: 1", problem))
+    rubric = {"target_condition": "satisfies the beta target"}
+    vote_summary = summarize_mmlu_independent_votes(
+        ["beta", "2", "OPTION - 2", "beta", "alpha"],
+        problem=problem,
+        anchor_value="alpha",
+    )
+    prompt = build_mmlu_vote_pair_factor_certificate_prompt(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        candidate_value=vote_summary.majority_value,
+        rubric=rubric,
+        vote_summary=vote_summary,
+    )
+    raw = """
+{
+  "valid_certificate": true,
+  "target_condition": "satisfies the beta target",
+  "decisive_factor": "mmlu_target_condition",
+  "anchor_status": "violated",
+  "candidate_status": "satisfied",
+  "anchor_conflict": ["alpha lacks the beta property"],
+  "candidate_support": ["beta has the beta property"],
+  "candidate_conflict": [],
+  "discriminator": "beta property satisfaction",
+  "confidence": "high"
+}
+"""
+    cert = parse_mmlu_vote_pair_factor_certificate(
+        raw,
+        problem=problem,
+        anchor_eval=anchor_eval,
+        candidate_value=vote_summary.majority_value,
+        vote_summary=vote_summary,
+        rubric=rubric,
+        candidate_bank_size=1,
+    )
+    decision = accepts_contrast_certificate(
+        problem=problem,
+        cert=cert,
+        policy=replace(fd_ccs_policy_for_dataset("mmlu_pro"), require_audit=False),
+        audit=None,
+    )
+
+    assert "native MMLU-Pro factor certificate" in prompt
+    assert cert is not None
+    assert cert.certificate_kind == "fd_ccs_mmlu_vote_pair_contrast"
+    assert cert.native_corroborated
+    assert cert.independent_candidate_votes == 4
+    assert cert.independent_anchor_votes == 1
+    assert cert.matrix_option_covered_count == 0
+    assert decision.accepted
 
 
 def test_fd_ccs_diagnostics_reports_no_certificate_reason():
