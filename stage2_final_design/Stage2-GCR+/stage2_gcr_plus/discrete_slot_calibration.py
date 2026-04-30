@@ -5,7 +5,7 @@ import hashlib
 import itertools
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Optional, Sequence
 
 
@@ -124,6 +124,16 @@ class SlotCertificate:
     shared_discriminator_count: int = 0
     vote_margin: float = 0.0
     calibrator_p_accept: float = 0.0
+    native_corroborated: bool = False
+    trusted_source_count: int = 0
+    untrusted_source_count: int = 0
+    matrix_parse_status: str = ""
+    matrix_option_covered_count: int = 0
+    factor_group_flip_count: int = 0
+    independent_candidate_votes: int = 0
+    independent_anchor_votes: int = 0
+    independent_other_votes: int = 0
+    verifier_vote_k: int = 0
 
 
 @dataclass(frozen=True)
@@ -177,6 +187,14 @@ class ContrastPolicy:
     allow_llm_evidence_lift: bool = False
     allow_deterministic_kg_atoms: bool = False
     allow_contrastive_rescue: bool = True
+    allow_rescue_hints: bool = False
+    rescue_can_accept: bool = True
+    require_independent_verifier: bool = False
+    independent_vote_k: int = 0
+    independent_min_candidate_votes: int = 0
+    independent_max_anchor_votes: int = 99
+    min_matrix_option_coverage: int = 0
+    require_native_factor_flip: bool = False
     max_rescue_candidates: int = 0
 
 
@@ -1112,8 +1130,11 @@ def build_pairwise_slot_probe_prompt(
             f"Proposed structured certificate:\n{json.dumps(certificate_payload, ensure_ascii=False)}\n\n"
             "Audit the certificate instead of discovering a new answer.\n"
             "Do not search for a different challenger.\n"
-            "Check only: (1) the exact target/constraint group being tested; "
-            "(2) whether the anchor fails that same target/constraint group; "
+            "First construct the strongest possible defense for the anchor from the problem text and legal options. "
+            "Then construct the strongest possible support for the challenger from the same evidence. "
+            "Accept only if the challenger strictly defeats the anchor on the same target/constraint group.\n"
+            "Check: (1) the exact target/constraint group being tested; "
+            "(2) whether the anchor fails that same target/constraint group after its best defense; "
             "(3) whether the challenger satisfies that group; "
             "(4) whether the challenger introduces any new conflict.\n"
             "If discriminator, challenger_support, or anchor_conflict is empty or only restates the option text, return winner=uncertain.\n"
@@ -1390,9 +1411,18 @@ def challenger_from_certificate(cert: SlotCertificate) -> SlotChallenger:
 def pairwise_probe_from_certificate(cert: SlotCertificate, problem: SlotProblemIR) -> PairwiseSlotProbeResult:
     parser_polarity = _detect_question_polarity(problem.raw_question)
     question_polarity = "negative" if parser_polarity == "negative_or_exception" else "positive"
-    confidence = "high" if cert.score_margin >= 2.0 and cert.source_count >= 2 else "medium"
+    if cert.certificate_kind == "fd_ccs_contrastive_rescue" or not cert.native_corroborated:
+        confidence = "low"
+        winner = "uncertain"
+        anchor_satisfies_target = "uncertain"
+        challenger_satisfies_target = "uncertain"
+    else:
+        confidence = "high" if cert.score_margin >= 2.0 and cert.source_count >= 2 else "medium"
+        winner = "challenger"
+        anchor_satisfies_target = "no"
+        challenger_satisfies_target = "yes"
     return PairwiseSlotProbeResult(
-        winner="challenger",
+        winner=winner,
         anchor_conflict=tuple(atom.statement for atom in cert.anchor_conflict),
         challenger_conflict=tuple(atom.statement for atom in cert.challenger_conflict),
         anchor_support=(),
@@ -1403,8 +1433,8 @@ def pairwise_probe_from_certificate(cert: SlotCertificate, problem: SlotProblemI
         question_polarity=question_polarity,
         target_condition=cert.target_condition,
         inverse_condition="disqualifies the option from satisfying the target condition",
-        anchor_satisfies_target="no",
-        challenger_satisfies_target="yes",
+        anchor_satisfies_target=anchor_satisfies_target,
+        challenger_satisfies_target=challenger_satisfies_target,
         anchor_satisfies_inverse="yes",
         challenger_satisfies_inverse="no",
     )
@@ -1446,6 +1476,35 @@ def parse_mmlu_rubric_result(text: str) -> dict[str, Any]:
         "disqualifiers": list(_str_tuple(obj.get("disqualifiers"))),
         "raw": str(text or ""),
     }
+
+
+def build_mmlu_independent_answer_vote_prompt(*, problem: SlotProblemIR, sample_index: int = 0) -> str:
+    return (
+        "Solve this multiple-choice problem independently.\n"
+        "Do not use any proposed anchor, challenger, or certificate. Use the problem text and legal options only.\n\n"
+        f"Problem:\n{problem.raw_question}\n\n"
+        f"Slot contract:\n{json.dumps(_slot_contract_payload(problem), ensure_ascii=False)}\n\n"
+        f"Independent vote pass: {sample_index}\n\n"
+        "Return exactly one compact JSON object:\n"
+        "{\n"
+        '  "answer_label": "exact option label or option text",\n'
+        '  "confidence": "high|medium|low",\n'
+        '  "decisive_reason": "one short reason"\n'
+        "}\n"
+    )
+
+
+def parse_mmlu_independent_answer_vote_result(text: str, problem: SlotProblemIR) -> str:
+    if len(problem.slots) != 1:
+        return ""
+    slot = problem.slots[0]
+    obj, _ = _extract_json_any(text)
+    if isinstance(obj, dict):
+        for key in ("answer_label", "answer", "selected", "option", "value"):
+            parsed = _normalize_single_slot_value(obj.get(key), slot)
+            if parsed:
+                return parsed
+    return _normalize_single_slot_value(text, slot)
 
 
 def build_mmlu_option_matrix_prompt(
@@ -1495,31 +1554,74 @@ def build_mmlu_option_matrix_prompt(
         "- Support must be atomic and must not merely restate the option text.\n"
         "- Conflict must identify why the option fails the target factor.\n"
         "Preserve NOT, EXCEPT, LEAST, FALSE, INCORRECT, CANNOT, lowest/highest, and comparative cues.\n\n"
-        "Return exactly one compact JSON object:\n"
+        "Return exactly one compact JSON object. Prefer schema fd_ccs_mmlu_matrix_v2:\n"
         "{\n"
+        '  "schema": "fd_ccs_mmlu_matrix_v2",\n'
         '  "target_condition": "...",\n'
-        '  "options": [\n'
-        "    {\n"
-        '      "label": "...",\n'
-        '      "option_value": "...",\n'
-        '      "overall_status": "satisfied|violated|unknown",\n'
-        '      "overall_confidence": 0.0,\n'
-        '      "factor_evals": [\n'
-        "        {\n"
-        '          "factor_id": "...",\n'
-        '          "status": "satisfied|violated|unknown",\n'
-        '          "support": ["atomic support"],\n'
-        '          "conflict": ["atomic conflict"],\n'
-        '          "support_key": "canonical support concept",\n'
-        '          "conflict_key": "canonical conflict concept",\n'
-        '          "source_kind": "problem_text|calculation|domain_memory|definition|comparison|unknown",\n'
-        '          "confidence": 0.0\n'
-        "        }\n"
-        "      ]\n"
+        '  "option_evals": {\n'
+        '    "1": {\n'
+        '      "status": "S|V|U",\n'
+        '      "confidence": 0.0,\n'
+        '      "decisive_factor": "mmlu_target_condition",\n'
+        '      "support": "atomic support, empty if none",\n'
+        '      "conflict": "atomic conflict, empty if none",\n'
+        '      "support_key": "canonical support concept",\n'
+        '      "conflict_key": "canonical conflict concept",\n'
+        '      "source_kind": "problem_text|calculation|domain_memory|definition|comparison|unknown"\n'
         "    }\n"
-        "  ]\n"
+        "  }\n"
         "}\n"
+        "Use exactly the allowed option labels as object keys; every allowed label should appear once. "
+        "S=satisfied, V=violated, U=unknown. Do not output markdown.\n"
     )
+
+
+def _iter_option_rows(raw_options: Any) -> list[dict[str, Any]]:
+    if isinstance(raw_options, dict):
+        rows: list[dict[str, Any]] = []
+        for key, value in raw_options.items():
+            if not isinstance(value, dict):
+                continue
+            row = dict(value)
+            row.setdefault("label", str(key))
+            row.setdefault("option_label", str(key))
+            row.setdefault("_dict_label", str(key))
+            rows.append(row)
+        return rows
+    if isinstance(raw_options, list):
+        return [row for row in raw_options if isinstance(row, dict)]
+    return []
+
+
+def _normalize_mmlu_option_ref(row: dict[str, Any], slot: SlotSpec) -> str:
+    refs = [
+        row.get("option_value"),
+        row.get("value"),
+        row.get("option"),
+        row.get("answer"),
+        row.get("label"),
+        row.get("option_label"),
+        row.get("_dict_label"),
+    ]
+    for ref in refs:
+        parsed = _normalize_single_slot_value(ref, slot)
+        if parsed:
+            return parsed
+    for ref in refs:
+        compact = re.sub(r"(?i)\boption\b|[-:：\s]", "", str(ref or "")).strip()
+        parsed = _normalize_single_slot_value(compact, slot)
+        if parsed:
+            return parsed
+    return ""
+
+
+def _normalize_factor_status(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"s", "sat", "satisfied", "yes", "true", "y"}:
+        return "satisfied"
+    if text in {"v", "violated", "violate", "no", "false", "n"}:
+        return "violated"
+    return "unknown"
 
 
 def _parse_mmlu_option_matrix_rows(text: str, problem: SlotProblemIR) -> tuple[str, list[dict[str, Any]]]:
@@ -1531,30 +1633,28 @@ def _parse_mmlu_option_matrix_rows(text: str, problem: SlotProblemIR) -> tuple[s
     if not isinstance(obj, dict):
         return "", []
     target_condition = str(obj.get("target_condition") or "").strip()
-    raw_rows = obj.get("options") or obj.get("rows") or obj.get("option_matrix") or []
-    if isinstance(raw_rows, dict):
-        raw_rows = list(raw_rows.values())
-    if not isinstance(raw_rows, list):
-        return target_condition, []
+    raw_rows = _iter_option_rows(obj.get("option_evals") or obj.get("options") or obj.get("rows") or obj.get("option_matrix") or [])
     rows: list[dict[str, Any]] = []
     for row in raw_rows:
-        if not isinstance(row, dict):
-            continue
-        raw_value = row.get("option_value") or row.get("value") or row.get("option") or row.get("answer") or row.get("label")
-        value = _normalize_single_slot_value(raw_value, slot)
-        if not value:
-            value = _option_value_map(slot).get(_norm_text(raw_value), "")
+        value = _normalize_mmlu_option_ref(row, slot)
         if not value:
             continue
+        status = row.get("satisfies_target")
+        if status is None:
+            status = row.get("status") or row.get("overall_status")
+        normalized_status = _norm_yes_no_uncertain(status)
+        if normalized_status == "uncertain":
+            factor_status = _normalize_factor_status(status)
+            normalized_status = {"satisfied": "yes", "violated": "no"}.get(factor_status, "uncertain")
         rows.append(
             {
                 "slot_id": slot.slot_id,
                 "option_value": value,
-                "label": str(row.get("label") or row.get("option_label") or _option_label_for_value(slot, value)).strip(),
-                "satisfies_target": _norm_yes_no_uncertain(row.get("satisfies_target")),
-                "support": tuple(_str_tuple(row.get("support") or row.get("support_facts"))),
-                "conflict": tuple(_str_tuple(row.get("conflict") or row.get("conflict_facts"))),
-                "discriminator": str(row.get("decisive_relation") or row.get("discriminator") or "").strip(),
+                "label": str(row.get("label") or row.get("option_label") or row.get("_dict_label") or _option_label_for_value(slot, value)).strip(),
+                "satisfies_target": normalized_status,
+                "support": tuple(_str_tuple(row.get("support") or row.get("support_facts") or row.get("support_atoms"))),
+                "conflict": tuple(_str_tuple(row.get("conflict") or row.get("conflict_facts") or row.get("conflict_atoms"))),
+                "discriminator": str(row.get("decisive_relation") or row.get("decisive_factor") or row.get("discriminator") or "").strip(),
             }
         )
     return target_condition, rows
@@ -1576,43 +1676,44 @@ def parse_fd_ccs_factor_eval_rows(
     obj, _ = _extract_json_any(text)
     if not isinstance(obj, dict):
         return parsed
-    raw_options = obj.get("options") or obj.get("rows") or obj.get("option_matrix") or []
-    if isinstance(raw_options, dict):
-        raw_options = list(raw_options.values())
-    if not isinstance(raw_options, list):
+    raw_options = _iter_option_rows(obj.get("option_evals") or obj.get("options") or obj.get("rows") or obj.get("option_matrix") or [])
+    if not raw_options:
         return parsed
     factor_by_id = {factor.factor_id: factor for factor in ir.factors}
     target_factor = ir.factors[0] if ir.factors else None
     for option_row in raw_options:
-        if not isinstance(option_row, dict):
-            continue
-        raw_value = (
-            option_row.get("option_value")
-            or option_row.get("value")
-            or option_row.get("option")
-            or option_row.get("answer")
-            or option_row.get("label")
-        )
-        value = _normalize_single_slot_value(raw_value, slot)
-        if not value:
-            value = _option_value_map(slot).get(_norm_text(raw_value), "")
+        value = _normalize_mmlu_option_ref(option_row, slot)
         if not value:
             continue
         assignment = {slot.slot_id: value}
         raw_factor_rows = option_row.get("factor_evals") or option_row.get("factors") or []
         if isinstance(raw_factor_rows, dict):
-            raw_factor_rows = list(raw_factor_rows.values())
+            raw_factor_rows = _iter_option_rows(raw_factor_rows)
+        if not raw_factor_rows and any(key in option_row for key in ("status", "overall_status", "decisive_factor")):
+            decisive_factor = str(option_row.get("decisive_factor") or "mmlu_target_condition").strip()
+            raw_factor_rows = [
+                {
+                    "factor_id": decisive_factor,
+                    "status": option_row.get("status") or option_row.get("overall_status") or "unknown",
+                    "support": option_row.get("support") or option_row.get("support_atoms"),
+                    "conflict": option_row.get("conflict") or option_row.get("conflict_atoms"),
+                    "support_key": option_row.get("support_key"),
+                    "conflict_key": option_row.get("conflict_key"),
+                    "source_kind": option_row.get("source_kind"),
+                    "confidence": option_row.get("confidence"),
+                }
+            ]
         if isinstance(raw_factor_rows, list) and raw_factor_rows:
             for factor_row in raw_factor_rows:
                 if not isinstance(factor_row, dict):
                     continue
-                factor_id = str(factor_row.get("factor_id") or factor_row.get("id") or "").strip()
+                factor_id = str(factor_row.get("factor_id") or factor_row.get("id") or "mmlu_target_condition").strip()
                 factor = factor_by_id.get(factor_id)
                 if factor is None:
+                    factor = target_factor
+                if factor is None:
                     continue
-                status = str(factor_row.get("status") or "unknown").strip().lower()
-                if status not in {"satisfied", "violated", "unknown"}:
-                    status = "unknown"
+                status = _normalize_factor_status(factor_row.get("status") or "unknown")
                 eval_obj = _factor_eval_from_status(
                     factor=factor,
                     assignment=assignment,
@@ -1634,11 +1735,14 @@ def parse_fd_ccs_factor_eval_rows(
         # Backward-compatible target-only fallback for c3955 matrix output.
         if target_factor is None:
             continue
+        status_value = option_row.get("satisfies_target")
+        if status_value is None:
+            status_value = option_row.get("overall_status") or option_row.get("status")
         status = {
             "yes": "satisfied",
             "no": "violated",
-            "uncertain": "unknown",
-        }.get(_norm_yes_no_uncertain(option_row.get("satisfies_target")), "unknown")
+            "uncertain": _normalize_factor_status(status_value),
+        }.get(_norm_yes_no_uncertain(status_value), "unknown")
         support = tuple(_str_tuple(option_row.get("support") or option_row.get("support_facts")))
         conflict = tuple(_str_tuple(option_row.get("conflict") or option_row.get("conflict_facts")))
         discriminator = str(option_row.get("decisive_relation") or option_row.get("discriminator") or "").strip()
@@ -1671,14 +1775,22 @@ def fd_ccs_policy_for_dataset(dataset_name: str) -> ContrastPolicy:
         return ContrastPolicy(
             dataset_name="mmlu_pro",
             min_margin=1.0,
-            vote_k=3,
+            vote_k=5,
             max_candidate_assignments=16,
             max_audit_candidates=3,
             require_audit=True,
             allow_factor_group_contrast=True,
             allow_llm_evidence_lift=True,
             allow_deterministic_kg_atoms=False,
-            allow_contrastive_rescue=True,
+            allow_contrastive_rescue=False,
+            allow_rescue_hints=True,
+            rescue_can_accept=False,
+            require_independent_verifier=True,
+            independent_vote_k=5,
+            independent_min_candidate_votes=4,
+            independent_max_anchor_votes=1,
+            min_matrix_option_coverage=8,
+            require_native_factor_flip=True,
             max_rescue_candidates=2,
         )
     if normalized in {"knowledge_crosswords", "kc"}:
@@ -1693,7 +1805,9 @@ def fd_ccs_policy_for_dataset(dataset_name: str) -> ContrastPolicy:
             allow_factor_group_contrast=False,
             allow_llm_evidence_lift=True,
             allow_deterministic_kg_atoms=True,
-            allow_contrastive_rescue=True,
+            allow_contrastive_rescue=False,
+            allow_rescue_hints=True,
+            rescue_can_accept=False,
             max_rescue_candidates=3,
         )
     return ContrastPolicy(dataset_name=normalized or "generic")
@@ -2529,31 +2643,31 @@ def calibrator_score_for_certificate(cert: SlotCertificate, *, audit_agree: bool
 
 
 def _with_calibrator_score(cert: SlotCertificate, *, audit_agree: bool = False) -> SlotCertificate:
-    return SlotCertificate(
-        slot_id=cert.slot_id,
-        anchor_value=cert.anchor_value,
-        challenger_value=cert.challenger_value,
-        target_condition=cert.target_condition,
-        discriminator=cert.discriminator,
-        challenger_support=cert.challenger_support,
-        anchor_conflict=cert.anchor_conflict,
-        challenger_conflict=cert.challenger_conflict,
-        anchor_target_votes=cert.anchor_target_votes,
-        challenger_target_votes=cert.challenger_target_votes,
-        score_margin=cert.score_margin,
-        source_count=cert.source_count,
-        certificate_kind=cert.certificate_kind,
-        changed_slots=cert.changed_slots,
-        anchor_assignment=cert.anchor_assignment,
-        challenger_assignment=cert.challenger_assignment,
-        target_condition_consistency=cert.target_condition_consistency,
-        raw=cert.raw,
-        factor_count=cert.factor_count,
-        candidate_bank_size=cert.candidate_bank_size,
-        shared_discriminator_count=cert.shared_discriminator_count,
-        vote_margin=cert.vote_margin,
-        calibrator_p_accept=calibrator_score_for_certificate(cert, audit_agree=audit_agree),
-    )
+    return replace(cert, calibrator_p_accept=calibrator_score_for_certificate(cert, audit_agree=audit_agree))
+
+
+def _certificate_evidence_sources(cert: SlotCertificate) -> set[str]:
+    return {
+        str(atom.source or "").strip()
+        for atom in (*cert.challenger_support, *cert.anchor_conflict, *cert.challenger_conflict)
+        if str(atom.source or "").strip()
+    }
+
+
+def _trusted_evidence_sources(cert: SlotCertificate) -> set[str]:
+    return {
+        source
+        for source in _certificate_evidence_sources(cert)
+        if source
+        not in {
+            "llm_vote_summary",
+            "contrastive_rescue",
+        }
+    }
+
+
+def _untrusted_evidence_sources(cert: SlotCertificate) -> set[str]:
+    return _certificate_evidence_sources(cert) - _trusted_evidence_sources(cert)
 
 
 def build_contrast_certificate(
@@ -2684,6 +2798,16 @@ def build_contrast_certificate(
         "challenger_assignment": candidate_assignment,
         "score_margin": score_margin,
     }
+    trusted_sources = {
+        atom.source
+        for atom in (*challenger_support, *anchor_conflict, *all_challenger_conflicts)
+        if atom.source and atom.source not in {"llm_vote_summary", "contrastive_rescue"}
+    }
+    untrusted_sources = {
+        atom.source
+        for atom in (*challenger_support, *anchor_conflict, *all_challenger_conflicts)
+        if atom.source in {"llm_vote_summary", "contrastive_rescue"}
+    }
     cert = SlotCertificate(
         slot_id=primary_slot,
         anchor_value=anchor_value,
@@ -2707,6 +2831,10 @@ def build_contrast_certificate(
         candidate_bank_size=int(candidate_bank_size),
         shared_discriminator_count=len(shared_factors),
         vote_margin=vote_margin,
+        native_corroborated=True,
+        trusted_source_count=max(1, len(trusted_sources)),
+        untrusted_source_count=len(untrusted_sources),
+        factor_group_flip_count=1,
     )
     return _with_calibrator_score(cert, audit_agree=False)
 
@@ -2927,8 +3055,34 @@ def parse_contrastive_rescue_certificate_result(
         candidate_bank_size=int(candidate_bank_size),
         shared_discriminator_count=1,
         vote_margin=2.0 if confidence in {"high", "medium"} else 1.0,
+        native_corroborated=False,
+        trusted_source_count=0,
+        untrusted_source_count=1,
     )
     return _with_calibrator_score(cert, audit_agree=False)
+
+
+def parse_contrastive_rescue_hint_result(
+    text: str,
+    *,
+    problem: SlotProblemIR,
+    candidate_assignment: dict[str, str],
+) -> dict[str, str] | None:
+    obj, _ = _extract_json_any(text)
+    if not isinstance(obj, dict) or not bool(obj.get("valid_certificate", False)):
+        return None
+    assignment = dict(candidate_assignment)
+    raw_assignment = obj.get("challenger_assignment") or obj.get("candidate_assignment")
+    if isinstance(raw_assignment, dict):
+        for slot in problem.slots:
+            raw_value = raw_assignment.get(slot.slot_id, raw_assignment.get(slot.slot_name, assignment.get(slot.slot_id, "")))
+            value = _normalize_single_slot_value(raw_value, slot) or _option_value_map(slot).get(_norm_text(raw_value), "")
+            if value:
+                assignment[slot.slot_id] = value
+    for slot in problem.slots:
+        if not _value_in_slot_options(str(assignment.get(slot.slot_id, "")), slot):
+            return None
+    return assignment
 
 
 def _status_hist_for_assignment(
@@ -3168,6 +3322,12 @@ def accepts_contrast_certificate(
         and not audit.challenger_conflict
     )
     p_accept = calibrator_score_for_certificate(cert, audit_agree=audit_agree)
+    if cert.certificate_kind == "fd_ccs_contrastive_rescue" and not policy.rescue_can_accept:
+        return ContrastDecision(False, "reject_rescue_cert_untrusted", 0.0)
+    if cert.certificate_kind == "fd_ccs_contrastive_rescue":
+        return ContrastDecision(False, "reject_rescue_cert_untrusted", 0.0)
+    if not cert.native_corroborated:
+        return ContrastDecision(False, "reject_no_native_corroboration", p_accept)
     if not cert.discriminator:
         return ContrastDecision(False, "reject_no_discriminator", p_accept)
     if not cert.challenger_support:
@@ -3182,6 +3342,28 @@ def accepts_contrast_certificate(
         return ContrastDecision(False, "reject_illegal_assignment", p_accept)
     if cert.target_condition_consistency not in {"consistent", "unknown"}:
         return ContrastDecision(False, "reject_target_inconsistent", p_accept)
+    if policy.dataset_name == "mmlu_pro":
+        if policy.require_native_factor_flip and cert.factor_group_flip_count <= 0:
+            return ContrastDecision(False, "reject_no_native_factor_flip", p_accept)
+        if policy.min_matrix_option_coverage and cert.matrix_option_covered_count < policy.min_matrix_option_coverage:
+            return ContrastDecision(False, "reject_low_matrix_coverage", p_accept)
+        if policy.require_independent_verifier:
+            if cert.verifier_vote_k <= 0:
+                return ContrastDecision(False, "reject_independent_vote_missing", p_accept)
+            if cert.independent_candidate_votes < policy.independent_min_candidate_votes:
+                return ContrastDecision(False, "reject_independent_vote_weak", p_accept)
+            if cert.independent_anchor_votes > policy.independent_max_anchor_votes:
+                return ContrastDecision(False, "reject_anchor_still_supported", p_accept)
+    if policy.dataset_name == "knowledge_crosswords":
+        if len(cert.anchor_conflict) <= len(cert.challenger_conflict):
+            return ContrastDecision(False, "reject_no_constraint_improvement", p_accept)
+        if cert.challenger_conflict:
+            return ContrastDecision(False, "reject_new_kc_violation", p_accept)
+        if cert.score_margin < max(policy.min_margin, 2.0):
+            return ContrastDecision(False, "reject_low_kc_margin", p_accept)
+        deterministic_sources = {"deterministic", "slot_contract", "kg_constraint", "question_graph", "relevant_knowledge"}
+        if not (_certificate_evidence_sources(cert) & deterministic_sources):
+            return ContrastDecision(False, "reject_llm_only_kc_evidence", p_accept)
     if policy.require_audit and not audit_agree:
         return ContrastDecision(False, "reject_audit_disagree", p_accept)
     min_p = 0.55 if policy.dataset_name == "knowledge_crosswords" else 0.60

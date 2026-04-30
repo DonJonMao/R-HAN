@@ -25,6 +25,7 @@ from stage2_gcr_plus.discrete_slot_calibration import (
     pairwise_probe_from_certificate,
     parse_kc_factor_certificate_result,
     parse_contrastive_rescue_certificate_result,
+    parse_contrastive_rescue_hint_result,
     parse_fd_ccs_factor_eval_rows,
     make_slot_eval,
     mine_multislot_mentions_safely,
@@ -722,7 +723,7 @@ def test_kc_factor_certificate_parser_accepts_joint_update():
     assert certs
     assert certs[0].certificate_kind == "fd_ccs_factor_group_contrast"
     assert set(certs[0].changed_slots) == {"blank 1", "blank 2"}
-    assert accepts_kc_certificate(problem=problem, cert=certs[0])
+    assert not accepts_kc_certificate(problem=problem, cert=certs[0])
 
 
 def test_fd_ccs_mmlu_factor_ir_enumerates_all_non_anchor_options():
@@ -939,6 +940,61 @@ Question: Which option satisfies the beta target?
     assert cert.certificate_kind == "fd_ccs_contrastive_rescue"
     assert cert.score_margin >= 1.0
     assert cert.challenger_support
+    assert parse_contrastive_rescue_hint_result(
+        raw,
+        problem=problem,
+        candidate_assignment={"answer": "beta"},
+    ) == {"answer": "beta"}
+    decision = accepts_contrast_certificate(
+        problem=problem,
+        cert=cert,
+        policy=replace(fd_ccs_policy_for_dataset("mmlu_pro"), require_audit=False),
+        audit=None,
+    )
+    assert not decision.accepted
+    assert decision.reason == "reject_rescue_cert_untrusted"
+
+
+def test_mmlu_matrix_parser_preserves_dict_option_labels():
+    problem = parse_slot_problem(
+        """
+Question: Which option satisfies the beta target?
+1. alpha
+2. beta
+"""
+    )
+    anchor_eval = make_slot_eval(problem, parse_slot_artifact("FINAL: 1", problem))
+    ir = build_factor_ir(
+        problem=problem,
+        anchor_eval=anchor_eval,
+        dataset_name="mmlu_pro",
+        rubric={"target_condition": "satisfies the beta target"},
+    )
+    matrix = """
+{
+  "schema": "fd_ccs_mmlu_matrix_v2",
+  "target_condition": "satisfies the beta target",
+  "option_evals": {
+    "1": {"status": "V", "conflict": "alpha lacks beta", "decisive_factor": "mmlu_target_condition"},
+    "2": {"status": "S", "support": "beta has beta", "decisive_factor": "mmlu_target_condition"}
+  }
+}
+"""
+    parsed = parse_fd_ccs_factor_eval_rows(matrix, problem, ir)
+    evals = build_mmlu_factor_evals_from_matrix(ir=ir, problem=problem, matrix_texts=[matrix, matrix, matrix])
+    cert = build_contrast_certificate(
+        problem=problem,
+        ir=ir,
+        anchor_assignment=dict(anchor_eval.artifact.assignment),
+        candidate_assignment={"answer": "beta"},
+        factor_evals=evals,
+        policy=fd_ccs_policy_for_dataset("mmlu_pro"),
+        candidate_bank_size=1,
+    )
+
+    assert len({key[0] for key in parsed}) == 2
+    assert cert is not None
+    assert cert.native_corroborated
 
 
 def test_fd_ccs_diagnostics_reports_no_certificate_reason():

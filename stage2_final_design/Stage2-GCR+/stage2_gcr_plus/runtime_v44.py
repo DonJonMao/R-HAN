@@ -4,7 +4,7 @@ import json
 import os
 import re
 from collections import defaultdict
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .runtime_v2 import Stage2RuntimeV2
@@ -51,6 +51,7 @@ from .discrete_slot_calibration import (
     build_factor_ir,
     build_kc_fd_ccs_certificates,
     build_mmlu_factor_evals_from_matrix,
+    build_mmlu_independent_answer_vote_prompt,
     build_mmlu_option_matrix_certificates,
     build_mmlu_option_matrix_prompt,
     build_mmlu_rubric_prompt,
@@ -64,7 +65,8 @@ from .discrete_slot_calibration import (
     mine_slot_challengers_from_mentions,
     mine_multislot_mentions_safely,
     pairwise_probe_from_certificate,
-    parse_contrastive_rescue_certificate_result,
+    parse_contrastive_rescue_hint_result,
+    parse_mmlu_independent_answer_vote_result,
     parse_mmlu_rubric_result,
     parse_slot_artifact,
     parse_slot_challenger_proposal,
@@ -339,6 +341,13 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry.setdefault("rescue_triggered", False)
         entry.setdefault("rescue_cert_count", 0)
         entry.setdefault("rescue_parse_status", "")
+        entry.setdefault("native_corroborated", False)
+        entry.setdefault("trusted_source_count", 0)
+        entry.setdefault("untrusted_source_count", 0)
+        entry.setdefault("independent_candidate_votes", 0)
+        entry.setdefault("independent_anchor_votes", 0)
+        entry.setdefault("independent_other_votes", 0)
+        entry.setdefault("verifier_vote_k", 0)
 
     @staticmethod
     def _stable_entry_tiebreak(entry: Dict[str, Any]) -> Tuple[int, str]:
@@ -2757,6 +2766,16 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         entry["kc_score_margin"] = float(cert.score_margin)
         entry["joint_update_slots"] = list(cert.changed_slots)
         entry["accept_blocker"] = accept_blocker
+        entry["native_corroborated"] = bool(cert.native_corroborated)
+        entry["trusted_source_count"] = int(cert.trusted_source_count)
+        entry["untrusted_source_count"] = int(cert.untrusted_source_count)
+        entry["matrix_parse_status"] = cert.matrix_parse_status or entry.get("matrix_parse_status", "")
+        entry["matrix_option_covered_count"] = int(cert.matrix_option_covered_count or entry.get("matrix_option_covered_count", 0))
+        entry["factor_group_flip_count"] = int(cert.factor_group_flip_count or entry.get("factor_group_flip_count", 0))
+        entry["independent_candidate_votes"] = int(cert.independent_candidate_votes)
+        entry["independent_anchor_votes"] = int(cert.independent_anchor_votes)
+        entry["independent_other_votes"] = int(cert.independent_other_votes)
+        entry["verifier_vote_k"] = int(cert.verifier_vote_k)
         entry["discrete_challenger_slot"] = cert.slot_id
         entry["discrete_anchor_value"] = cert.anchor_value
         entry["discrete_challenger_value"] = cert.challenger_value
@@ -2794,6 +2813,13 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             "rescue_triggered",
             "rescue_cert_count",
             "rescue_parse_status",
+            "native_corroborated",
+            "trusted_source_count",
+            "untrusted_source_count",
+            "independent_candidate_votes",
+            "independent_anchor_votes",
+            "independent_other_votes",
+            "verifier_vote_k",
         ):
             if key in diagnostics:
                 entry[key] = diagnostics[key]
@@ -2981,6 +3007,25 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             seen.add(key)
         return merged
 
+    @staticmethod
+    def _merge_fd_ccs_assignments(
+        existing: Sequence[Dict[str, str]],
+        hinted: Sequence[Dict[str, str]],
+        *,
+        limit: int,
+    ) -> List[Dict[str, str]]:
+        merged: List[Dict[str, str]] = [dict(item) for item in existing]
+        seen = {json.dumps(item, sort_keys=True, ensure_ascii=False) for item in merged}
+        for item in hinted:
+            key = json.dumps(item, sort_keys=True, ensure_ascii=False)
+            if key in seen:
+                continue
+            merged.append(dict(item))
+            seen.add(key)
+            if len(merged) >= limit:
+                break
+        return merged
+
     def _run_mmlu_certificate_bank(
         self,
         *,
@@ -3013,6 +3058,58 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             dataset_profile=dataset_profile,
         )
         return certs, universe_size
+
+    @staticmethod
+    def _annotate_fd_ccs_certs(certs: Sequence[SlotCertificate], diagnostics: Dict[str, Any]) -> List[SlotCertificate]:
+        return [
+            replace(
+                cert,
+                matrix_parse_status=str(diagnostics.get("matrix_parse_status", cert.matrix_parse_status) or ""),
+                matrix_option_covered_count=int(diagnostics.get("matrix_option_covered_count", cert.matrix_option_covered_count) or 0),
+                factor_group_flip_count=int(diagnostics.get("factor_group_flip_count", cert.factor_group_flip_count) or cert.factor_group_flip_count),
+            )
+            for cert in certs
+        ]
+
+    def _with_mmlu_independent_votes(
+        self,
+        *,
+        cert: SlotCertificate,
+        problem: SlotProblemIR,
+        dataset_profile: DatasetProfile,
+        policy: Any,
+    ) -> SlotCertificate:
+        if len(problem.slots) != 1 or policy.independent_vote_k <= 0:
+            return cert
+        slot_id = problem.slots[0].slot_id
+        anchor_value = dict(cert.anchor_assignment).get(slot_id, cert.anchor_value)
+        challenger_value = dict(cert.challenger_assignment).get(slot_id, cert.challenger_value)
+        candidate_votes = 0
+        anchor_votes = 0
+        other_votes = 0
+        abstain_votes = 0
+        for index in range(policy.independent_vote_k):
+            raw = self._run_discrete_slot_probe_model(
+                prompt=build_mmlu_independent_answer_vote_prompt(problem=problem, sample_index=index + 1),
+                dataset_profile=dataset_profile,
+                extra_role_hint=f"fd_ccs_mmlu_independent_answer_vote_{index + 1}",
+            )
+            vote = parse_mmlu_independent_answer_vote_result(raw, problem)
+            if not vote:
+                abstain_votes += 1
+            elif _norm_text(vote) == _norm_text(challenger_value):
+                candidate_votes += 1
+            elif _norm_text(vote) == _norm_text(anchor_value):
+                anchor_votes += 1
+            else:
+                other_votes += 1
+        return replace(
+            cert,
+            independent_candidate_votes=candidate_votes,
+            independent_anchor_votes=anchor_votes,
+            independent_other_votes=other_votes,
+            verifier_vote_k=int(policy.independent_vote_k),
+        )
 
     def _run_fd_ccs_certificate_bank(
         self,
@@ -3088,9 +3185,10 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
             rescue_triggered = False
             rescue_cert_count = 0
             rescue_parse_status = ""
-            if not certs and candidate_assignments and policy.allow_contrastive_rescue:
+            if not certs and candidate_assignments and policy.allow_rescue_hints:
                 rescue_triggered = True
-                rescue_parse_status = "parsed_empty"
+                rescue_parse_status = "hint_empty"
+                hinted_assignments: List[Dict[str, str]] = []
                 for candidate, _ in rank_fd_ccs_candidates_by_soft_score(
                     ir=ir,
                     candidate_assignments=candidate_assignments,
@@ -3108,30 +3206,51 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                         extra_role_hint="fd_ccs_mmlu_contrastive_rescue_certificate",
                     )
                     if not raw:
-                        rescue_parse_status = "empty_raw" if rescue_parse_status != "parsed" else rescue_parse_status
+                        rescue_parse_status = "empty_raw" if rescue_parse_status != "hint_parsed" else rescue_parse_status
                         continue
-                    cert = parse_contrastive_rescue_certificate_result(
+                    hint = parse_contrastive_rescue_hint_result(
                         raw,
                         problem=problem,
-                        ir=ir,
-                        anchor_assignment=dict(anchor_eval.artifact.assignment),
                         candidate_assignment=candidate,
-                        factor_evals=factor_evals,
-                        candidate_bank_size=len(candidate_assignments),
                     )
-                    if cert is not None:
-                        certs.append(cert)
-                        rescue_parse_status = "parsed"
-                rescue_cert_count = len(certs)
-                certs.sort(
-                    key=lambda item: (
-                        item.score_margin,
-                        item.shared_discriminator_count,
-                        len(item.challenger_support),
-                        item.calibrator_p_accept,
-                    ),
-                    reverse=True,
-                )
+                    if hint is not None:
+                        hinted_assignments.append(hint)
+                        rescue_parse_status = "hint_parsed"
+                if hinted_assignments:
+                    candidate_assignments = self._merge_fd_ccs_assignments(
+                        candidate_assignments,
+                        hinted_assignments,
+                        limit=policy.max_candidate_assignments,
+                    )
+                    rescue_matrix_texts: List[str] = []
+                    for index in range(policy.vote_k):
+                        raw = self._run_discrete_slot_probe_model(
+                            prompt=build_mmlu_option_matrix_prompt(
+                                problem=problem,
+                                rubric=rubric,
+                                ir=ir,
+                                sample_index=100 + index + 1,
+                            ),
+                            dataset_profile=dataset_profile,
+                            extra_role_hint=f"fd_ccs_mmlu_rescue_hint_native_evidence_pass_{index + 1}",
+                        )
+                        if raw:
+                            rescue_matrix_texts.append(raw)
+                    if rescue_matrix_texts:
+                        matrix_texts.extend(rescue_matrix_texts)
+                        factor_evals = build_mmlu_factor_evals_from_matrix(
+                            ir=ir,
+                            problem=problem,
+                            matrix_texts=matrix_texts,
+                        )
+                        certs = build_contrast_certificates(
+                            problem=problem,
+                            ir=ir,
+                            candidate_assignments=candidate_assignments,
+                            factor_evals=factor_evals,
+                            policy=policy,
+                        )
+                rescue_cert_count = 0
             diagnostics.update(
                 summarize_fd_ccs_generation(
                     problem=problem,
@@ -3147,6 +3266,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                     rescue_parse_status=rescue_parse_status,
                 )
             )
+            certs = self._annotate_fd_ccs_certs(certs, diagnostics)
             return certs, universe_size, diagnostics
 
         ir = build_factor_ir(
@@ -3213,9 +3333,10 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         rescue_triggered = False
         rescue_cert_count = 0
         rescue_parse_status = ""
-        if not certs and candidate_assignments and policy.allow_contrastive_rescue:
+        if not certs and candidate_assignments and policy.allow_rescue_hints:
             rescue_triggered = True
-            rescue_parse_status = "parsed_empty"
+            rescue_parse_status = "hint_empty"
+            hinted_assignments: List[Dict[str, str]] = []
             for candidate, _ in rank_fd_ccs_candidates_by_soft_score(
                 ir=ir,
                 candidate_assignments=candidate_assignments,
@@ -3233,30 +3354,55 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                     extra_role_hint="fd_ccs_kc_contrastive_rescue_certificate",
                 )
                 if not raw:
-                    rescue_parse_status = "empty_raw" if rescue_parse_status != "parsed" else rescue_parse_status
+                    rescue_parse_status = "empty_raw" if rescue_parse_status != "hint_parsed" else rescue_parse_status
                     continue
-                cert = parse_contrastive_rescue_certificate_result(
+                hint = parse_contrastive_rescue_hint_result(
                     raw,
                     problem=problem,
-                    ir=ir,
-                    anchor_assignment=dict(anchor_eval.artifact.assignment),
                     candidate_assignment=candidate,
-                    factor_evals=factor_evals,
-                    candidate_bank_size=len(candidate_assignments),
                 )
-                if cert is not None:
-                    certs.append(cert)
-                    rescue_parse_status = "parsed"
-            rescue_cert_count = len(certs)
-            certs.sort(
-                key=lambda item: (
-                    item.score_margin,
-                    item.shared_discriminator_count,
-                    len(item.challenger_support),
-                    item.calibrator_p_accept,
-                ),
-                reverse=True,
-            )
+                if hint is not None:
+                    hinted_assignments.append(hint)
+                    rescue_parse_status = "hint_parsed"
+            if hinted_assignments:
+                candidate_assignments = self._merge_fd_ccs_assignments(
+                    candidate_assignments,
+                    hinted_assignments,
+                    limit=policy.max_candidate_assignments,
+                )
+                assignments_for_eval = [dict(anchor_eval.artifact.assignment), *candidate_assignments]
+                rescue_eval_texts: List[str] = []
+                for index in range(policy.vote_k):
+                    raw = self._run_discrete_slot_probe_model(
+                        prompt=build_fd_ccs_factor_eval_prompt(
+                            problem=problem,
+                            ir=ir,
+                            assignments=assignments_for_eval,
+                            sample_index=100 + index + 1,
+                        ),
+                        dataset_profile=dataset_profile,
+                        extra_role_hint=f"fd_ccs_kc_rescue_hint_native_evidence_pass_{index + 1}",
+                    )
+                    if raw:
+                        rescue_eval_texts.append(raw)
+                if rescue_eval_texts:
+                    eval_texts.extend(rescue_eval_texts)
+                    factor_evals = aggregate_fd_ccs_factor_evals(
+                        problem=problem,
+                        ir=ir,
+                        assignments=assignments_for_eval,
+                        eval_texts=eval_texts,
+                        include_deterministic=True,
+                        evidence_lift=policy.allow_llm_evidence_lift,
+                    )
+                    certs = build_contrast_certificates(
+                        problem=problem,
+                        ir=ir,
+                        candidate_assignments=candidate_assignments,
+                        policy=policy,
+                        factor_evals=factor_evals,
+                    )
+            rescue_cert_count = 0
         diagnostics.update(
             summarize_fd_ccs_generation(
                 problem=problem,
@@ -3272,6 +3418,7 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
                 rescue_parse_status=rescue_parse_status,
             )
         )
+        certs = self._annotate_fd_ccs_certs(certs, diagnostics)
         return certs, universe_size, diagnostics
 
     @staticmethod
@@ -3280,6 +3427,10 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         *,
         audit: Optional[PairwiseSlotProbeResult] = None,
     ) -> str:
+        if cert.certificate_kind == "fd_ccs_contrastive_rescue":
+            return "reject_rescue_cert_untrusted"
+        if not cert.native_corroborated:
+            return "reject_no_native_corroboration"
         if not cert.discriminator:
             return "reject_no_discriminator"
         if not cert.challenger_support:
@@ -3356,6 +3507,36 @@ class Stage2RuntimeV44(Stage2RuntimeV43):
         last_reject_reason = ""
         cert_bank_size = len(certificates)
         for cert in certificates[:limit]:
+            policy = fd_ccs_policy_for_dataset("knowledge_crosswords" if len(problem.slots) > 1 else "mmlu_pro")
+            if cert.certificate_kind == "fd_ccs_contrastive_rescue":
+                last_reject_reason = "reject_rescue_cert_untrusted"
+                continue
+            if policy.dataset_name == "mmlu_pro":
+                cert = self._with_mmlu_independent_votes(
+                    cert=cert,
+                    problem=problem,
+                    dataset_profile=dataset_profile,
+                    policy=policy,
+                )
+                precheck = accepts_contrast_certificate(
+                    problem=problem,
+                    cert=cert,
+                    policy=policy,
+                    audit=None,
+                )
+                if not precheck.accepted and precheck.reason != "reject_audit_disagree":
+                    last_reject_reason = precheck.reason
+                    continue
+            else:
+                precheck = accepts_contrast_certificate(
+                    problem=problem,
+                    cert=cert,
+                    policy=replace(policy, require_audit=False),
+                    audit=None,
+                )
+                if not precheck.accepted:
+                    last_reject_reason = precheck.reason
+                    continue
             probe_count += 1
             challenger = challenger_from_certificate(cert)
             probe = pairwise_probe_from_certificate(cert, problem)
