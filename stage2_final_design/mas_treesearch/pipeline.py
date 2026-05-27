@@ -100,6 +100,18 @@ class TreeSearchMASPipeline:
         self._graph_merger = GraphMerger(self.union_config)
         self._union_runtime = UnionRuntime(self.union_config, self._evaluator, self.agent_pool, self._embedder)
 
+    def _select_final_topologies(self, result: SearchResult, *, dataset_profile) -> list:
+        final_graph_mode = str(getattr(self.union_config, "final_graph_mode", "union")).strip().lower()
+        if final_graph_mode == "union":
+            return self._topology_scorer.select(
+                result.nodes.values(),
+                dataset_profile=dataset_profile,
+                fallback_best=result.best_node,
+            )
+        if final_graph_mode in {"best", "best_graph", "single_best"}:
+            return [result.best_node]
+        raise ValueError(f"Unsupported final_graph_mode: {final_graph_mode}")
+
     def search(
         self,
         question_text: str,
@@ -125,15 +137,13 @@ class TreeSearchMASPipeline:
             learn=learn,
         )
         result.pipeline_mode = active_mode
-        selected_topologies = self._topology_scorer.select(
-            result.nodes.values(),
-            dataset_profile=profile,
-            fallback_best=result.best_node,
-        )
+        final_graph_mode = str(getattr(self.union_config, "final_graph_mode", "union")).strip().lower()
+        selected_topologies = self._select_final_topologies(result, dataset_profile=profile)
         result.selected_topology_nodes = list(selected_topologies)
         if not selected_topologies:
             return result
         union_graph = self._graph_merger.merge(selected_topologies)
+        union_graph.metadata["final_graph_mode"] = final_graph_mode
         result.union_graph = union_graph
         result.structure_summary = self._topology_scorer.summarize(
             selected_topologies,
@@ -142,7 +152,11 @@ class TreeSearchMASPipeline:
             mode=active_mode,
         )
         if result.structure_summary is not None:
-            result.final_signature = result.structure_summary.signature
+            result.structure_summary.metadata["final_graph_mode"] = final_graph_mode
+            if final_graph_mode in {"best", "best_graph", "single_best"}:
+                result.final_signature = selected_topologies[0].compiled.signature()
+            else:
+                result.final_signature = result.structure_summary.signature
         if active_mode == "structure_only" or not self.union_config.enable_union_runtime:
             return result
         union_out = self._union_runtime.run(

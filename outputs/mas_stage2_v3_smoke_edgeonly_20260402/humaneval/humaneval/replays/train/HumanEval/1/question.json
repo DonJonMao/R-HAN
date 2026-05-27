@@ -1,0 +1,22 @@
+{
+  "question_text": "from typing import List\n\n\ndef separate_paren_groups(paren_string: str) -> List[str]:\n    \"\"\" Input to this function is a string containing multiple groups of nested parentheses. Your goal is to\n    separate those group into separate strings and return the list of those.\n    Separate groups are balanced (each open brace is properly closed) and not nested within each other\n    Ignore any spaces in the input string.\n    >>> separate_paren_groups('( ) (( )) (( )( ))')\n    ['()', '(())', '(()())']\n    \"\"\"\n\nImplement the Python function `separate_paren_groups`.\n\nVisible test examples:\nassert candidate('(()()) ((())) () ((())()())') == [\nassert candidate('() (()) ((())) (((())))') == [\n\nReturn only executable Python code without Markdown fences.",
+  "metadata": {
+    "entry_point": "separate_paren_groups",
+    "test": "\n\nMETADATA = {\n    'author': 'jt',\n    'dataset': 'test'\n}\n\n\ndef check(candidate):\n    assert candidate('(()()) ((())) () ((())()())') == [\n        '(()())', '((()))', '()', '((())()())'\n    ]\n    assert candidate('() (()) ((())) (((())))') == [\n        '()', '(())', '((()))', '(((())))'\n    ]\n    assert candidate('(()(())((())))') == [\n        '(()(())((())))'\n    ]\n    assert candidate('( ) (( )) (( )( ))') == ['()', '(())', '(()())']\n",
+    "canonical_solution": "    result = []\n    current_string = []\n    current_depth = 0\n\n    for c in paren_string:\n        if c == '(':\n            current_depth += 1\n            current_string.append(c)\n        elif c == ')':\n            current_depth -= 1\n            current_string.append(c)\n\n            if current_depth == 0:\n                result.append(''.join(current_string))\n                current_string.clear()\n\n    return result\n",
+    "aflow_split_rule": "stable_hash_20_80",
+    "mas_dataset_name": "humaneval",
+    "mas_split": "train",
+    "mas_task_type": "code_generation",
+    "mas_answer_format": "python_code",
+    "mas_root_templates": [
+      "route_solve",
+      "solve_verify",
+      "critique_revise"
+    ],
+    "mas_profile_notes": "Python code generation benchmark. Return only executable Python code.",
+    "id": "HumanEval/1",
+    "stage1_anchor_output": "from typing import List\n\ndef separate_paren_groups(paren_string: str) -> List[str]:\n    cleaned = paren_string.replace(\" \", \"\")\n    result = []\n    current = []\n    depth = 0\n    for char in cleaned:\n        if char == '(':\n            depth += 1\n            current.append(char)\n        elif char == ')':\n            depth -= 1\n            current.append(char)\n            if depth == 0:\n                result.append(''.join(current))\n                current = []\n    return result",
+    "stage1_anchor_signature": "structure|critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='critique_then_answer', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer||debate_judge|debater_a:coder,debater_b:reasoner,judge:verifier|debater_a:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),debater_b:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),judge:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only')|coder>verifier,reasoner>verifier||critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+  }
+}

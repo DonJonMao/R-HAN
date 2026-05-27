@@ -1,0 +1,916 @@
+{
+  "question_text": "Write a function to sort the given array by using merge sort.\n\nImplement the Python function `merge`.\n\nVisible test examples:\nassert merge_sort([3, 4, 2, 6, 5, 7, 1, 9]) == [1, 2, 3, 4, 5, 6, 7, 9]\nassert merge_sort([7, 25, 45, 78, 11, 33, 19]) == [7, 11, 19, 25, 33, 45, 78]\n\nReturn only executable Python code without Markdown fences.",
+  "union_graph": {
+    "nodes": {
+      "solver_a@planner": {
+        "node_id": "solver_a@planner",
+        "agent_id": "planner",
+        "role": "solver_a",
+        "node_type": "task",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.7821251236507472,
+        "root_frequency": 0.3333333333333333,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.7821251236507472,
+          0.3333333333333333,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "stepwise",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "off",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "solver_b@reasoner": {
+        "node_id": "solver_b@reasoner",
+        "agent_id": "reasoner",
+        "role": "solver_b",
+        "node_type": "task",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier"
+        ],
+        "support_count": 2,
+        "avg_graph_score": 1.4834595342054435,
+        "root_frequency": 0.6666666666666666,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 1.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.6666666666666666,
+          1.4834595342054435,
+          0.6666666666666666,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "stepwise",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "off",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "aggregator@coder": {
+        "node_id": "aggregator@coder",
+        "agent_id": "coder",
+        "role": "aggregator",
+        "node_type": "task",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.7821251236507472,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.3333333333333333,
+        "topo_level_mean": 2.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.7821251236507472,
+          0.0,
+          0.3333333333333333,
+          2.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "light",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "solver_a@coder": {
+        "node_id": "solver_a@coder",
+        "agent_id": "coder",
+        "role": "solver_a",
+        "node_type": "task",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.1847939447601399,
+        "root_frequency": 0.3333333333333333,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.1847939447601399,
+          0.3333333333333333,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "stepwise",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "off",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "aggregator@verifier": {
+        "node_id": "aggregator@verifier",
+        "agent_id": "verifier",
+        "role": "aggregator",
+        "node_type": "task",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.1847939447601399,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.3333333333333333,
+        "topo_level_mean": 2.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.1847939447601399,
+          0.0,
+          0.3333333333333333,
+          2.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "light",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "generator@math": {
+        "node_id": "generator@math",
+        "agent_id": "math",
+        "role": "generator",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.3364644186543808,
+        "root_frequency": 0.3333333333333333,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.3364644186543808,
+          0.3333333333333333,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "stepwise",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "off",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "critic@verifier": {
+        "node_id": "critic@verifier",
+        "agent_id": "verifier",
+        "role": "critic",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.3364644186543808,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 1.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.3364644186543808,
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "strict",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "reviser@summarizer": {
+        "node_id": "reviser@summarizer",
+        "agent_id": "summarizer",
+        "role": "reviser",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.3364644186543808,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.3333333333333333,
+        "topo_level_mean": 2.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.3364644186543808,
+          0.0,
+          0.3333333333333333,
+          2.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "light",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "super_source": {
+        "node_id": "super_source",
+        "agent_id": "super_source",
+        "role": "super_source",
+        "node_type": "global",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier",
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "avg_graph_score": 0.0,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [],
+        "metadata": {}
+      },
+      "global_controller": {
+        "node_id": "global_controller",
+        "agent_id": "global_controller",
+        "role": "global_controller",
+        "node_type": "global",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier",
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "avg_graph_score": 0.0,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [],
+        "metadata": {}
+      },
+      "super_sink": {
+        "node_id": "super_sink",
+        "agent_id": "super_sink",
+        "role": "super_sink",
+        "node_type": "global",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier",
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "avg_graph_score": 0.0,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [],
+        "metadata": {}
+      }
+    },
+    "edges": [
+      {
+        "src": "solver_a@planner",
+        "dst": "aggregator@coder",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.7821251236507472,
+        "best_parent_score": 1.7821251236507472,
+        "initial_keep_logit": 0.9230916913968161,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 2.0,
+        "latency_prior": 1.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "solver_b@reasoner",
+        "dst": "aggregator@coder",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.7821251236507472,
+        "best_parent_score": 1.7821251236507472,
+        "initial_keep_logit": 0.9230916913968161,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "solver_a@coder",
+        "dst": "aggregator@verifier",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.1847939447601399,
+        "best_parent_score": 1.1847939447601399,
+        "initial_keep_logit": 0.8036254556186946,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 2.0,
+        "latency_prior": 1.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "solver_b@reasoner",
+        "dst": "aggregator@verifier",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.1847939447601399,
+        "best_parent_score": 1.1847939447601399,
+        "initial_keep_logit": 0.8036254556186946,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "generator@math",
+        "dst": "critic@verifier",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.3364644186543808,
+        "best_parent_score": 1.3364644186543808,
+        "initial_keep_logit": 0.8339595503975428,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "generator@math",
+        "dst": "reviser@summarizer",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.3364644186543808,
+        "best_parent_score": 1.3364644186543808,
+        "initial_keep_logit": 0.8339595503975428,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 2.0,
+        "latency_prior": 1.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "critic@verifier",
+        "dst": "reviser@summarizer",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.3364644186543808,
+        "best_parent_score": 1.3364644186543808,
+        "initial_keep_logit": 0.8339595503975428,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "super_source",
+        "dst": "generator@math",
+        "edge_type": "source",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier",
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "global_controller",
+        "dst": "generator@math",
+        "edge_type": "controller",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier",
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "super_source",
+        "dst": "solver_a@coder",
+        "edge_type": "source",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier",
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "global_controller",
+        "dst": "solver_a@coder",
+        "edge_type": "controller",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier",
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "super_source",
+        "dst": "solver_a@planner",
+        "edge_type": "source",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier",
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "global_controller",
+        "dst": "solver_a@planner",
+        "edge_type": "controller",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier",
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "super_source",
+        "dst": "solver_b@reasoner",
+        "edge_type": "source",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier",
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "global_controller",
+        "dst": "solver_b@reasoner",
+        "edge_type": "controller",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier",
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "aggregator@coder",
+        "dst": "global_controller",
+        "edge_type": "feedback",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier",
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "aggregator@coder",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier",
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "aggregator@verifier",
+        "dst": "global_controller",
+        "edge_type": "feedback",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier",
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "aggregator@verifier",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier",
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@summarizer",
+        "dst": "global_controller",
+        "edge_type": "feedback",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier",
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@summarizer",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier",
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "global_controller",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+          "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier",
+          "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      }
+    ],
+    "source_topology_signatures": [
+      "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+      "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier",
+      "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+    ],
+    "root_node_ids": [
+      "generator@math",
+      "solver_a@coder",
+      "solver_a@planner",
+      "solver_b@reasoner"
+    ],
+    "sink_node_ids": [
+      "aggregator@coder",
+      "aggregator@verifier",
+      "reviser@summarizer"
+    ],
+    "metadata": {
+      "graph_count": 3,
+      "task_node_count": 8
+    }
+  },
+  "stage1_signature": "structure|parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder||parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier||critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer",
+  "stage1_output": "def merge(left, right):\n    merged = []\n    i = j = 0\n    while i < len(left) and j < len(right):\n        if left[i] < right[j]:\n            merged.append(left[i])\n            i += 1\n        else:\n            merged.append(right[j])\n            j += 1\n    merged += left[i:]\n    merged += right[j:]\n    return merged\n\ndef merge_sort(arr):\n    if len(arr) <= 1:\n        return arr\n    mid = len(arr) // 2\n    left = merge_sort(arr[:mid])\n    right = merge_sort(arr[mid:])\n    return merge(left, right)",
+  "dataset_name": "mbpp",
+  "stage1_summary": {
+    "tier": "tier2",
+    "mean_reward": 1.7821251236507472,
+    "reward_std": 0.012348834369331652,
+    "mean_task_score": 1.0,
+    "mean_success": 1.0,
+    "mean_latency": 0.6177838174626231,
+    "mean_token_cost": 0.0019200000000000003,
+    "mean_safety_penalty": 0.0,
+    "evaluations": [
+      {
+        "task_score": 1.0,
+        "success": 1.0,
+        "latency": 1.235225535929203,
+        "token_cost": 0.0019200000000000003,
+        "safety_penalty": 0.0,
+        "raw_output": "def merge(left, right):\n    merged = []\n    i = j = 0\n    while i < len(left) and j < len(right):\n        if left[i] < right[j]:\n            merged.append(left[i])\n            i += 1\n        else:\n            merged.append(right[j])\n            j += 1\n    merged += left[i:]\n    merged += right[j:]\n    return merged\n\ndef merge_sort(arr):\n    if len(arr) <= 1:\n        return arr\n    mid = len(arr) // 2\n    left = merge_sort(arr[:mid])\n    right = merge_sort(arr[mid:])\n    return merge(left, right)",
+        "trace": [
+          {
+            "role": "solver_a",
+            "agent_id": "planner",
+            "content": "<think>\n好的，我现在需要编写一个归并排序的Python函数，其中必须实现名为merge的函数。首先，我得回忆归并排序的基本步骤。归并排序是分治算法，将数组分成两半，分别排序，然后合并。所以，整个过程应该包括分割和合并两个主要部分。\n\n题目中要求实现的是merge函数，所以可能主函数merge_sort会调用这个merge函数。不过根据问题描述，用户可能希望将整个归并排序的逻辑放在merge函数里？或者可能merge是辅助函数？需要仔细看问题。\n\n问题中的可见测试用例都是调用merge_sort函数，所以可能用户希望我实现merge_sort函数，但问题中说必须实现merge函数。这可能意味着需要将merge_sort函数分解为merge和分治的步骤。比如，merge_sort函数会递归地将数组分成两半，然后调用merge函数来合并两个已排序的子数组。\n\n所以，我需要先定义merge_sort函数，它会处理递归分割，然后调用merge函数来合并。但问题中要求的是实现merge函数，所以可能需要将merge作为辅助函数。但用户给出的示例测试用例是调用merge_sort，所以可能需要同时实现merge_sort和merge函数？\n\n不过问题中的任务说明是“Implement the Python function merge”，所以可能用户希望将整个归并排序的逻辑放在merge函数里？或者可能题目中的merge_sort是主函数，而merge是其中的一部分？\n\n可能需要再仔细看问题。问题中的可见测试用例都是assert merge_sort(...)，所以merge_sort应该是主函数。而问题要求实现的是merge函数，可能merge是归并排序中的合并步骤。因此，正确的做法是：编写merge_sort函数，它递归地将数组分成两半，然后调用merge函数来合并两个已排序的子数组。\n\n所以，我需要定义两个函数：merge_sort和merge。但问题中说必须实现merge函数，而merge_sort可能由用户调用。但问题中的任务是“Implement the Python function merge”，所以可能用户希望将整个逻辑放在merge函数里？或者可能题目中的merge_sort是主函数，而merge是其中的一部分？\n\n可能题目中的merge_sort是主函数，而merge是辅助函数。因此，我需要编写merge函数，用于合并两个已排序的数组。例如，merge函数接收两个已排序的数组，返回合并后的有序数组。\n\n但问题中的示例测试用例是调用merge_sort，所以可能用户希望我实现merge_sort函数，而merge是其中的一部分。但问题明确要求实现merge函数，所以可能需要将merge作为辅助函数，而merge_sort作为主函数。\n\n现在，我需要确保代码的正确性。例如，merge函数需要处理两个有序数组的合并。例如，输入是两个列表left和right，输出是合并后的有序列表。这一步需要正确实现。\n\n然后，merge_sort函数会递归地将数组分成左右两部分，分别排序，然后调用merge函数合并。\n\n所以，整个代码结构应该是这样的：\n\ndef merge_sort(arr):\n    if len(arr) <= 1:\n        return arr\n    mid = len(arr) // 2\n    left = merge_sort(arr[:mid])\n    right = merge_sort(arr[mid:])\n    return merge(left, right)\n\ndef merge(left, right):\n    # 合并逻辑\n\n但问题中要求必须实现merge函数，而用户给出的测试用例是调用merge_sort，所以可能用户希望将整个逻辑放在merge函数里？或者可能题目中的merge_sort是主函数，而merge是其中的一部分？\n\n但根据问题描述，用户需要实现的是merge"
+          },
+          {
+            "role": "solver_b",
+            "agent_id": "reasoner",
+            "content": "<think>\n好的，我现在需要编写一个归并排序的Python函数，其中必须实现名为merge的函数。首先，我得回忆归并排序的基本步骤。归并排序是分治算法，将数组分成两半，分别排序，然后合并。所以主函数merge_sort应该负责分割，而merge函数负责合并两个已排序的子数组。\n\n首先，我需要确定merge函数的参数。通常，merge需要两个已排序的数组，然后返回合并后的有序数组。但根据问题描述，可能需要直接操作原数组的某个部分，或者传递左右子数组的起始和结束索引。不过，根据常见的实现方式，可能更简单的是让merge接收两个列表，然后合并它们。\n\n不过，题目中的测试用例显示，merge_sort函数被调用，而merge是其中的一部分。所以可能需要将merge_sort函数分解为两个部分：分割和合并。例如，merge_sort函数递归地将数组分成两半，直到子数组长度为1，然后调用merge函数来合并。\n\n那merge函数的实现应该是怎样的呢？假设merge接收两个已排序的列表left和right，然后合并它们。合并的过程需要两个指针，分别指向left和right的当前元素，比较后将较小的元素添加到结果中。如果其中一个列表已经遍历完，就将另一个列表的剩余元素全部添加到结果中。\n\n接下来，我需要考虑边界条件。例如，当其中一个子数组为空时，直接返回另一个。或者当两个子数组都只有一个元素时，正确合并。此外，还要确保合并后的数组长度正确。\n\n现在，编写merge函数的代码。例如：\n\ndef merge(left, right):\n    merged = []\n    i = j = 0\n    while i < len(left) and j < len(right):\n        if left[i] < right[j]:\n            merged.append(left[i])\n            i += 1\n        else:\n            merged.append(right[j])\n            j += 1\n    merged += left[i:]\n    merged += right[j:]\n    return merged\n\n然后，merge_sort函数的实现应该是递归的。如果数组长度小于等于1，返回自身。否则，中间索引mid = len(arr)//2，将数组分成left和right两部分，递归调用merge_sort，然后调用merge合并结果。\n\ndef merge_sort(arr):\n    if len(arr) <= 1:\n        return arr\n    mid = len(arr) // 2\n    left = merge_sort(arr[:mid])\n    right = merge_sort(arr[mid:])\n    return merge(left, right)\n\n但是，题目中的测试用例是否正确？比如第一个测试用例输入[3,4,2,6,5,7,1,9]，经过分割和合并后是否得到正确结果？需要确保merge函数正确处理所有情况。\n\n另外，题目要求必须实现merge函数，并且函数名是merge。所以，可能需要将merge作为独立的函数，而merge_sort调用它。这样，整个代码结构应该符合要求。\n\n现在，检查测试用例。例如，第一个测试用例的输入数组被分割成左右两部分，递归排序后合并。例如，当数组长度为8时，mid是4，左边是[3,4,2,6]，右边是[5,7,1,9]。左边再分割，直到每个子数组长度为1，然后合并。最终合并后的结果应该正确。\n\n可能还需要考虑空数组或单元素数组的情况，但测试用例中没有给出，所以代码应该能处理这些情况。\n\n综上，最终的代码应该包括merge函数和merge_sort函数，其中merge_sort调用"
+          },
+          {
+            "role": "aggregator",
+            "agent_id": "coder",
+            "content": "<think>\n</think>\n\ndef merge(left, right):\n    merged = []\n    i = j = 0\n    while i < len(left) and j < len(right):\n        if left[i] < right[j]:\n            merged.append(left[i])\n            i += 1\n        else:\n            merged.append(right[j])\n            j += 1\n    merged += left[i:]\n    merged += right[j:]\n    return merged\n\ndef merge_sort(arr):\n    if len(arr) <= 1:\n        return arr\n    mid = len(arr) // 2\n    left = merge_sort(arr[:mid])\n    right = merge_sort(arr[mid:])\n    return merge(left, right)"
+          }
+        ],
+        "custom_metrics": {
+          "num_roles": 3.0
+        },
+        "debug_info": {
+          "dataset_specific": {
+            "used_dataset_specific": true,
+            "passed": 3,
+            "total": 3,
+            "stderr": "",
+            "syntax_ok": true,
+            "entry_defined": true,
+            "exec_error": ""
+          }
+        }
+      },
+      {
+        "task_score": 1.0,
+        "success": 1.0,
+        "latency": 0.00034209899604320526,
+        "token_cost": 0.0019200000000000003,
+        "safety_penalty": 0.0,
+        "raw_output": "def merge(left, right):\n    merged = []\n    i = j = 0\n    while i < len(left) and j < len(right):\n        if left[i] < right[j]:\n            merged.append(left[i])\n            i += 1\n        else:\n            merged.append(right[j])\n            j += 1\n    merged += left[i:]\n    merged += right[j:]\n    return merged\n\ndef merge_sort(arr):\n    if len(arr) <= 1:\n        return arr\n    mid = len(arr) // 2\n    left = merge_sort(arr[:mid])\n    right = merge_sort(arr[mid:])\n    return merge(left, right)",
+        "trace": [
+          {
+            "role": "solver_a",
+            "agent_id": "planner",
+            "content": "<think>\n好的，我现在需要编写一个归并排序的Python函数，其中必须实现名为merge的函数。首先，我得回忆归并排序的基本步骤。归并排序是分治算法，将数组分成两半，分别排序，然后合并。所以，整个过程应该包括分割和合并两个主要部分。\n\n题目中要求实现的是merge函数，所以可能主函数merge_sort会调用这个merge函数。不过根据问题描述，用户可能希望将整个归并排序的逻辑放在merge函数里？或者可能merge是辅助函数？需要仔细看问题。\n\n问题中的可见测试用例都是调用merge_sort函数，所以可能用户希望我实现merge_sort函数，但问题中说必须实现merge函数。这可能意味着需要将merge_sort函数分解为merge和分治的步骤。比如，merge_sort函数会递归地将数组分成两半，然后调用merge函数来合并两个已排序的子数组。\n\n所以，我需要先定义merge_sort函数，它会处理递归分割，然后调用merge函数来合并。但问题中要求的是实现merge函数，所以可能需要将merge作为辅助函数。但用户给出的示例测试用例是调用merge_sort，所以可能需要同时实现merge_sort和merge函数？\n\n不过问题中的任务说明是“Implement the Python function merge”，所以可能用户希望将整个归并排序的逻辑放在merge函数里？或者可能题目中的merge_sort是主函数，而merge是其中的一部分？\n\n可能需要再仔细看问题。问题中的可见测试用例都是assert merge_sort(...)，所以merge_sort应该是主函数。而问题要求实现的是merge函数，可能merge是归并排序中的合并步骤。因此，正确的做法是：编写merge_sort函数，它递归地将数组分成两半，然后调用merge函数来合并两个已排序的子数组。\n\n所以，我需要定义两个函数：merge_sort和merge。但问题中说必须实现merge函数，而merge_sort可能由用户调用。但问题中的任务是“Implement the Python function merge”，所以可能用户希望将整个逻辑放在merge函数里？或者可能题目中的merge_sort是主函数，而merge是其中的一部分？\n\n可能题目中的merge_sort是主函数，而merge是辅助函数。因此，我需要编写merge函数，用于合并两个已排序的数组。例如，merge函数接收两个已排序的数组，返回合并后的有序数组。\n\n但问题中的示例测试用例是调用merge_sort，所以可能用户希望我实现merge_sort函数，而merge是其中的一部分。但问题明确要求实现merge函数，所以可能需要将merge作为辅助函数，而merge_sort作为主函数。\n\n现在，我需要确保代码的正确性。例如，merge函数需要处理两个有序数组的合并。例如，输入是两个列表left和right，输出是合并后的有序列表。这一步需要正确实现。\n\n然后，merge_sort函数会递归地将数组分成左右两部分，分别排序，然后调用merge函数合并。\n\n所以，整个代码结构应该是这样的：\n\ndef merge_sort(arr):\n    if len(arr) <= 1:\n        return arr\n    mid = len(arr) // 2\n    left = merge_sort(arr[:mid])\n    right = merge_sort(arr[mid:])\n    return merge(left, right)\n\ndef merge(left, right):\n    # 合并逻辑\n\n但问题中要求必须实现merge函数，而用户给出的测试用例是调用merge_sort，所以可能用户希望将整个逻辑放在merge函数里？或者可能题目中的merge_sort是主函数，而merge是其中的一部分？\n\n但根据问题描述，用户需要实现的是merge"
+          },
+          {
+            "role": "solver_b",
+            "agent_id": "reasoner",
+            "content": "<think>\n好的，我现在需要编写一个归并排序的Python函数，其中必须实现名为merge的函数。首先，我得回忆归并排序的基本步骤。归并排序是分治算法，将数组分成两半，分别排序，然后合并。所以主函数merge_sort应该负责分割，而merge函数负责合并两个已排序的子数组。\n\n首先，我需要确定merge函数的参数。通常，merge需要两个已排序的数组，然后返回合并后的有序数组。但根据问题描述，可能需要直接操作原数组的某个部分，或者传递左右子数组的起始和结束索引。不过，根据常见的实现方式，可能更简单的是让merge接收两个列表，然后合并它们。\n\n不过，题目中的测试用例显示，merge_sort函数被调用，而merge是其中的一部分。所以可能需要将merge_sort函数分解为两个部分：分割和合并。例如，merge_sort函数递归地将数组分成两半，直到子数组长度为1，然后调用merge函数来合并。\n\n那merge函数的实现应该是怎样的呢？假设merge接收两个已排序的列表left和right，然后合并它们。合并的过程需要两个指针，分别指向left和right的当前元素，比较后将较小的元素添加到结果中。如果其中一个列表已经遍历完，就将另一个列表的剩余元素全部添加到结果中。\n\n接下来，我需要考虑边界条件。例如，当其中一个子数组为空时，直接返回另一个。或者当两个子数组都只有一个元素时，正确合并。此外，还要确保合并后的数组长度正确。\n\n现在，编写merge函数的代码。例如：\n\ndef merge(left, right):\n    merged = []\n    i = j = 0\n    while i < len(left) and j < len(right):\n        if left[i] < right[j]:\n            merged.append(left[i])\n            i += 1\n        else:\n            merged.append(right[j])\n            j += 1\n    merged += left[i:]\n    merged += right[j:]\n    return merged\n\n然后，merge_sort函数的实现应该是递归的。如果数组长度小于等于1，返回自身。否则，中间索引mid = len(arr)//2，将数组分成left和right两部分，递归调用merge_sort，然后调用merge合并结果。\n\ndef merge_sort(arr):\n    if len(arr) <= 1:\n        return arr\n    mid = len(arr) // 2\n    left = merge_sort(arr[:mid])\n    right = merge_sort(arr[mid:])\n    return merge(left, right)\n\n但是，题目中的测试用例是否正确？比如第一个测试用例输入[3,4,2,6,5,7,1,9]，经过分割和合并后是否得到正确结果？需要确保merge函数正确处理所有情况。\n\n另外，题目要求必须实现merge函数，并且函数名是merge。所以，可能需要将merge作为独立的函数，而merge_sort调用它。这样，整个代码结构应该符合要求。\n\n现在，检查测试用例。例如，第一个测试用例的输入数组被分割成左右两部分，递归排序后合并。例如，当数组长度为8时，mid是4，左边是[3,4,2,6]，右边是[5,7,1,9]。左边再分割，直到每个子数组长度为1，然后合并。最终合并后的结果应该正确。\n\n可能还需要考虑空数组或单元素数组的情况，但测试用例中没有给出，所以代码应该能处理这些情况。\n\n综上，最终的代码应该包括merge函数和merge_sort函数，其中merge_sort调用"
+          },
+          {
+            "role": "aggregator",
+            "agent_id": "coder",
+            "content": "<think>\n</think>\n\ndef merge(left, right):\n    merged = []\n    i = j = 0\n    while i < len(left) and j < len(right):\n        if left[i] < right[j]:\n            merged.append(left[i])\n            i += 1\n        else:\n            merged.append(right[j])\n            j += 1\n    merged += left[i:]\n    merged += right[j:]\n    return merged\n\ndef merge_sort(arr):\n    if len(arr) <= 1:\n        return arr\n    mid = len(arr) // 2\n    left = merge_sort(arr[:mid])\n    right = merge_sort(arr[mid:])\n    return merge(left, right)"
+          }
+        ],
+        "custom_metrics": {
+          "num_roles": 3.0
+        },
+        "debug_info": {
+          "dataset_specific": {
+            "used_dataset_specific": true,
+            "passed": 3,
+            "total": 3,
+            "stderr": "",
+            "syntax_ok": true,
+            "entry_defined": true,
+            "exec_error": ""
+          }
+        }
+      }
+    ]
+  },
+  "structure_summary": {
+    "mode": "structure_only",
+    "signature": "structure|parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder||parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier||critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer",
+    "selected_topology_signatures": [
+      "parallel_vote|aggregator:coder,solver_a:planner,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|planner>coder,reasoner>coder",
+      "parallel_vote|aggregator:verifier,solver_a:coder,solver_b:reasoner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver_a:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),solver_b:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,reasoner>verifier",
+      "critique_revise|critic:verifier,generator:math,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|math>summarizer,math>verifier,verifier>summarizer"
+    ],
+    "selected_topology_scores": [
+      0.7625575065566506,
+      0.7632490390351686,
+      0.7639395177978321
+    ],
+    "metrics": {
+      "coverage": 0.7249999999999999,
+      "complementarity": 0.91,
+      "redundancy_quality": 0.25,
+      "structural_faithfulness": 0.5708333333333333,
+      "runtime_affordability": 0.8166666666666668,
+      "topology_quality": 0.6509999999999999,
+      "diversity_quality": 0.6592,
+      "deployability": 0.8166666666666668,
+      "execution_probe": 0.9694144796609173,
+      "total_reward": 0.7422286948756892,
+      "metadata": {
+        "template_count": 2,
+        "task_node_count": 8,
+        "task_edge_count": 7,
+        "root_count": 4,
+        "sink_count": 3
+      }
+    },
+    "metadata": {
+      "templates": [
+        "critique_revise",
+        "parallel_vote"
+      ],
+      "graph_count": 3,
+      "root_node_ids": [
+        "generator@math",
+        "solver_a@coder",
+        "solver_a@planner",
+        "solver_b@reasoner"
+      ],
+      "sink_node_ids": [
+        "aggregator@coder",
+        "aggregator@verifier",
+        "reviser@summarizer"
+      ]
+    }
+  },
+  "metadata": {
+    "source": "live_stage1_search_cached"
+  }
+}

@@ -1,0 +1,802 @@
+{
+  "question_text": "Write a function to find the peak element in the given array.\n\nImplement the Python function `find_peak_util`.\n\nVisible test examples:\nassert find_peak([1, 3, 20, 4, 1, 0], 6) == 2\nassert find_peak([2, 3, 4, 5, 6], 5) == 4\n\nReturn only executable Python code without Markdown fences.",
+  "union_graph": {
+    "nodes": {
+      "generator@planner": {
+        "node_id": "generator@planner",
+        "agent_id": "planner",
+        "role": "generator",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math",
+          "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+        ],
+        "support_count": 2,
+        "avg_graph_score": 0.7890587420061249,
+        "root_frequency": 0.6666666666666666,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.6666666666666666,
+          0.7890587420061249,
+          0.6666666666666666,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "stepwise",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "off",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "critic@verifier": {
+        "node_id": "critic@verifier",
+        "agent_id": "verifier",
+        "role": "critic",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math",
+          "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+        ],
+        "support_count": 2,
+        "avg_graph_score": 0.7890587420061249,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 1.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.6666666666666666,
+          0.7890587420061249,
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "strict",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "reviser@math": {
+        "node_id": "reviser@math",
+        "agent_id": "math",
+        "role": "reviser",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 0.2305421554433346,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.3333333333333333,
+        "topo_level_mean": 2.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          0.2305421554433346,
+          0.0,
+          0.3333333333333333,
+          2.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "light",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "router@math": {
+        "node_id": "router@math",
+        "agent_id": "math",
+        "role": "router",
+        "node_type": "task",
+        "source_graph_ids": [
+          "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.1775652415473297,
+        "root_frequency": 0.3333333333333333,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.1775652415473297,
+          0.3333333333333333,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "light",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "solver@coder": {
+        "node_id": "solver@coder",
+        "agent_id": "coder",
+        "role": "solver",
+        "node_type": "task",
+        "source_graph_ids": [
+          "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.1775652415473297,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 1.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.1775652415473297,
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "stepwise",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "off",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "aggregator@verifier": {
+        "node_id": "aggregator@verifier",
+        "agent_id": "verifier",
+        "role": "aggregator",
+        "node_type": "task",
+        "source_graph_ids": [
+          "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.1775652415473297,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.3333333333333333,
+        "topo_level_mean": 2.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.1775652415473297,
+          0.0,
+          0.3333333333333333,
+          2.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "light",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "reviser@researcher": {
+        "node_id": "reviser@researcher",
+        "agent_id": "researcher",
+        "role": "reviser",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.3475753285689152,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.3333333333333333,
+        "topo_level_mean": 2.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.3475753285689152,
+          0.0,
+          0.3333333333333333,
+          2.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "light",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "super_source": {
+        "node_id": "super_source",
+        "agent_id": "super_source",
+        "role": "super_source",
+        "node_type": "global",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math",
+          "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder",
+          "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+        ],
+        "support_count": 3,
+        "avg_graph_score": 0.0,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [],
+        "metadata": {}
+      },
+      "global_controller": {
+        "node_id": "global_controller",
+        "agent_id": "global_controller",
+        "role": "global_controller",
+        "node_type": "global",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math",
+          "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder",
+          "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+        ],
+        "support_count": 3,
+        "avg_graph_score": 0.0,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [],
+        "metadata": {}
+      },
+      "super_sink": {
+        "node_id": "super_sink",
+        "agent_id": "super_sink",
+        "role": "super_sink",
+        "node_type": "global",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math",
+          "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder",
+          "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+        ],
+        "support_count": 3,
+        "avg_graph_score": 0.0,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [],
+        "metadata": {}
+      }
+    },
+    "edges": [
+      {
+        "src": "generator@planner",
+        "dst": "critic@verifier",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math",
+          "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+        ],
+        "support_count": 2,
+        "support_ratio": 0.6666666666666666,
+        "avg_parent_score": 0.7890587420061249,
+        "best_parent_score": 1.3475753285689152,
+        "initial_keep_logit": 0.8411450817345584,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.24,
+        "metadata": {}
+      },
+      {
+        "src": "generator@planner",
+        "dst": "reviser@math",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 0.2305421554433346,
+        "best_parent_score": 0.2305421554433346,
+        "initial_keep_logit": 0.6127750977553336,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 2.0,
+        "latency_prior": 1.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "critic@verifier",
+        "dst": "reviser@math",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 0.2305421554433346,
+        "best_parent_score": 0.2305421554433346,
+        "initial_keep_logit": 0.6127750977553336,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "router@math",
+        "dst": "solver@coder",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.1775652415473297,
+        "best_parent_score": 1.1775652415473297,
+        "initial_keep_logit": 0.8021797149761326,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "solver@coder",
+        "dst": "aggregator@verifier",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.1775652415473297,
+        "best_parent_score": 1.1775652415473297,
+        "initial_keep_logit": 0.8021797149761326,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "generator@planner",
+        "dst": "reviser@researcher",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.3475753285689152,
+        "best_parent_score": 1.3475753285689152,
+        "initial_keep_logit": 0.8361817323804497,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 2.0,
+        "latency_prior": 1.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "critic@verifier",
+        "dst": "reviser@researcher",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.3475753285689152,
+        "best_parent_score": 1.3475753285689152,
+        "initial_keep_logit": 0.8361817323804497,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "super_source",
+        "dst": "generator@planner",
+        "edge_type": "source",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math",
+          "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder",
+          "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "global_controller",
+        "dst": "generator@planner",
+        "edge_type": "controller",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math",
+          "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder",
+          "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "super_source",
+        "dst": "router@math",
+        "edge_type": "source",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math",
+          "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder",
+          "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "global_controller",
+        "dst": "router@math",
+        "edge_type": "controller",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math",
+          "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder",
+          "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "aggregator@verifier",
+        "dst": "global_controller",
+        "edge_type": "feedback",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math",
+          "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder",
+          "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "aggregator@verifier",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math",
+          "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder",
+          "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@math",
+        "dst": "global_controller",
+        "edge_type": "feedback",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math",
+          "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder",
+          "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@math",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math",
+          "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder",
+          "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@researcher",
+        "dst": "global_controller",
+        "edge_type": "feedback",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math",
+          "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder",
+          "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@researcher",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math",
+          "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder",
+          "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "global_controller",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math",
+          "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder",
+          "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      }
+    ],
+    "source_topology_signatures": [
+      "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math",
+      "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder",
+      "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+    ],
+    "root_node_ids": [
+      "generator@planner",
+      "router@math"
+    ],
+    "sink_node_ids": [
+      "aggregator@verifier",
+      "reviser@math",
+      "reviser@researcher"
+    ],
+    "metadata": {
+      "graph_count": 3,
+      "task_node_count": 7
+    }
+  },
+  "stage1_signature": "structure|critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math||route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder||critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher",
+  "stage1_output": "def find_peak_util(arr, n):\n    if n == 1:\n        return 0\n    if arr[0] > arr[1]:\n        return 0\n    if arr[n-1] > arr[n-2]:\n        return n-1\n    left, right = 0, n-1\n    while left <= right:\n        mid = (left + right) // 2\n        if arr[mid] < arr[mid+1]:\n            left = mid + 1\n        else:\n            right = mid\n    return left",
+  "dataset_name": "mbpp",
+  "stage1_summary": {
+    "tier": "tier2",
+    "mean_reward": 0.2305421554433346,
+    "reward_std": 0.010337232574820526,
+    "mean_task_score": 0.28,
+    "mean_success": 0.0,
+    "mean_latency": 0.517262227833271,
+    "mean_token_cost": 0.00126,
+    "mean_safety_penalty": 0.42000000000000004,
+    "evaluations": [
+      {
+        "task_score": 0.28,
+        "success": 0.0,
+        "latency": 1.034123856574297,
+        "token_cost": 0.00126,
+        "safety_penalty": 0.42000000000000004,
+        "raw_output": "def find_peak_util(arr, n):\n    if n == 1:\n        return 0\n    if arr[0] > arr[1]:\n        return 0\n    if arr[n-1] > arr[n-2]:\n        return n-1\n    left, right = 0, n-1\n    while left <= right:\n        mid = (left + right) // 2\n        if arr[mid] < arr[mid+1]:\n            left = mid + 1\n        else:\n            right = mid\n    return left",
+        "trace": [
+          {
+            "role": "generator",
+            "agent_id": "planner",
+            "content": "<think>\n好的，我现在需要解决的问题是编写一个Python函数find_peak_util，用来找到给定数组中的峰值元素。根据题目中的例子，比如第一个测试用例[1,3,20,4,1,0]，峰值是20，对应的索引是2。第二个例子是递增数组，峰值是最后一个元素，索引4。那问题转化为如何高效地找到这样的峰值。\n\n首先，我得明确什么是峰值元素。根据定义，峰值元素是指其值大于左右相邻元素的元素。对于数组的边界元素，比如第一个或最后一个，只需要比较一个相邻元素即可。例如，如果数组是[1,2,3]，那么3是峰值，因为它比左边的大，右边没有元素。\n\n接下来，我需要考虑如何实现这个函数。常见的思路可能有线性扫描和二分查找。线性扫描的话，遍历数组每个元素，检查是否是峰值，时间复杂度是O(n)。但题目中的例子可能希望更高效的解法，比如二分查找，时间复杂度O(log n)。比如，当数组是递增的，峰值在末尾；递减的话在开头；否则中间存在峰值。\n\n那如何用二分法呢？关键点在于，每次选择中间元素，比较中间元素和右边元素的大小。如果中间元素小于右边，那么峰值一定在右边（因为右边元素比中间大，而右边可能继续递增，所以峰值在右边）。反之，如果中间元素大于右边，则峰值可能在左边（包括中间元素自己）。这样每次缩小搜索范围，直到找到峰值。\n\n比如，对于数组[1,3,20,4,1,0]，中间元素是4（索引2），比较它和右边的1，发现4比1大，所以峰值可能在左边，包括索引2。这时候可能需要检查索引2是否是峰值。或者，可能需要继续向左搜索？或者，这里可能需要更仔细的分析。\n\n或者，另一种思路是，当mid < right时，说明峰值在右边，因为右边的元素比mid大，而右边可能继续递增，所以峰值在右边。反之，如果mid > right，峰值可能在左边，包括mid自己。这样每次将搜索范围减半。\n\n那具体实现的话，可以设置左右指针，初始为0和n-1。然后循环直到左指针小于等于右指针。每次计算mid，比较arr[mid]和arr[mid+1]。如果arr[mid] < arr[mid+1]，则说明峰值在右边，左指针设为mid+1。否则，峰值可能在左边，右指针设为mid。这样循环结束后，左指针的位置就是峰值的位置？\n\n比如，对于例子[1,3,20,4,1,0]，初始left=0, right=5。mid=2，arr[2]=20，arr[3]=4。20>4，所以右指针设为mid=2。此时left=0, right=2。mid=1，arr[1]=3，arr[2]=20。3<20，所以左指针设为mid+1=2。此时left=2, right=2，循环结束。返回left=2，正确。\n\n另一个例子[2,3,4,5,6]，初始left=0, right=4。mid=2，arr[2]=4，arr[3]=5。4<5，左指针设为3。此时left=3, right=4。mid=3，arr[3]=5"
+          },
+          {
+            "role": "critic",
+            "agent_id": "verifier",
+            "content": "<think>\n好的，我现在需要检查用户提供的代码是否符合要求。首先，用户的问题是要实现一个找到峰值元素的函数find_peak_util。根据题目中的例子，比如第一个测试用例[1,3,20,4,1,0]，峰值是索引2，第二个例子是递增数组，峰值是最后一个元素索引4。\n\n用户提供的代码是使用二分查找的方法。函数find_peak_util接受数组和长度作为参数。首先处理特殊情况，比如数组长度为1时返回0，或者数组长度为2时比较两个元素。然后使用二分法，初始化left和right指针，循环直到left <= right。每次计算mid，比较中间元素和右边元素的大小。如果中间元素小于右边，则左指针移到mid+1，否则右指针移到mid。最后返回left。\n\n现在需要检查这个代码是否满足所有约束条件。首先，函数名是否正确，是否为find_peak_util？是的。参数是否正确？函数接受数组和长度，但原题中的例子调用是find_peak([1,3,20,4,1,0],6)，所以参数应该是数组和长度，但原题中的函数名是find_peak，而用户需要实现的是find_peak_util。可能这里存在函数名不一致的问题？或者用户可能在问题中提到的函数名是find_peak，但实际需要实现的是find_peak_util？需要仔细看问题描述。\n\n问题中说：“Implement the Python function find_peak_util”，所以函数名必须是find_peak_util。但用户提供的代码中的函数名是find_peak，这可能是一个错误。例如，用户提供的代码中的函数名是find_peak，而题目要求的是find_peak_util。这会导致测试用例中的assert find_peak(...)调用失败，因为函数名不匹配。所以这是一个错误。\n\n另外，检查代码中的逻辑是否正确。例如，在二分查找的循环中，当mid < right时，左指针移到mid+1，否则右指针移到mid。这样循环结束后，left的位置是否一定是峰值？比如，在例子[2,3,4,5,6]中，循环过程是否正确？\n\n另一个可能的错误是，当数组长度为1时，返回0是正确的。当数组长度为2时，比较两个元素，返回较大的那个的索引。这部分处理正确吗？\n\n此外，代码中是否处理了所有可能的边界情况？例如，当数组是严格递增或递减的情况。例如，数组[5,4,3,2,1]，峰值是0。代码是否能正确返回？\n\n另外，函数参数是否正确？原题中的测试用例调用的是find_peak，而用户需要实现的是find_peak_util。所以函数名不一致会导致错误。因此，用户提供的代码中的函数名是错误的，必须更正为find_peak_util。\n\n综上，代码中的主要错误是函数名不正确，导致无法通过测试用例。此外，可能还有其他问题，比如在二分查找的逻辑中是否正确处理了所有情况。例如，当数组是递增时，最终left会指向最后一个元素，这是正确的。当数组是递减时，left会指向第一个元素。所以逻辑是正确的。但函数名错误会导致测试失败，所以必须修正。\n</think>\n\ndef find_peak_util(arr, n):\n    if n == 1:\n        return 0\n    if arr[0] > arr[1]:\n        return 0\n    if arr[n-1] > arr[n-2]:\n        return n-1\n    left, right = 0, n-1\n    while left <= right"
+          },
+          {
+            "role": "reviser",
+            "agent_id": "math",
+            "content": "<think>\n</think>\n\ndef find_peak_util(arr, n):\n    if n == 1:\n        return 0\n    if arr[0] > arr[1]:\n        return 0\n    if arr[n-1] > arr[n-2]:\n        return n-1\n    left, right = 0, n-1\n    while left <= right:\n        mid = (left + right) // 2\n        if arr[mid] < arr[mid+1]:\n            left = mid + 1\n        else:\n            right = mid\n    return left"
+          }
+        ],
+        "custom_metrics": {
+          "num_roles": 3.0
+        },
+        "debug_info": {
+          "dataset_specific": {
+            "used_dataset_specific": true,
+            "passed": 0,
+            "total": 3,
+            "stderr": "",
+            "syntax_ok": true,
+            "entry_defined": true,
+            "exec_error": ""
+          }
+        }
+      },
+      {
+        "task_score": 0.28,
+        "success": 0.0,
+        "latency": 0.00040059909224510193,
+        "token_cost": 0.00126,
+        "safety_penalty": 0.42000000000000004,
+        "raw_output": "def find_peak_util(arr, n):\n    if n == 1:\n        return 0\n    if arr[0] > arr[1]:\n        return 0\n    if arr[n-1] > arr[n-2]:\n        return n-1\n    left, right = 0, n-1\n    while left <= right:\n        mid = (left + right) // 2\n        if arr[mid] < arr[mid+1]:\n            left = mid + 1\n        else:\n            right = mid\n    return left",
+        "trace": [
+          {
+            "role": "generator",
+            "agent_id": "planner",
+            "content": "<think>\n好的，我现在需要解决的问题是编写一个Python函数find_peak_util，用来找到给定数组中的峰值元素。根据题目中的例子，比如第一个测试用例[1,3,20,4,1,0]，峰值是20，对应的索引是2。第二个例子是递增数组，峰值是最后一个元素，索引4。那问题转化为如何高效地找到这样的峰值。\n\n首先，我得明确什么是峰值元素。根据定义，峰值元素是指其值大于左右相邻元素的元素。对于数组的边界元素，比如第一个或最后一个，只需要比较一个相邻元素即可。例如，如果数组是[1,2,3]，那么3是峰值，因为它比左边的大，右边没有元素。\n\n接下来，我需要考虑如何实现这个函数。常见的思路可能有线性扫描和二分查找。线性扫描的话，遍历数组每个元素，检查是否是峰值，时间复杂度是O(n)。但题目中的例子可能希望更高效的解法，比如二分查找，时间复杂度O(log n)。比如，当数组是递增的，峰值在末尾；递减的话在开头；否则中间存在峰值。\n\n那如何用二分法呢？关键点在于，每次选择中间元素，比较中间元素和右边元素的大小。如果中间元素小于右边，那么峰值一定在右边（因为右边元素比中间大，而右边可能继续递增，所以峰值在右边）。反之，如果中间元素大于右边，则峰值可能在左边（包括中间元素自己）。这样每次缩小搜索范围，直到找到峰值。\n\n比如，对于数组[1,3,20,4,1,0]，中间元素是4（索引2），比较它和右边的1，发现4比1大，所以峰值可能在左边，包括索引2。这时候可能需要检查索引2是否是峰值。或者，可能需要继续向左搜索？或者，这里可能需要更仔细的分析。\n\n或者，另一种思路是，当mid < right时，说明峰值在右边，因为右边的元素比mid大，而右边可能继续递增，所以峰值在右边。反之，如果mid > right，峰值可能在左边，包括mid自己。这样每次将搜索范围减半。\n\n那具体实现的话，可以设置左右指针，初始为0和n-1。然后循环直到左指针小于等于右指针。每次计算mid，比较arr[mid]和arr[mid+1]。如果arr[mid] < arr[mid+1]，则说明峰值在右边，左指针设为mid+1。否则，峰值可能在左边，右指针设为mid。这样循环结束后，左指针的位置就是峰值的位置？\n\n比如，对于例子[1,3,20,4,1,0]，初始left=0, right=5。mid=2，arr[2]=20，arr[3]=4。20>4，所以右指针设为mid=2。此时left=0, right=2。mid=1，arr[1]=3，arr[2]=20。3<20，所以左指针设为mid+1=2。此时left=2, right=2，循环结束。返回left=2，正确。\n\n另一个例子[2,3,4,5,6]，初始left=0, right=4。mid=2，arr[2]=4，arr[3]=5。4<5，左指针设为3。此时left=3, right=4。mid=3，arr[3]=5"
+          },
+          {
+            "role": "critic",
+            "agent_id": "verifier",
+            "content": "<think>\n好的，我现在需要检查用户提供的代码是否符合要求。首先，用户的问题是要实现一个找到峰值元素的函数find_peak_util。根据题目中的例子，比如第一个测试用例[1,3,20,4,1,0]，峰值是索引2，第二个例子是递增数组，峰值是最后一个元素索引4。\n\n用户提供的代码是使用二分查找的方法。函数find_peak_util接受数组和长度作为参数。首先处理特殊情况，比如数组长度为1时返回0，或者数组长度为2时比较两个元素。然后使用二分法，初始化left和right指针，循环直到left <= right。每次计算mid，比较中间元素和右边元素的大小。如果中间元素小于右边，则左指针移到mid+1，否则右指针移到mid。最后返回left。\n\n现在需要检查这个代码是否满足所有约束条件。首先，函数名是否正确，是否为find_peak_util？是的。参数是否正确？函数接受数组和长度，但原题中的例子调用是find_peak([1,3,20,4,1,0],6)，所以参数应该是数组和长度，但原题中的函数名是find_peak，而用户需要实现的是find_peak_util。可能这里存在函数名不一致的问题？或者用户可能在问题中提到的函数名是find_peak，但实际需要实现的是find_peak_util？需要仔细看问题描述。\n\n问题中说：“Implement the Python function find_peak_util”，所以函数名必须是find_peak_util。但用户提供的代码中的函数名是find_peak，这可能是一个错误。例如，用户提供的代码中的函数名是find_peak，而题目要求的是find_peak_util。这会导致测试用例中的assert find_peak(...)调用失败，因为函数名不匹配。所以这是一个错误。\n\n另外，检查代码中的逻辑是否正确。例如，在二分查找的循环中，当mid < right时，左指针移到mid+1，否则右指针移到mid。这样循环结束后，left的位置是否一定是峰值？比如，在例子[2,3,4,5,6]中，循环过程是否正确？\n\n另一个可能的错误是，当数组长度为1时，返回0是正确的。当数组长度为2时，比较两个元素，返回较大的那个的索引。这部分处理正确吗？\n\n此外，代码中是否处理了所有可能的边界情况？例如，当数组是严格递增或递减的情况。例如，数组[5,4,3,2,1]，峰值是0。代码是否能正确返回？\n\n另外，函数参数是否正确？原题中的测试用例调用的是find_peak，而用户需要实现的是find_peak_util。所以函数名不一致会导致错误。因此，用户提供的代码中的函数名是错误的，必须更正为find_peak_util。\n\n综上，代码中的主要错误是函数名不正确，导致无法通过测试用例。此外，可能还有其他问题，比如在二分查找的逻辑中是否正确处理了所有情况。例如，当数组是递增时，最终left会指向最后一个元素，这是正确的。当数组是递减时，left会指向第一个元素。所以逻辑是正确的。但函数名错误会导致测试失败，所以必须修正。\n</think>\n\ndef find_peak_util(arr, n):\n    if n == 1:\n        return 0\n    if arr[0] > arr[1]:\n        return 0\n    if arr[n-1] > arr[n-2]:\n        return n-1\n    left, right = 0, n-1\n    while left <= right"
+          },
+          {
+            "role": "reviser",
+            "agent_id": "math",
+            "content": "<think>\n</think>\n\ndef find_peak_util(arr, n):\n    if n == 1:\n        return 0\n    if arr[0] > arr[1]:\n        return 0\n    if arr[n-1] > arr[n-2]:\n        return n-1\n    left, right = 0, n-1\n    while left <= right:\n        mid = (left + right) // 2\n        if arr[mid] < arr[mid+1]:\n            left = mid + 1\n        else:\n            right = mid\n    return left"
+          }
+        ],
+        "custom_metrics": {
+          "num_roles": 3.0
+        },
+        "debug_info": {
+          "dataset_specific": {
+            "used_dataset_specific": true,
+            "passed": 0,
+            "total": 3,
+            "stderr": "",
+            "syntax_ok": true,
+            "entry_defined": true,
+            "exec_error": ""
+          }
+        }
+      }
+    ]
+  },
+  "structure_summary": {
+    "mode": "structure_only",
+    "signature": "structure|critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math||route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder||critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher",
+    "selected_topology_signatures": [
+      "critique_revise|critic:verifier,generator:planner,reviser:math|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>math,planner>verifier,verifier>math",
+      "route_solve|aggregator:verifier,router:math,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only')|coder>verifier,math>coder",
+      "critique_revise|critic:verifier,generator:planner,reviser:researcher|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>researcher,planner>verifier,verifier>researcher"
+    ],
+    "selected_topology_scores": [
+      0.5558796024748873,
+      0.7368046975980878,
+      0.7508439328938101
+    ],
+    "metrics": {
+      "coverage": 0.8999999999999999,
+      "complementarity": 0.85,
+      "redundancy_quality": 0.45714285714285713,
+      "structural_faithfulness": 0.8333333333333333,
+      "runtime_affordability": 0.9083333333333334,
+      "topology_quality": 0.8679999999999999,
+      "diversity_quality": 0.7007142857142857,
+      "deployability": 0.9083333333333334,
+      "execution_probe": 0.8206267960926587,
+      "total_reward": 0.8127768648595615,
+      "metadata": {
+        "template_count": 2,
+        "task_node_count": 7,
+        "task_edge_count": 7,
+        "root_count": 2,
+        "sink_count": 3
+      }
+    },
+    "metadata": {
+      "templates": [
+        "critique_revise",
+        "route_solve"
+      ],
+      "graph_count": 3,
+      "root_node_ids": [
+        "generator@planner",
+        "router@math"
+      ],
+      "sink_node_ids": [
+        "aggregator@verifier",
+        "reviser@math",
+        "reviser@researcher"
+      ]
+    }
+  },
+  "metadata": {
+    "source": "live_stage1_search_cached"
+  }
+}

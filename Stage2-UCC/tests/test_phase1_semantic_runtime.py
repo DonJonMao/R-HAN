@@ -250,3 +250,28 @@ def test_phase1_config_exposes_safe_override_fields():
     assert config.safe_override_threshold == 0.52
     assert config.overturn_threshold == 0.58
     assert config.replay.max_prompt_chars == 16000
+
+
+def test_evaluate_candidate_summary_uses_runtime_evaluator_attribute():
+    runtime = _runtime_stub()
+    runtime.evaluator = SimpleNamespace(
+        evaluate_output=lambda *args, **kwargs: SimpleNamespace(
+            mean_success=1.0,
+            mean_task_score=0.75,
+            mean_safety_penalty=0.1,
+        )
+    )
+
+    summary = runtime._evaluate_candidate_summary(
+        question_text="What is 2+2?",
+        candidate_text="Answer: 4",
+        reference_answer="4",
+        metadata={},
+        dataset_profile=SimpleNamespace(name="gsm8k", task_type="reasoning", answer_format="numeric"),
+    )
+
+    assert summary == {
+        "success": 1.0,
+        "task_score": 0.75,
+        "safety_penalty": 0.1,
+    }

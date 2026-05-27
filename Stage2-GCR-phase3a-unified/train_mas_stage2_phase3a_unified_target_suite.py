@@ -702,6 +702,7 @@ def main() -> None:
     parser.add_argument("--checkpoint-every", type=int, default=25)
     parser.add_argument("--correction-max-rounds", type=int, default=2)
     parser.add_argument("--frontier-top-k", type=int, default=4)
+    parser.add_argument("--max-prompt-chars", type=int, default=16000)
     args = parser.parse_args()
 
     datasets = list(args.dataset) if args.dataset else list_processed_datasets(args.data_root)
@@ -730,6 +731,7 @@ def main() -> None:
     stage2_config.graph.hard_prune_after_turn = args.hard_prune_after_turn
     stage2_config.correction_max_rounds = args.correction_max_rounds
     stage2_config.frontier_top_k = args.frontier_top_k
+    stage2_config.replay.max_prompt_chars = args.max_prompt_chars
 
     suite_report = _load_json_dict(output_root / "suite_report.json") if args.resume else None
     if suite_report is None:

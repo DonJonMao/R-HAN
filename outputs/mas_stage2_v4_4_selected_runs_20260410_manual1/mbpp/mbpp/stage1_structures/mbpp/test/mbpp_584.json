@@ -1,0 +1,878 @@
+{
+  "question_text": "Write a function to find all adverbs and their positions in a given sentence by using regex.\n\nImplement the Python function `find_adverbs`.\n\nVisible test examples:\nassert find_adverbs(\"Clearly, he has no excuse for such behavior.\") == '0-7: Clearly'\nassert find_adverbs(\"Please handle the situation carefuly\") == '28-36: carefuly'\n\nReturn only executable Python code without Markdown fences.",
+  "union_graph": {
+    "nodes": {
+      "generator@coder": {
+        "node_id": "generator@coder",
+        "agent_id": "coder",
+        "role": "generator",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.6915888682006712,
+        "root_frequency": 0.3333333333333333,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.6915888682006712,
+          0.3333333333333333,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "stepwise",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "off",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "critic@verifier": {
+        "node_id": "critic@verifier",
+        "agent_id": "verifier",
+        "role": "critic",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner",
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer",
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 3,
+        "avg_graph_score": 1.4599098333214602,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 1.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          1.0,
+          1.4599098333214602,
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "strict",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "reviser@reasoner": {
+        "node_id": "reviser@reasoner",
+        "agent_id": "reasoner",
+        "role": "reviser",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.6915888682006712,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.3333333333333333,
+        "topo_level_mean": 2.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.6915888682006712,
+          0.0,
+          0.3333333333333333,
+          2.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "light",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "generator@debater_a": {
+        "node_id": "generator@debater_a",
+        "agent_id": "debater_a",
+        "role": "generator",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.4308594216553538,
+        "root_frequency": 0.3333333333333333,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.4308594216553538,
+          0.3333333333333333,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "stepwise",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "off",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "reviser@summarizer": {
+        "node_id": "reviser@summarizer",
+        "agent_id": "summarizer",
+        "role": "reviser",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.4308594216553538,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.3333333333333333,
+        "topo_level_mean": 2.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.4308594216553538,
+          0.0,
+          0.3333333333333333,
+          2.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "light",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "generator@planner": {
+        "node_id": "generator@planner",
+        "agent_id": "planner",
+        "role": "generator",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.257281210108356,
+        "root_frequency": 0.3333333333333333,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.257281210108356,
+          0.3333333333333333,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "stepwise",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "off",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "reviser@coder": {
+        "node_id": "reviser@coder",
+        "agent_id": "coder",
+        "role": "reviser",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.257281210108356,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.3333333333333333,
+        "topo_level_mean": 2.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.257281210108356,
+          0.0,
+          0.3333333333333333,
+          2.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "light",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "super_source": {
+        "node_id": "super_source",
+        "agent_id": "super_source",
+        "role": "super_source",
+        "node_type": "global",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner",
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer",
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 3,
+        "avg_graph_score": 0.0,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [],
+        "metadata": {}
+      },
+      "global_controller": {
+        "node_id": "global_controller",
+        "agent_id": "global_controller",
+        "role": "global_controller",
+        "node_type": "global",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner",
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer",
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 3,
+        "avg_graph_score": 0.0,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [],
+        "metadata": {}
+      },
+      "super_sink": {
+        "node_id": "super_sink",
+        "agent_id": "super_sink",
+        "role": "super_sink",
+        "node_type": "global",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner",
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer",
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 3,
+        "avg_graph_score": 0.0,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [],
+        "metadata": {}
+      }
+    },
+    "edges": [
+      {
+        "src": "generator@coder",
+        "dst": "critic@verifier",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.6915888682006712,
+        "best_parent_score": 1.6915888682006712,
+        "initial_keep_logit": 0.9049844403068009,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "generator@coder",
+        "dst": "reviser@reasoner",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.6915888682006712,
+        "best_parent_score": 1.6915888682006712,
+        "initial_keep_logit": 0.9049844403068009,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 2.0,
+        "latency_prior": 1.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "critic@verifier",
+        "dst": "reviser@reasoner",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.6915888682006712,
+        "best_parent_score": 1.6915888682006712,
+        "initial_keep_logit": 0.9049844403068009,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "generator@debater_a",
+        "dst": "critic@verifier",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.4308594216553538,
+        "best_parent_score": 1.4308594216553538,
+        "initial_keep_logit": 0.8528385509977374,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "generator@debater_a",
+        "dst": "reviser@summarizer",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.4308594216553538,
+        "best_parent_score": 1.4308594216553538,
+        "initial_keep_logit": 0.8528385509977374,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 2.0,
+        "latency_prior": 1.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "critic@verifier",
+        "dst": "reviser@summarizer",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.4308594216553538,
+        "best_parent_score": 1.4308594216553538,
+        "initial_keep_logit": 0.8528385509977374,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "generator@planner",
+        "dst": "critic@verifier",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.257281210108356,
+        "best_parent_score": 1.257281210108356,
+        "initial_keep_logit": 0.8181229086883379,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "generator@planner",
+        "dst": "reviser@coder",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.257281210108356,
+        "best_parent_score": 1.257281210108356,
+        "initial_keep_logit": 0.8181229086883379,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 2.0,
+        "latency_prior": 1.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "critic@verifier",
+        "dst": "reviser@coder",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.257281210108356,
+        "best_parent_score": 1.257281210108356,
+        "initial_keep_logit": 0.8181229086883379,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "super_source",
+        "dst": "generator@coder",
+        "edge_type": "source",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner",
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer",
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "global_controller",
+        "dst": "generator@coder",
+        "edge_type": "controller",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner",
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer",
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "super_source",
+        "dst": "generator@debater_a",
+        "edge_type": "source",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner",
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer",
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "global_controller",
+        "dst": "generator@debater_a",
+        "edge_type": "controller",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner",
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer",
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "super_source",
+        "dst": "generator@planner",
+        "edge_type": "source",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner",
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer",
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "global_controller",
+        "dst": "generator@planner",
+        "edge_type": "controller",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner",
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer",
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@coder",
+        "dst": "global_controller",
+        "edge_type": "feedback",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner",
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer",
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@coder",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner",
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer",
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@reasoner",
+        "dst": "global_controller",
+        "edge_type": "feedback",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner",
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer",
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@reasoner",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner",
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer",
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@summarizer",
+        "dst": "global_controller",
+        "edge_type": "feedback",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner",
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer",
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@summarizer",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner",
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer",
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "global_controller",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner",
+          "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer",
+          "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      }
+    ],
+    "source_topology_signatures": [
+      "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner",
+      "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer",
+      "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+    ],
+    "root_node_ids": [
+      "generator@coder",
+      "generator@debater_a",
+      "generator@planner"
+    ],
+    "sink_node_ids": [
+      "reviser@coder",
+      "reviser@reasoner",
+      "reviser@summarizer"
+    ],
+    "metadata": {
+      "graph_count": 3,
+      "task_node_count": 7
+    }
+  },
+  "stage1_signature": "structure|critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner||critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer||critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder",
+  "stage1_output": "import re\n\ndef find_adverbs(sentence):\n    pattern = r'\\b\\w+ly\\b'\n    matches = re.finditer(pattern, sentence, re.IGNORECASE)\n    result = []\n    for match in matches:\n        start = match.start()\n        end = match.end()\n        word = match.group()\n        result.append(f\"{start}-{end}: {word}\")\n    return ' '.join(result)",
+  "dataset_name": "mbpp",
+  "stage1_summary": {
+    "tier": "tier2",
+    "mean_reward": 1.6915888682006712,
+    "reward_std": 0.10287680070847272,
+    "mean_task_score": 1.0,
+    "mean_success": 1.0,
+    "mean_latency": 5.144566589966416,
+    "mean_token_cost": 0.00198,
+    "mean_safety_penalty": 0.0,
+    "evaluations": [
+      {
+        "task_score": 1.0,
+        "success": 1.0,
+        "latency": 10.288406625390053,
+        "token_cost": 0.00198,
+        "safety_penalty": 0.0,
+        "raw_output": "import re\n\ndef find_adverbs(sentence):\n    pattern = r'\\b\\w+ly\\b'\n    matches = re.finditer(pattern, sentence, re.IGNORECASE)\n    result = []\n    for match in matches:\n        start = match.start()\n        end = match.end()\n        word = match.group()\n        result.append(f\"{start}-{end}: {word}\")\n    return ' '.join(result)",
+        "trace": [
+          {
+            "role": "generator",
+            "agent_id": "coder",
+            "content": "<think>\n好的，我需要编写一个Python函数find_adverbs，使用正则表达式来找出句子中的副词及其位置。首先，我得确定副词的正则模式。通常，副词可能以ly结尾，所以基本模式是\\b\\w+ly\\b。但可能有例外，比如“well”虽然以l结尾，但有时也作为副词使用。不过根据测试用例，比如“carefully”被识别，所以可能需要更精确的模式。\n\n测试用例中的第一个例子是“Clearly, he has no excuse for such behavior.”，输出是0-7: Clearly。这里Clearly是副词，所以正则应该匹配到。第二个例子是“Please handle the situation carefuly”，输出是28-36: carefuly，这里carefully可能拼错了，但函数需要正确识别。\n\n所以，正则表达式应该匹配以ly结尾的单词，但可能需要考虑大小写。不过测试用例中的例子都是首字母大写，所以可能不需要处理大小写。但为了全面，可能应该使用re.IGNORECASE标志。\n\n接下来，我需要找到每个匹配项的位置。正则表达式模块的match对象有start()和end()方法，可以获取起始和结束索引。然后，将这些索引转换为字符串，如start- end: word。\n\n然后，将所有匹配结果收集起来，按顺序排列，并用空格分隔。例如，如果有多个副词，结果应该是多个类似“start-end: word”的字符串，用空格分隔。\n\n需要注意的是，正则表达式可能匹配到像“happily”这样的词，但需要确保它确实是副词。不过根据问题描述，可能只需要匹配以ly结尾的单词，不管是否实际是副词。\n\n现在，编写函数：使用re.finditer来找到所有匹配项，遍历每个匹配项，获取起始和结束位置，以及单词本身。然后格式化为字符串，并收集所有结果，最后用空格连接。\n\n测试用例中的第一个例子，\"Clearly, he has no excuse for such behavior.\"，Clearly的位置是0到7，所以正则应该正确匹配。第二个例子中的carefully的位置是28-36，需要确认正则是否正确计算索引。\n\n可能的正则表达式是r'\\b\\w+ly\\b'，但需要考虑标点符号。例如，在第一个例子中，Clearly后面有逗号，所以\\b可能正确匹配。但可能需要调整正则表达式，比如使用\\B来处理可能的边界情况，或者确保ly后面是单词边界。\n\n另外，需要处理可能的大小写问题，比如“Clearly”和“clearly”是否都被匹配。使用re.IGNORECASE标志可以解决这个问题。\n\n综上，函数的大致步骤是：\n\n1. 使用re.finditer查找所有匹配的副词。\n2. 对每个匹配项，获取起始和结束索引，以及单词。\n3. 格式化为“start-end: word”。\n4. 将所有结果用空格连接，返回字符串。\n\n现在，编写代码：\n\nimport re\n\ndef find_adverbs(sentence):\n    pattern = r'\\b\\w+ly\\b'\n    matches = re.finditer(pattern, sentence, re.IGNORECASE)\n    result = []\n    for match in matches:\n        start = match.start()\n        end = match.end()\n        word = match.group()\n        result.append(f\"{start}-{end-1}: {word}\")\n    return ' '.join(result)\n\n但测试用例中的第一个例子，Clearly的结束位置是7，而match.end()返回的是8，因为索引是左闭右"
+          },
+          {
+            "role": "critic",
+            "agent_id": "verifier",
+            "content": "<think>\n好的，我需要检查用户提供的代码是否符合要求。首先，用户的问题是要编写一个函数find_adverbs，使用正则表达式找出句子中的副词及其位置。测试用例显示，例如“Clearly”被匹配为0-7，而“carefully”在位置28-36。\n\n首先看用户提供的代码。代码中使用了re.finditer来查找所有匹配的单词，模式是r'\\b\\w+ly\\b'，并带有re.IGNORECASE标志。然后，对于每个匹配项，获取start和end的位置，格式化为start-end: word，并用空格连接结果。\n\n但测试用例中的第一个例子，\"Clearly, he has no excuse for such behavior.\"，输出是'0-7: Clearly'。这里，Clearly的结束索引应该是7，但根据Python的字符串索引，假设句子是\"Clearly, he...\"，那么\"Clearly\"的长度是7个字符（C-l-e-a-r-l-y），所以索引0到6，end()返回的是7，所以end-1应该是6？或者原题中的例子是0-7，可能表示的是起始到结束的索引范围，包括结束位置？\n\n比如，假设字符串是\"Clearly,...\"，那么\"Clearly\"的起始是0，结束是7（因为索引是0-based，长度为7，所以end()返回7）。所以原题中的例子显示0-7，而代码中的处理是start和end-1，这样会导致0-6？这可能有问题。\n\n例如，在第一个测试用例中，\"Clearly\"的长度是7，所以start是0，end是7。原题的输出是0-7，所以应该直接使用start和end-1？或者原题中的例子可能有错误？\n\n或者，可能用户提供的测试用例中的位置是起始到结束的索引，包括结束位置。例如，\"Clearly\"的起始是0，结束是7（因为索引是0-based，长度为7，所以end()返回7）。所以正确的格式应该是start-end，即0-7。但代码中当前的处理是start和end-1，这样会导致0-6，这与测试用例不符。\n\n因此，代码中的错误在于，将end-1作为结束位置，而正确的应该是end。例如，在第一个测试用例中，\"Clearly\"的end()是7，所以应该显示为0-7，而不是0-6。因此，代码中的格式化字符串应该是f\"{start}-{end}: {word}\"，而不是end-1。\n\n另一个问题是，测试用例中的第二个例子，\"Please handle the situation carefuly\"，输出是28-36: carefuly。假设句子中\"carefully\"的位置是28到36，那么代码中的处理是否正确？需要确认字符串的索引是否正确。\n\n因此，代码中的错误在于，将end-1作为结束位置，而应该直接使用end。因此，需要修改格式化字符串中的end部分。\n\n此外，正则表达式是否正确？例如，\\b\\w+ly\\b是否能正确匹配到所有副词？比如，像“well”这样的词，虽然以l结尾，但可能被误判。但根据测试用例，可能不需要处理这种情况，因为问题可能假设所有以ly结尾的词都是副词。\n\n另外，是否需要考虑大小写？测试用例中的例子是首字母大写，但使用re.IGNORECASE可以匹配所有大小写情况，但可能不需要，因为问题中的例子都是首字母大写，所以可能不需要该标志。但原题中的测试"
+          },
+          {
+            "role": "reviser",
+            "agent_id": "reasoner",
+            "content": "<think>\n好的，我需要修正之前的代码，使其符合测试用例的要求。首先，测试用例中的第一个例子，\"Clearly\"的起始位置是0，结束位置是7，而根据Python的字符串索引，match.end()返回的是7，所以正确的格式应该是0-7，而不是0-6。之前的代码中错误地使用了end-1，导致结果不正确。因此，需要将格式化字符串中的end-1改为end。\n\n接下来，检查正则表达式是否正确。原正则表达式是r'\\b\\w+ly\\b'，这可能会匹配到像“happily”这样的词，但根据测试用例，可能需要更精确的匹配。不过测试用例中的例子是“Clearly”和“carefully”，所以这个正则表达式应该可以正确匹配。\n\n另外，是否需要考虑大小写？测试用例中的例子都是首字母大写，但使用re.IGNORECASE标志可以确保无论大小写都能匹配。不过原题中的测试用例可能不需要，因为输入句子中的副词都是首字母大写，所以可能不需要该标志。但为了保险起见，可以保留该标志。\n\n然后，处理第二个测试用例，\"Please handle the situation carefuly\"，输出是28-36: carefuly。需要确认字符串中“carefully”的位置是否正确。假设句子中“carefully”位于位置28到36，那么代码中的处理是否正确？例如，假设句子中“carefully”是第28个字符开始，到36结束，那么match.start()是28，match.end()是36，所以格式化为28-36是正确的。\n\n因此，修正后的代码应将格式化字符串改为f\"{start}-{end}: {word}\"，并确保正则表达式正确。此外，需要确保函数返回的是字符串，各匹配项之间用空格分隔。\n\n现在，编写修正后的代码：\n\nimport re\n\ndef find_adverbs(sentence):\n    pattern = r'\\b\\w+ly\\b'\n    matches = re.finditer(pattern, sentence, re.IGNORECASE)\n    result = []\n    for match in matches:\n        start = match.start()\n        end = match.end()\n        word = match.group()\n        result.append(f\"{start}-{end}: {word}\")\n    return ' '.join(result)\n\n测试第一个用例，\"Clearly, he has no excuse for such behavior.\"，\"Clearly\"的start是0，end是7，所以输出0-7: Clearly，符合测试用例。第二个用例中，“carefully”的位置是否正确？假设句子中“carefully”位于位置28到36，那么输出28-36: carefuly，符合测试用例。\n\n因此，修正后的代码应该能通过测试用例。\n</think>\n\nimport re\n\ndef find_adverbs(sentence):\n    pattern = r'\\b\\w+ly\\b'\n    matches = re.finditer(pattern, sentence, re.IGNORECASE)\n    result = []\n    for match in matches:\n        start = match.start()\n        end = match.end()\n        word = match.group()\n        result.append(f\"{start}-{end}: {word}\")\n    return ' '.join(result)"
+          }
+        ],
+        "custom_metrics": {
+          "num_roles": 3.0
+        },
+        "debug_info": {
+          "dataset_specific": {
+            "used_dataset_specific": true,
+            "passed": 3,
+            "total": 3,
+            "stderr": "",
+            "syntax_ok": true,
+            "entry_defined": true,
+            "exec_error": ""
+          }
+        }
+      },
+      {
+        "task_score": 1.0,
+        "success": 1.0,
+        "latency": 0.0007265545427799225,
+        "token_cost": 0.00198,
+        "safety_penalty": 0.0,
+        "raw_output": "import re\n\ndef find_adverbs(sentence):\n    pattern = r'\\b\\w+ly\\b'\n    matches = re.finditer(pattern, sentence, re.IGNORECASE)\n    result = []\n    for match in matches:\n        start = match.start()\n        end = match.end()\n        word = match.group()\n        result.append(f\"{start}-{end}: {word}\")\n    return ' '.join(result)",
+        "trace": [
+          {
+            "role": "generator",
+            "agent_id": "coder",
+            "content": "<think>\n好的，我需要编写一个Python函数find_adverbs，使用正则表达式来找出句子中的副词及其位置。首先，我得确定副词的正则模式。通常，副词可能以ly结尾，所以基本模式是\\b\\w+ly\\b。但可能有例外，比如“well”虽然以l结尾，但有时也作为副词使用。不过根据测试用例，比如“carefully”被识别，所以可能需要更精确的模式。\n\n测试用例中的第一个例子是“Clearly, he has no excuse for such behavior.”，输出是0-7: Clearly。这里Clearly是副词，所以正则应该匹配到。第二个例子是“Please handle the situation carefuly”，输出是28-36: carefuly，这里carefully可能拼错了，但函数需要正确识别。\n\n所以，正则表达式应该匹配以ly结尾的单词，但可能需要考虑大小写。不过测试用例中的例子都是首字母大写，所以可能不需要处理大小写。但为了全面，可能应该使用re.IGNORECASE标志。\n\n接下来，我需要找到每个匹配项的位置。正则表达式模块的match对象有start()和end()方法，可以获取起始和结束索引。然后，将这些索引转换为字符串，如start- end: word。\n\n然后，将所有匹配结果收集起来，按顺序排列，并用空格分隔。例如，如果有多个副词，结果应该是多个类似“start-end: word”的字符串，用空格分隔。\n\n需要注意的是，正则表达式可能匹配到像“happily”这样的词，但需要确保它确实是副词。不过根据问题描述，可能只需要匹配以ly结尾的单词，不管是否实际是副词。\n\n现在，编写函数：使用re.finditer来找到所有匹配项，遍历每个匹配项，获取起始和结束位置，以及单词本身。然后格式化为字符串，并收集所有结果，最后用空格连接。\n\n测试用例中的第一个例子，\"Clearly, he has no excuse for such behavior.\"，Clearly的位置是0到7，所以正则应该正确匹配。第二个例子中的carefully的位置是28-36，需要确认正则是否正确计算索引。\n\n可能的正则表达式是r'\\b\\w+ly\\b'，但需要考虑标点符号。例如，在第一个例子中，Clearly后面有逗号，所以\\b可能正确匹配。但可能需要调整正则表达式，比如使用\\B来处理可能的边界情况，或者确保ly后面是单词边界。\n\n另外，需要处理可能的大小写问题，比如“Clearly”和“clearly”是否都被匹配。使用re.IGNORECASE标志可以解决这个问题。\n\n综上，函数的大致步骤是：\n\n1. 使用re.finditer查找所有匹配的副词。\n2. 对每个匹配项，获取起始和结束索引，以及单词。\n3. 格式化为“start-end: word”。\n4. 将所有结果用空格连接，返回字符串。\n\n现在，编写代码：\n\nimport re\n\ndef find_adverbs(sentence):\n    pattern = r'\\b\\w+ly\\b'\n    matches = re.finditer(pattern, sentence, re.IGNORECASE)\n    result = []\n    for match in matches:\n        start = match.start()\n        end = match.end()\n        word = match.group()\n        result.append(f\"{start}-{end-1}: {word}\")\n    return ' '.join(result)\n\n但测试用例中的第一个例子，Clearly的结束位置是7，而match.end()返回的是8，因为索引是左闭右"
+          },
+          {
+            "role": "critic",
+            "agent_id": "verifier",
+            "content": "<think>\n好的，我需要检查用户提供的代码是否符合要求。首先，用户的问题是要编写一个函数find_adverbs，使用正则表达式找出句子中的副词及其位置。测试用例显示，例如“Clearly”被匹配为0-7，而“carefully”在位置28-36。\n\n首先看用户提供的代码。代码中使用了re.finditer来查找所有匹配的单词，模式是r'\\b\\w+ly\\b'，并带有re.IGNORECASE标志。然后，对于每个匹配项，获取start和end的位置，格式化为start-end: word，并用空格连接结果。\n\n但测试用例中的第一个例子，\"Clearly, he has no excuse for such behavior.\"，输出是'0-7: Clearly'。这里，Clearly的结束索引应该是7，但根据Python的字符串索引，假设句子是\"Clearly, he...\"，那么\"Clearly\"的长度是7个字符（C-l-e-a-r-l-y），所以索引0到6，end()返回的是7，所以end-1应该是6？或者原题中的例子是0-7，可能表示的是起始到结束的索引范围，包括结束位置？\n\n比如，假设字符串是\"Clearly,...\"，那么\"Clearly\"的起始是0，结束是7（因为索引是0-based，长度为7，所以end()返回7）。所以原题中的例子显示0-7，而代码中的处理是start和end-1，这样会导致0-6？这可能有问题。\n\n例如，在第一个测试用例中，\"Clearly\"的长度是7，所以start是0，end是7。原题的输出是0-7，所以应该直接使用start和end-1？或者原题中的例子可能有错误？\n\n或者，可能用户提供的测试用例中的位置是起始到结束的索引，包括结束位置。例如，\"Clearly\"的起始是0，结束是7（因为索引是0-based，长度为7，所以end()返回7）。所以正确的格式应该是start-end，即0-7。但代码中当前的处理是start和end-1，这样会导致0-6，这与测试用例不符。\n\n因此，代码中的错误在于，将end-1作为结束位置，而正确的应该是end。例如，在第一个测试用例中，\"Clearly\"的end()是7，所以应该显示为0-7，而不是0-6。因此，代码中的格式化字符串应该是f\"{start}-{end}: {word}\"，而不是end-1。\n\n另一个问题是，测试用例中的第二个例子，\"Please handle the situation carefuly\"，输出是28-36: carefuly。假设句子中\"carefully\"的位置是28到36，那么代码中的处理是否正确？需要确认字符串的索引是否正确。\n\n因此，代码中的错误在于，将end-1作为结束位置，而应该直接使用end。因此，需要修改格式化字符串中的end部分。\n\n此外，正则表达式是否正确？例如，\\b\\w+ly\\b是否能正确匹配到所有副词？比如，像“well”这样的词，虽然以l结尾，但可能被误判。但根据测试用例，可能不需要处理这种情况，因为问题可能假设所有以ly结尾的词都是副词。\n\n另外，是否需要考虑大小写？测试用例中的例子是首字母大写，但使用re.IGNORECASE可以匹配所有大小写情况，但可能不需要，因为问题中的例子都是首字母大写，所以可能不需要该标志。但原题中的测试"
+          },
+          {
+            "role": "reviser",
+            "agent_id": "reasoner",
+            "content": "<think>\n好的，我需要修正之前的代码，使其符合测试用例的要求。首先，测试用例中的第一个例子，\"Clearly\"的起始位置是0，结束位置是7，而根据Python的字符串索引，match.end()返回的是7，所以正确的格式应该是0-7，而不是0-6。之前的代码中错误地使用了end-1，导致结果不正确。因此，需要将格式化字符串中的end-1改为end。\n\n接下来，检查正则表达式是否正确。原正则表达式是r'\\b\\w+ly\\b'，这可能会匹配到像“happily”这样的词，但根据测试用例，可能需要更精确的匹配。不过测试用例中的例子是“Clearly”和“carefully”，所以这个正则表达式应该可以正确匹配。\n\n另外，是否需要考虑大小写？测试用例中的例子都是首字母大写，但使用re.IGNORECASE标志可以确保无论大小写都能匹配。不过原题中的测试用例可能不需要，因为输入句子中的副词都是首字母大写，所以可能不需要该标志。但为了保险起见，可以保留该标志。\n\n然后，处理第二个测试用例，\"Please handle the situation carefuly\"，输出是28-36: carefuly。需要确认字符串中“carefully”的位置是否正确。假设句子中“carefully”位于位置28到36，那么代码中的处理是否正确？例如，假设句子中“carefully”是第28个字符开始，到36结束，那么match.start()是28，match.end()是36，所以格式化为28-36是正确的。\n\n因此，修正后的代码应将格式化字符串改为f\"{start}-{end}: {word}\"，并确保正则表达式正确。此外，需要确保函数返回的是字符串，各匹配项之间用空格分隔。\n\n现在，编写修正后的代码：\n\nimport re\n\ndef find_adverbs(sentence):\n    pattern = r'\\b\\w+ly\\b'\n    matches = re.finditer(pattern, sentence, re.IGNORECASE)\n    result = []\n    for match in matches:\n        start = match.start()\n        end = match.end()\n        word = match.group()\n        result.append(f\"{start}-{end}: {word}\")\n    return ' '.join(result)\n\n测试第一个用例，\"Clearly, he has no excuse for such behavior.\"，\"Clearly\"的start是0，end是7，所以输出0-7: Clearly，符合测试用例。第二个用例中，“carefully”的位置是否正确？假设句子中“carefully”位于位置28到36，那么输出28-36: carefuly，符合测试用例。\n\n因此，修正后的代码应该能通过测试用例。\n</think>\n\nimport re\n\ndef find_adverbs(sentence):\n    pattern = r'\\b\\w+ly\\b'\n    matches = re.finditer(pattern, sentence, re.IGNORECASE)\n    result = []\n    for match in matches:\n        start = match.start()\n        end = match.end()\n        word = match.group()\n        result.append(f\"{start}-{end}: {word}\")\n    return ' '.join(result)"
+          }
+        ],
+        "custom_metrics": {
+          "num_roles": 3.0
+        },
+        "debug_info": {
+          "dataset_specific": {
+            "used_dataset_specific": true,
+            "passed": 3,
+            "total": 3,
+            "stderr": "",
+            "syntax_ok": true,
+            "entry_defined": true,
+            "exec_error": ""
+          }
+        }
+      }
+    ]
+  },
+  "structure_summary": {
+    "mode": "structure_only",
+    "signature": "structure|critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner||critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer||critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder",
+    "selected_topology_signatures": [
+      "critique_revise|critic:verifier,generator:coder,reviser:reasoner|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|coder>reasoner,coder>verifier,verifier>reasoner",
+      "critique_revise|critic:verifier,generator:debater_a,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|debater_a>summarizer,debater_a>verifier,verifier>summarizer",
+      "critique_revise|critic:verifier,generator:planner,reviser:coder|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>coder,planner>verifier,verifier>coder"
+    ],
+    "selected_topology_scores": [
+      0.770294464922714,
+      0.751552775797972,
+      0.751093849089417
+    ],
+    "metrics": {
+      "coverage": 0.6249999999999999,
+      "complementarity": 0.7699999999999999,
+      "redundancy_quality": 0.2857142857142857,
+      "structural_faithfulness": 0.6208333333333333,
+      "runtime_affordability": 0.9083333333333334,
+      "topology_quality": 0.623,
+      "diversity_quality": 0.5859714285714285,
+      "deployability": 0.9083333333333334,
+      "execution_probe": 0.9454117165611683,
+      "total_reward": 0.7247231727677795,
+      "metadata": {
+        "template_count": 1,
+        "task_node_count": 7,
+        "task_edge_count": 9,
+        "root_count": 3,
+        "sink_count": 3
+      }
+    },
+    "metadata": {
+      "templates": [
+        "critique_revise"
+      ],
+      "graph_count": 3,
+      "root_node_ids": [
+        "generator@coder",
+        "generator@debater_a",
+        "generator@planner"
+      ],
+      "sink_node_ids": [
+        "reviser@coder",
+        "reviser@reasoner",
+        "reviser@summarizer"
+      ]
+    }
+  },
+  "metadata": {
+    "source": "live_stage1_search_cached"
+  }
+}

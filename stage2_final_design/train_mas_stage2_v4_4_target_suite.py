@@ -842,6 +842,18 @@ def main() -> None:
     parser.add_argument("--tier1-repeats", type=int, default=1)
     parser.add_argument("--tier2-repeats", type=int, default=1)
     parser.add_argument("--stage2-turn-count", type=int, default=5)
+    parser.add_argument(
+        "--stage1-final-graph-mode",
+        choices=["union", "best"],
+        default="union",
+        help="How stage-1 converts searched topologies into the graph consumed by stage-2.",
+    )
+    parser.add_argument(
+        "--selected-topology-k",
+        type=int,
+        default=3,
+        help="Number of searched topologies to merge when stage-1 final graph mode is union.",
+    )
     parser.add_argument("--memory-top-k", type=int, default=4)
     parser.add_argument("--soft-prune-top-k", type=int, default=3)
     parser.add_argument("--soft-prune-threshold", type=float, default=0.38)
@@ -875,7 +887,10 @@ def main() -> None:
     runtime_config.tier2.max_tokens = args.tier2_max_tokens
     runtime_config.tier1.repeats = args.tier1_repeats
     runtime_config.tier2.repeats = args.tier2_repeats
-    union_config = UnionRuntimeConfig()
+    union_config = UnionRuntimeConfig(
+        final_graph_mode=args.stage1_final_graph_mode,
+        selected_topology_k=args.selected_topology_k,
+    )
 
     stage2_config = Stage2V44Config()
     stage2_config.graph.turn_count = args.stage2_turn_count

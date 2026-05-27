@@ -72,6 +72,7 @@ class TieredEvalConfig:
 @dataclass
 class UnionRuntimeConfig:
     enable_union_runtime: bool = True
+    final_graph_mode: str = "union"
     selected_topology_k: int = 3
     candidate_pool_k: int = 8
     turn_count: int = 5

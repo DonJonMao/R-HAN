@@ -1,13 +1,21 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from mas_stage2.config import Stage2ReplayConfig
 from mas_stage2.config_v2 import Stage2V2Config
 
 
 @dataclass
 class Phase3aUnifiedConfig(Stage2V2Config):
     stage2_version: str = "phase3a_unified_v1"
+    replay: Stage2ReplayConfig = field(default_factory=lambda: Stage2ReplayConfig(max_prompt_chars=16000))
+
+    # Compatibility surface for the inherited Stage2-GCR+ runtime chain.
+    code_require_entry_point: bool = True
+    max_logged_candidates: int = 8
+    explicit_challenger_agents: tuple[str, ...] = ("skeptic", "debater_b")
+    override_inspector_agent_id: str = "verifier"
 
     view_names: tuple[str, ...] = ("surface_view", "step_view", "struct_view", "exec_view")
     view_encoder_hidden_dim: int = 256
@@ -57,4 +65,3 @@ class Phase3aUnifiedConfig(Stage2V2Config):
     node_participation_root_bonus: float = 0.10
 
     memory_view_names: tuple[str, ...] = ("stable", "failure", "provenance", "global")
-

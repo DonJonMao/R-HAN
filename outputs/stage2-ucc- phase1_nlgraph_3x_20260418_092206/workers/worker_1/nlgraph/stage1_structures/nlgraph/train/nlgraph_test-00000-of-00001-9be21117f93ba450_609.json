@@ -1,0 +1,826 @@
+{
+  "question_text": "In a directed graph, the nodes are numbered from 0 to 4, and the edges are:\nan edge from node 0 to node 4 with capacity 1,\nan edge from node 0 to node 3 with capacity 6,\nan edge from node 1 to node 4 with capacity 9,\nan edge from node 2 to node 0 with capacity 10,\nan edge from node 3 to node 1 with capacity 3,\nan edge from node 3 to node 4 with capacity 7,\nan edge from node 4 to node 0 with capacity 10.\nQ: What is the maximum flow from node 0 to node 4?\nA:\n\nReturn only a JSON object using this schema: {\"max_flow\":0}. Do not output explanations.",
+  "union_graph": {
+    "nodes": {
+      "generator@planner": {
+        "node_id": "generator@planner",
+        "agent_id": "planner",
+        "role": "generator",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.6418080035171487,
+        "root_frequency": 0.3333333333333333,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.6418080035171487,
+          0.3333333333333333,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "stepwise",
+            "upstream_usage": "summary",
+            "output_style": "json",
+            "verification_mode": "off",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "critic@verifier": {
+        "node_id": "critic@verifier",
+        "agent_id": "verifier",
+        "role": "critic",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.6418080035171487,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 1.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.6418080035171487,
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "json",
+            "verification_mode": "strict",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "reviser@summarizer": {
+        "node_id": "reviser@summarizer",
+        "agent_id": "summarizer",
+        "role": "reviser",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.6418080035171487,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.3333333333333333,
+        "topo_level_mean": 2.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          1.6418080035171487,
+          0.0,
+          0.3333333333333333,
+          2.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "json",
+            "verification_mode": "light",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "router@reasoner": {
+        "node_id": "router@reasoner",
+        "agent_id": "reasoner",
+        "role": "router",
+        "node_type": "task",
+        "source_graph_ids": [
+          "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner",
+          "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+        ],
+        "support_count": 2,
+        "avg_graph_score": 0.5838198948434377,
+        "root_frequency": 0.6666666666666666,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.6666666666666666,
+          0.5838198948434377,
+          0.6666666666666666,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "json",
+            "verification_mode": "light",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "solver@planner": {
+        "node_id": "solver@planner",
+        "agent_id": "planner",
+        "role": "solver",
+        "node_type": "task",
+        "source_graph_ids": [
+          "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 0.5775781173188154,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 1.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          0.5775781173188154,
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "stepwise",
+            "upstream_usage": "summary",
+            "output_style": "json",
+            "verification_mode": "off",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "aggregator@verifier": {
+        "node_id": "aggregator@verifier",
+        "agent_id": "verifier",
+        "role": "aggregator",
+        "node_type": "task",
+        "source_graph_ids": [
+          "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 0.5775781173188154,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.3333333333333333,
+        "topo_level_mean": 2.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          0.5775781173188154,
+          0.0,
+          0.3333333333333333,
+          2.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "json",
+            "verification_mode": "light",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "solver@coder": {
+        "node_id": "solver@coder",
+        "agent_id": "coder",
+        "role": "solver",
+        "node_type": "task",
+        "source_graph_ids": [
+          "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 0.5900616723680601,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 1.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          0.5900616723680601,
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "stepwise",
+            "upstream_usage": "summary",
+            "output_style": "json",
+            "verification_mode": "off",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "aggregator@summarizer": {
+        "node_id": "aggregator@summarizer",
+        "agent_id": "summarizer",
+        "role": "aggregator",
+        "node_type": "task",
+        "source_graph_ids": [
+          "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 0.5900616723680601,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.3333333333333333,
+        "topo_level_mean": 2.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          0.3333333333333333,
+          0.5900616723680601,
+          0.0,
+          0.3333333333333333,
+          2.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "json",
+            "verification_mode": "light",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "super_source": {
+        "node_id": "super_source",
+        "agent_id": "super_source",
+        "role": "super_source",
+        "node_type": "global",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer",
+          "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner",
+          "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+        ],
+        "support_count": 3,
+        "avg_graph_score": 0.0,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [],
+        "metadata": {}
+      },
+      "global_controller": {
+        "node_id": "global_controller",
+        "agent_id": "global_controller",
+        "role": "global_controller",
+        "node_type": "global",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer",
+          "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner",
+          "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+        ],
+        "support_count": 3,
+        "avg_graph_score": 0.0,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [],
+        "metadata": {}
+      },
+      "super_sink": {
+        "node_id": "super_sink",
+        "agent_id": "super_sink",
+        "role": "super_sink",
+        "node_type": "global",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer",
+          "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner",
+          "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+        ],
+        "support_count": 3,
+        "avg_graph_score": 0.0,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [],
+        "metadata": {}
+      }
+    },
+    "edges": [
+      {
+        "src": "generator@planner",
+        "dst": "critic@verifier",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.6418080035171487,
+        "best_parent_score": 1.6418080035171487,
+        "initial_keep_logit": 0.8950282673700964,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "generator@planner",
+        "dst": "reviser@summarizer",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.6418080035171487,
+        "best_parent_score": 1.6418080035171487,
+        "initial_keep_logit": 0.8950282673700964,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 2.0,
+        "latency_prior": 1.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "critic@verifier",
+        "dst": "reviser@summarizer",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 1.6418080035171487,
+        "best_parent_score": 1.6418080035171487,
+        "initial_keep_logit": 0.8950282673700964,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "router@reasoner",
+        "dst": "solver@planner",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 0.5775781173188154,
+        "best_parent_score": 0.5775781173188154,
+        "initial_keep_logit": 0.6821822901304297,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "solver@planner",
+        "dst": "aggregator@verifier",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 0.5775781173188154,
+        "best_parent_score": 0.5775781173188154,
+        "initial_keep_logit": 0.6821822901304297,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "router@reasoner",
+        "dst": "solver@coder",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 0.5900616723680601,
+        "best_parent_score": 0.5900616723680601,
+        "initial_keep_logit": 0.6846790011402787,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "solver@coder",
+        "dst": "aggregator@summarizer",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+        ],
+        "support_count": 1,
+        "support_ratio": 0.3333333333333333,
+        "avg_parent_score": 0.5900616723680601,
+        "best_parent_score": 0.5900616723680601,
+        "initial_keep_logit": 0.6846790011402787,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "super_source",
+        "dst": "router@reasoner",
+        "edge_type": "source",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer",
+          "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner",
+          "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "global_controller",
+        "dst": "router@reasoner",
+        "edge_type": "controller",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer",
+          "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner",
+          "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "super_source",
+        "dst": "generator@planner",
+        "edge_type": "source",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer",
+          "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner",
+          "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "global_controller",
+        "dst": "generator@planner",
+        "edge_type": "controller",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer",
+          "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner",
+          "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "aggregator@summarizer",
+        "dst": "global_controller",
+        "edge_type": "feedback",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer",
+          "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner",
+          "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "aggregator@summarizer",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer",
+          "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner",
+          "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "aggregator@verifier",
+        "dst": "global_controller",
+        "edge_type": "feedback",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer",
+          "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner",
+          "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "aggregator@verifier",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer",
+          "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner",
+          "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@summarizer",
+        "dst": "global_controller",
+        "edge_type": "feedback",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer",
+          "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner",
+          "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@summarizer",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer",
+          "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner",
+          "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "global_controller",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer",
+          "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner",
+          "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+        ],
+        "support_count": 3,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      }
+    ],
+    "source_topology_signatures": [
+      "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer",
+      "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner",
+      "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+    ],
+    "root_node_ids": [
+      "router@reasoner",
+      "generator@planner"
+    ],
+    "sink_node_ids": [
+      "aggregator@summarizer",
+      "aggregator@verifier",
+      "reviser@summarizer"
+    ],
+    "metadata": {
+      "graph_count": 3,
+      "task_node_count": 8
+    }
+  },
+  "stage1_signature": "structure|critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer||route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner||route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder",
+  "stage1_output": "{\"max_flow\":7}",
+  "dataset_name": "nlgraph",
+  "stage1_summary": {
+    "tier": "tier2",
+    "mean_reward": 1.6418080035171487,
+    "reward_std": 0.0676776373386383,
+    "mean_task_score": 1.0,
+    "mean_success": 1.0,
+    "mean_latency": 4.512503765523434,
+    "mean_token_cost": 0.00037000000000000005,
+    "mean_safety_penalty": 0.0,
+    "evaluations": [
+      {
+        "task_score": 1.0,
+        "success": 1.0,
+        "latency": 9.024346254765987,
+        "token_cost": 0.00037000000000000005,
+        "safety_penalty": 0.0,
+        "raw_output": "{\"max_flow\":7}",
+        "trace": [
+          {
+            "role": "generator",
+            "agent_id": "planner",
+            "content": "<think>\n好的，我现在需要解决这个最大流的问题。首先，我得理解题目给出的图结构。节点是0到4，边和容量如下：\n\n0→4容量1，0→3容量6，1→4容量9，2→0容量10，3→1容量3，3→4容量7，4→0容量10。\n\n目标是从0到4的最大流。首先，我应该画出这个图，或者至少在脑海中清晰地构建出来。然后，应用最大流算法，比如Ford-Fulkerson方法，或者更高效的Edmonds-Karp算法。不过，手动计算可能比较繁琐，需要仔细分析。\n\n首先，确定源点是0，汇点是4。接下来，我需要找出所有可能的路径，并计算每条路径的残余容量，然后不断增广直到无法找到更多路径。\n\n首先，可能的路径之一是0→3→4。这条路径的容量是min(6,7)=6。此时，这条路径的流量是6，残余网络中0→3的容量变为0，3→4的容量变为1。同时，反向边3→0容量6，4→3容量7。\n\n接下来，可能的路径是0→4，容量1。这条路径的流量是1，残余网络中0→4的容量变为0，反向边4→0容量1。\n\n然后，可能的路径是0→3→1→4。这里，0→3的残余容量是0，所以这条路径不可行。或者是否有其他路径？\n\n比如，0→3→1→4？但0→3的残余容量是0，所以无法使用。那是否有其他路径？\n\n比如，2→0→3→4？但源点是0，所以可能无法通过2→0来增加流量，因为源点是0，所以可能需要考虑其他路径。\n\n或者，是否有其他路径？比如，0→4已经用完容量，所以可能需要寻找其他路径。比如，0→3→1→4？但0→3的残余容量是0，所以不行。或者，是否有其他路径？\n\n或者，考虑反向边？比如，4→0的容量是10，可能可以用来调整流量？\n\n或者，是否有其他路径？比如，0→3→1→4？但0→3的残余容量是0，所以无法使用。或者，是否有"
+          },
+          {
+            "role": "critic",
+            "agent_id": "verifier",
+            "content": "<think>\n好的，我现在需要检查候选答案是否符合约束条件。首先，问题要求计算从节点0到节点4的最大流。根据提供的边和容量，我需要确认候选答案是否正确。\n\n首先，我应该回顾最大流的计算过程。可能的路径包括：\n\n1. 0→3→4：容量为min(6,7)=6。\n2. 0→4：容量1。\n3. 0→3→1→4：但0→3的残余容量在第一条路径后变为0，所以这条路径不可行。\n4. 2→0→3→4：但源点是0，所以无法通过2→0来增加流量，因为2不是源点。\n5. 4→0→3→4：这可能涉及循环，但需要考虑残余网络中的反向边。\n\n另外，可能存在其他路径，比如通过节点1的其他边。例如，如果存在从0到3到1到4的路径，但需要检查残余容量。或者，是否有其他路径利用反向边？\n\n假设初始最大流是6+1=7。但可能还有其他路径。例如，考虑路径0→3→1→4，但此时0→3的容量已经用完，所以无法使用。或者，是否有其他路径？\n\n或者，是否存在通过节点2的路径？比如，2→0→4？但源点是0，所以无法从2出发。或者，是否有其他方式？\n\n或者，是否存在通过节点3到1再到其他节点的路径？比如，3→1→4，但需要从0到3的容量。如果0→3的容量已经被用完，那么无法使用。\n\n或者，是否有其他路径利用反向边？例如，4→0的容量是10，可能可以用来调整流量。比如，如果存在从0到4的路径，但已经被用完，那么可能无法再增加。\n\n或者，是否有其他路径？比如，0→3→1→4？但0→3的残余容量是0，所以无法使用。\n\n因此，可能的最大流是6+1=7。但可能还有其他路径。例如，是否存在从0→3→1→4的路径？如果0→3的残余容量是0，那么不行。或者，是否有其他路径？\n\n或者，是否还有其他路径？比如，0→3→4的残余容量是1（因为3→4"
+          },
+          {
+            "role": "reviser",
+            "agent_id": "summarizer",
+            "content": "<think>\n</think>\n\n{\"max_flow\":7}"
+          }
+        ],
+        "custom_metrics": {
+          "num_roles": 3.0
+        },
+        "debug_info": {
+          "dataset_specific": {
+            "used_dataset_specific": true,
+            "task": "flow",
+            "pred_num": 7.0,
+            "ref_num": 7.0
+          }
+        }
+      },
+      {
+        "task_score": 1.0,
+        "success": 1.0,
+        "latency": 0.0006612762808799744,
+        "token_cost": 0.00037000000000000005,
+        "safety_penalty": 0.0,
+        "raw_output": "{\"max_flow\":7}",
+        "trace": [
+          {
+            "role": "generator",
+            "agent_id": "planner",
+            "content": "<think>\n好的，我现在需要解决这个最大流的问题。首先，我得理解题目给出的图结构。节点是0到4，边和容量如下：\n\n0→4容量1，0→3容量6，1→4容量9，2→0容量10，3→1容量3，3→4容量7，4→0容量10。\n\n目标是从0到4的最大流。首先，我应该画出这个图，或者至少在脑海中清晰地构建出来。然后，应用最大流算法，比如Ford-Fulkerson方法，或者更高效的Edmonds-Karp算法。不过，手动计算可能比较繁琐，需要仔细分析。\n\n首先，确定源点是0，汇点是4。接下来，我需要找出所有可能的路径，并计算每条路径的残余容量，然后不断增广直到无法找到更多路径。\n\n首先，可能的路径之一是0→3→4。这条路径的容量是min(6,7)=6。此时，这条路径的流量是6，残余网络中0→3的容量变为0，3→4的容量变为1。同时，反向边3→0容量6，4→3容量7。\n\n接下来，可能的路径是0→4，容量1。这条路径的流量是1，残余网络中0→4的容量变为0，反向边4→0容量1。\n\n然后，可能的路径是0→3→1→4。这里，0→3的残余容量是0，所以这条路径不可行。或者是否有其他路径？\n\n比如，0→3→1→4？但0→3的残余容量是0，所以无法使用。那是否有其他路径？\n\n比如，2→0→3→4？但源点是0，所以可能无法通过2→0来增加流量，因为源点是0，所以可能需要考虑其他路径。\n\n或者，是否有其他路径？比如，0→4已经用完容量，所以可能需要寻找其他路径。比如，0→3→1→4？但0→3的残余容量是0，所以不行。或者，是否有其他路径？\n\n或者，考虑反向边？比如，4→0的容量是10，可能可以用来调整流量？\n\n或者，是否有其他路径？比如，0→3→1→4？但0→3的残余容量是0，所以无法使用。或者，是否有"
+          },
+          {
+            "role": "critic",
+            "agent_id": "verifier",
+            "content": "<think>\n好的，我现在需要检查候选答案是否符合约束条件。首先，问题要求计算从节点0到节点4的最大流。根据提供的边和容量，我需要确认候选答案是否正确。\n\n首先，我应该回顾最大流的计算过程。可能的路径包括：\n\n1. 0→3→4：容量为min(6,7)=6。\n2. 0→4：容量1。\n3. 0→3→1→4：但0→3的残余容量在第一条路径后变为0，所以这条路径不可行。\n4. 2→0→3→4：但源点是0，所以无法通过2→0来增加流量，因为2不是源点。\n5. 4→0→3→4：这可能涉及循环，但需要考虑残余网络中的反向边。\n\n另外，可能存在其他路径，比如通过节点1的其他边。例如，如果存在从0到3到1到4的路径，但需要检查残余容量。或者，是否有其他路径利用反向边？\n\n假设初始最大流是6+1=7。但可能还有其他路径。例如，考虑路径0→3→1→4，但此时0→3的容量已经用完，所以无法使用。或者，是否有其他路径？\n\n或者，是否存在通过节点2的路径？比如，2→0→4？但源点是0，所以无法从2出发。或者，是否有其他方式？\n\n或者，是否存在通过节点3到1再到其他节点的路径？比如，3→1→4，但需要从0到3的容量。如果0→3的容量已经被用完，那么无法使用。\n\n或者，是否有其他路径利用反向边？例如，4→0的容量是10，可能可以用来调整流量。比如，如果存在从0到4的路径，但已经被用完，那么可能无法再增加。\n\n或者，是否有其他路径？比如，0→3→1→4？但0→3的残余容量是0，所以无法使用。\n\n因此，可能的最大流是6+1=7。但可能还有其他路径。例如，是否存在从0→3→1→4的路径？如果0→3的残余容量是0，那么不行。或者，是否有其他路径？\n\n或者，是否还有其他路径？比如，0→3→4的残余容量是1（因为3→4"
+          },
+          {
+            "role": "reviser",
+            "agent_id": "summarizer",
+            "content": "<think>\n</think>\n\n{\"max_flow\":7}"
+          }
+        ],
+        "custom_metrics": {
+          "num_roles": 3.0
+        },
+        "debug_info": {
+          "dataset_specific": {
+            "used_dataset_specific": true,
+            "task": "flow",
+            "pred_num": 7.0,
+            "ref_num": 7.0
+          }
+        }
+      }
+    ]
+  },
+  "structure_summary": {
+    "mode": "structure_only",
+    "signature": "structure|critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer||route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner||route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder",
+    "selected_topology_signatures": [
+      "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer",
+      "route_solve|aggregator:verifier,router:reasoner,solver:planner|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|planner>verifier,reasoner>planner",
+      "route_solve|aggregator:summarizer,router:reasoner,solver:coder|aggregator:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),router:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='json', verification_mode='light', finalization='answer_only'),solver:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='json', verification_mode='off', finalization='answer_only')|coder>summarizer,reasoner>coder"
+    ],
+    "selected_topology_scores": [
+      0.7875179273969547,
+      0.6494579659991447,
+      0.6524401872955307
+    ],
+    "metrics": {
+      "coverage": 0.8999999999999999,
+      "complementarity": 0.8833333333333333,
+      "redundancy_quality": 0.25,
+      "structural_faithfulness": 0.6833333333333333,
+      "runtime_affordability": 0.45,
+      "topology_quality": 0.783,
+      "diversity_quality": 0.554,
+      "deployability": 0.45,
+      "execution_probe": 0.8292808488341565,
+      "total_reward": 0.6379773867435145,
+      "metadata": {
+        "template_count": 2,
+        "task_node_count": 8,
+        "task_edge_count": 7,
+        "root_count": 2,
+        "sink_count": 3
+      }
+    },
+    "metadata": {
+      "templates": [
+        "critique_revise",
+        "route_solve"
+      ],
+      "graph_count": 3,
+      "root_node_ids": [
+        "router@reasoner",
+        "generator@planner"
+      ],
+      "sink_node_ids": [
+        "aggregator@summarizer",
+        "aggregator@verifier",
+        "reviser@summarizer"
+      ]
+    }
+  },
+  "metadata": {
+    "source": "live_stage1_search_cached"
+  }
+}

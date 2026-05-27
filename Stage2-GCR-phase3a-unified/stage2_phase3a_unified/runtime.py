@@ -127,13 +127,19 @@ class Phase3aUnifiedRuntime(Stage2RuntimeV41):
             return None
         system_prompt = build_system_prompt(agent, self._json_slots(), extra_role_hint=extra_role_hint)
         user_prompt = instruction + "\n\n" + build_prompt_payload(question_text=question_text, metadata=metadata, payload=payload)
-        raw = self.evaluator._cached_chat(
-            [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            runtime=self.evaluator._resolve_runtime("tier2", dataset_profile),
-        )
+        max_prompt_chars = int(getattr(self.config.replay, "max_prompt_chars", 0) or 0)
+        if max_prompt_chars > 0 and len(user_prompt) > max_prompt_chars:
+            return None
+        try:
+            raw = self.evaluator._cached_chat(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                runtime=self.evaluator._resolve_runtime("tier2", dataset_profile),
+            )
+        except RuntimeError:
+            return None
         return _extract_json_object(raw)
 
     def _ensure_phase3a_entry_fields(self, entry: Dict[str, Any]) -> None:
@@ -156,11 +162,32 @@ class Phase3aUnifiedRuntime(Stage2RuntimeV41):
         entry.setdefault("phase3a_soft_class_id", -1)
         entry.setdefault("phase3a_soft_class_size", 1)
 
+    def _ensure_v4_3_entry_fields(self, entry: Dict[str, Any]) -> None:
+        self._ensure_v4_entry_fields(entry)
+        entry.setdefault("repair_branch", False)
+        entry.setdefault("repair_agent_id", "")
+        entry.setdefault("repair_round", -1)
+        entry.setdefault("repair_parent_digest", "")
+        entry.setdefault("code_repair_level", 0)
+        entry.setdefault("code_repair_passed", 0)
+        entry.setdefault("code_repair_total", 0)
+        entry.setdefault("code_repair_failure_kind", "")
+        entry.setdefault("code_repair_failing_examples", [])
+
     def _serialize_candidate_entry(self, entry: Dict[str, Any]) -> Dict[str, Any]:
         payload = super()._serialize_candidate_entry(entry)
         verifier_state = entry.get("phase3a_verifier_state")
         payload.update(
             {
+                "repair_branch": bool(entry.get("repair_branch", False)),
+                "repair_agent_id": str(entry.get("repair_agent_id", "")),
+                "repair_round": int(entry.get("repair_round", -1)),
+                "repair_parent_digest": str(entry.get("repair_parent_digest", "")),
+                "code_repair_level": int(entry.get("code_repair_level", 0)),
+                "code_repair_passed": int(entry.get("code_repair_passed", 0)),
+                "code_repair_total": int(entry.get("code_repair_total", 0)),
+                "code_repair_failure_kind": str(entry.get("code_repair_failure_kind", "")),
+                "code_repair_failing_examples": list(entry.get("code_repair_failing_examples", ())),
                 "phase3a_raw_utility": float(entry.get("phase3a_raw_utility", 0.0)),
                 "phase3a_adjusted_utility": float(entry.get("phase3a_adjusted_utility", 0.0)),
                 "phase3a_frontier_weight": float(entry.get("phase3a_frontier_weight", 0.0)),

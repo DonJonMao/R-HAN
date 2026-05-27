@@ -999,7 +999,7 @@ class Phase1SemanticSafeOverrideRuntime(Phase3aUnifiedRuntime):
         metadata: Optional[dict],
         dataset_profile: DatasetProfile,
     ) -> Dict[str, float]:
-        summary = self._evaluator.evaluate_output(
+        summary = self.evaluator.evaluate_output(
             question_text,
             candidate_text,
             tier="tier2",

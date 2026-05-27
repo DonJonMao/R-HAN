@@ -1,0 +1,452 @@
+{
+  "question_text": "Write a function to find the n - cheap price items from a given dataset using heap queue algorithm.\n\nImplement the Python function `cheap_items`.\n\nVisible test examples:\nassert cheap_items([{'name': 'Item-1', 'price': 101.1},{'name': 'Item-2', 'price': 555.22}],1)==[{'name': 'Item-1', 'price': 101.1}]\nassert cheap_items([{'name': 'Item-1', 'price': 101.1},{'name': 'Item-2', 'price': 555.22}],2)==[{'name': 'Item-1', 'price': 101.1},{'name': 'Item-2', 'price': 555.22}]\n\nReturn only executable Python code without Markdown fences.",
+  "union_graph": {
+    "nodes": {
+      "generator@planner": {
+        "node_id": "generator@planner",
+        "agent_id": "planner",
+        "role": "generator",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.7901135765005347,
+        "root_frequency": 1.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          1.0,
+          1.7901135765005347,
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "stepwise",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "off",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "critic@verifier": {
+        "node_id": "critic@verifier",
+        "agent_id": "verifier",
+        "role": "critic",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.7901135765005347,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 1.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          1.0,
+          1.7901135765005347,
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "strict",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "reviser@summarizer": {
+        "node_id": "reviser@summarizer",
+        "agent_id": "summarizer",
+        "role": "reviser",
+        "node_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 1.7901135765005347,
+        "root_frequency": 0.0,
+        "sink_frequency": 1.0,
+        "topo_level_mean": 2.0,
+        "topo_level_var": 0.0,
+        "state_vector": [
+          1.0,
+          1.7901135765005347,
+          0.0,
+          1.0,
+          2.0,
+          0.0
+        ],
+        "metadata": {
+          "prompt_slots": {
+            "reasoning_mode": "direct",
+            "upstream_usage": "summary",
+            "output_style": "raw",
+            "verification_mode": "light",
+            "finalization": "answer_only"
+          }
+        }
+      },
+      "super_source": {
+        "node_id": "super_source",
+        "agent_id": "super_source",
+        "role": "super_source",
+        "node_type": "global",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 0.0,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [],
+        "metadata": {}
+      },
+      "global_controller": {
+        "node_id": "global_controller",
+        "agent_id": "global_controller",
+        "role": "global_controller",
+        "node_type": "global",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 0.0,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [],
+        "metadata": {}
+      },
+      "super_sink": {
+        "node_id": "super_sink",
+        "agent_id": "super_sink",
+        "role": "super_sink",
+        "node_type": "global",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "avg_graph_score": 0.0,
+        "root_frequency": 0.0,
+        "sink_frequency": 0.0,
+        "topo_level_mean": 0.0,
+        "topo_level_var": 0.0,
+        "state_vector": [],
+        "metadata": {}
+      }
+    },
+    "edges": [
+      {
+        "src": "generator@planner",
+        "dst": "critic@verifier",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "support_ratio": 1.0,
+        "avg_parent_score": 1.7901135765005347,
+        "best_parent_score": 1.7901135765005347,
+        "initial_keep_logit": 1.158022715300107,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "generator@planner",
+        "dst": "reviser@summarizer",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "support_ratio": 1.0,
+        "avg_parent_score": 1.7901135765005347,
+        "best_parent_score": 1.7901135765005347,
+        "initial_keep_logit": 1.158022715300107,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 2.0,
+        "latency_prior": 1.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "critic@verifier",
+        "dst": "reviser@summarizer",
+        "edge_type": "task",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "support_ratio": 1.0,
+        "avg_parent_score": 1.7901135765005347,
+        "best_parent_score": 1.7901135765005347,
+        "initial_keep_logit": 1.158022715300107,
+        "dynamic_keep_weight": 0.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.12,
+        "metadata": {}
+      },
+      {
+        "src": "super_source",
+        "dst": "generator@planner",
+        "edge_type": "source",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "global_controller",
+        "dst": "generator@planner",
+        "edge_type": "controller",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@summarizer",
+        "dst": "global_controller",
+        "edge_type": "feedback",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "reviser@summarizer",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      },
+      {
+        "src": "global_controller",
+        "dst": "super_sink",
+        "edge_type": "finalize",
+        "source_graph_ids": [
+          "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+        ],
+        "support_count": 1,
+        "support_ratio": 1.0,
+        "avg_parent_score": 0.0,
+        "best_parent_score": 0.0,
+        "initial_keep_logit": 1.0,
+        "dynamic_keep_weight": 1.0,
+        "level_delta_mean": 1.0,
+        "latency_prior": 0.0,
+        "token_cost_prior": 0.0,
+        "metadata": {}
+      }
+    ],
+    "source_topology_signatures": [
+      "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+    ],
+    "root_node_ids": [
+      "generator@planner"
+    ],
+    "sink_node_ids": [
+      "reviser@summarizer"
+    ],
+    "metadata": {
+      "graph_count": 1,
+      "task_node_count": 3,
+      "final_graph_mode": "best"
+    }
+  },
+  "stage1_signature": "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer",
+  "stage1_output": "import heapq\n\ndef cheap_items(items, n):\n    if not items or n <= 0:\n        return []\n    return heapq.nsmallest(n, items, key=lambda x: x['price'])",
+  "dataset_name": "mbpp",
+  "stage1_summary": {
+    "tier": "tier2",
+    "mean_reward": 1.7901135765005347,
+    "reward_std": 0.004360864236950923,
+    "mean_task_score": 1.0,
+    "mean_success": 1.0,
+    "mean_latency": 0.21879617497324944,
+    "mean_token_cost": 0.0010500000000000002,
+    "mean_safety_penalty": 0.0,
+    "evaluations": [
+      {
+        "task_score": 1.0,
+        "success": 1.0,
+        "latency": 0.43683938682079315,
+        "token_cost": 0.0010500000000000002,
+        "safety_penalty": 0.0,
+        "raw_output": "import heapq\n\ndef cheap_items(items, n):\n    if not items or n <= 0:\n        return []\n    return heapq.nsmallest(n, items, key=lambda x: x['price'])",
+        "trace": [
+          {
+            "role": "generator",
+            "agent_id": "planner",
+            "content": "<think>\n好的，我需要编写一个Python函数cheap_items，使用堆队列算法从给定的数据集中找到n个最便宜的物品。首先，我得理解问题要求。函数的输入是一个包含物品信息的列表，每个物品有名称和价格，以及一个整数n，输出是按价格从低到高排序的前n个物品。\n\n首先，我应该考虑如何利用堆结构。Python的heapq模块可以实现最小堆，但默认情况下，heapq是最小堆，而我们需要的是按价格升序排列，所以可能需要将价格取负数，这样最小堆实际上会按价格从低到高排列。或者，可能直接使用价格本身，因为最小堆的根是最小元素。\n\n不过，如果直接使用价格的话，heapq的heappush和heappop会自动维护最小堆的结构。但如果我们想要前n个最小的元素，可能需要构建一个最大堆，这样堆的大小保持为n，这样最大的元素在堆顶，当遇到更小的元素时可以替换。不过，对于这个问题，可能更简单的方法是先将所有元素按价格排序，然后取前n个。但题目要求使用堆队列算法，所以必须用堆来实现。\n\n那如何用堆来高效找到前n个最小的元素呢？比如，可以将所有元素放入一个堆中，然后弹出n次。但这样时间复杂度是O(n log n)，而如果使用一个大小为n的最大堆，可以优化到O(n log n)的时间复杂度。不过，对于一般情况，可能直接排序更简单，但题目要求使用堆队列算法，所以必须用堆。\n\n那具体步骤应该是怎样的呢？首先，将所有物品的价格作为键，构建一个最小堆。然后取出前n个元素。或者，可能更高效的是，使用heapq.nsmallest函数，它内部使用堆来实现，可以高效地找到前n个最小的元素。但题目可能希望手动实现堆的逻辑，而不是直接调用nsmallest。\n\n不过，题目中的示例测试用例显示，当n=2时，返回所有元素，这说明当n大于等于列表长度时，返回整个列表。所以需要处理这种情况。\n\n那可能的实现步骤是：\n\n1. 将输入的物品列表按照价格从小到大排序，然后取前n个。但这样可能没有使用堆队列算法。或者，使用堆来实现排序。\n\n但题目要求使用堆队列算法，所以可能需要手动构建堆。例如，可以使用heapq模块，将所有元素放入堆中，然后弹出n次。或者，使用heapq.nsmallest，这内部使用堆结构。\n\n但根据问题描述，可能需要手动实现堆的逻辑。例如，将每个物品的价格作为键，构建一个最小堆，然后取出前n个元素。或者，如果n较小，可以构建一个最大堆，保持堆的大小为n，这样可以更高效。\n\n不过，对于一般情况，可能直接使用heapq.nsmallest函数更简单，且符合题目要求。例如，heapq.nsmallest(n, iterable, key=...)。但需要确认是否允许使用这个函数。\n\n但题目可能希望手动实现堆的逻辑。例如，将所有物品按价格排序，然后取前n个。但这样可能没有使用堆队列算法。或者，使用堆结构来实现排序。\n\n比如，可以将所有物品放入一个堆中，然后弹出n次。但这样可能效率不高，因为每次弹出需要O(log n)时间，总共有n次，所以总时间复杂度是O(n"
+          },
+          {
+            "role": "critic",
+            "agent_id": "verifier",
+            "content": "<think>\n好的，我需要检查用户提供的函数是否满足所有约束条件。首先，函数名必须是cheap_items，参数是列表和整数n。然后，返回值应该是按价格升序排列的前n个物品。测试用例显示当n为1时返回最便宜的，当n为2时返回所有物品。\n\n用户提供的代码使用了heapq.nsmallest，这确实符合堆队列算法的要求。但需要确认是否正确处理了所有情况。例如，当n大于列表长度时，返回整个列表。此外，是否正确地按价格排序？因为nsmallest的key参数正确传递了price字段。\n\n检查代码是否处理了空列表或n为0的情况？当前代码中，如果n为0，返回空列表，这可能正确。但需要看是否允许n为0。根据问题描述，可能n是正整数，但代码应该处理所有合法输入。\n\n另外，是否保持了物品的原始顺序？比如，当有相同价格时，是否按名称排序？但测试用例中没有这种情况，所以可能不需要处理。只要按价格排序即可。\n\n综上，代码应该正确，但需要确保函数签名正确，返回值正确，并处理边界情况。\n</think>\n\nimport heapq\n\ndef cheap_items(items, n):\n    if not items or n <= 0:\n        return []\n    return heapq.nsmallest(n, items, key=lambda x: x['price'])\n\n# 检查约束\n# 1. 函数名正确：cheap_items ✅\n# 2. 参数类型正确：items是列表，n是整数 ✅\n# 3. 返回值类型正确：列表 ✅\n# 4. 处理n=0和空输入返回空列表 ✅\n# 5. 使用heapq.nsmallest符合堆队列算法要求 ✅\n# 6. 测试用例通过 ✅\n# 7. 保持物品原始顺序（按价格升序） ✅\n# 8. 处理n大于列表长度返回全部元素 ✅"
+          },
+          {
+            "role": "reviser",
+            "agent_id": "summarizer",
+            "content": "<think>\n</think>\n\nimport heapq\n\ndef cheap_items(items, n):\n    if not items or n <= 0:\n        return []\n    return heapq.nsmallest(n, items, key=lambda x: x['price'])"
+          }
+        ],
+        "custom_metrics": {
+          "num_roles": 3.0
+        },
+        "debug_info": {
+          "dataset_specific": {
+            "used_dataset_specific": true,
+            "passed": 3,
+            "total": 3,
+            "stderr": "",
+            "syntax_ok": true,
+            "entry_defined": true,
+            "exec_error": ""
+          }
+        }
+      },
+      {
+        "task_score": 1.0,
+        "success": 1.0,
+        "latency": 0.000752963125705719,
+        "token_cost": 0.0010500000000000002,
+        "safety_penalty": 0.0,
+        "raw_output": "import heapq\n\ndef cheap_items(items, n):\n    if not items or n <= 0:\n        return []\n    return heapq.nsmallest(n, items, key=lambda x: x['price'])",
+        "trace": [
+          {
+            "role": "generator",
+            "agent_id": "planner",
+            "content": "<think>\n好的，我需要编写一个Python函数cheap_items，使用堆队列算法从给定的数据集中找到n个最便宜的物品。首先，我得理解问题要求。函数的输入是一个包含物品信息的列表，每个物品有名称和价格，以及一个整数n，输出是按价格从低到高排序的前n个物品。\n\n首先，我应该考虑如何利用堆结构。Python的heapq模块可以实现最小堆，但默认情况下，heapq是最小堆，而我们需要的是按价格升序排列，所以可能需要将价格取负数，这样最小堆实际上会按价格从低到高排列。或者，可能直接使用价格本身，因为最小堆的根是最小元素。\n\n不过，如果直接使用价格的话，heapq的heappush和heappop会自动维护最小堆的结构。但如果我们想要前n个最小的元素，可能需要构建一个最大堆，这样堆的大小保持为n，这样最大的元素在堆顶，当遇到更小的元素时可以替换。不过，对于这个问题，可能更简单的方法是先将所有元素按价格排序，然后取前n个。但题目要求使用堆队列算法，所以必须用堆来实现。\n\n那如何用堆来高效找到前n个最小的元素呢？比如，可以将所有元素放入一个堆中，然后弹出n次。但这样时间复杂度是O(n log n)，而如果使用一个大小为n的最大堆，可以优化到O(n log n)的时间复杂度。不过，对于一般情况，可能直接排序更简单，但题目要求使用堆队列算法，所以必须用堆。\n\n那具体步骤应该是怎样的呢？首先，将所有物品的价格作为键，构建一个最小堆。然后取出前n个元素。或者，可能更高效的是，使用heapq.nsmallest函数，它内部使用堆来实现，可以高效地找到前n个最小的元素。但题目可能希望手动实现堆的逻辑，而不是直接调用nsmallest。\n\n不过，题目中的示例测试用例显示，当n=2时，返回所有元素，这说明当n大于等于列表长度时，返回整个列表。所以需要处理这种情况。\n\n那可能的实现步骤是：\n\n1. 将输入的物品列表按照价格从小到大排序，然后取前n个。但这样可能没有使用堆队列算法。或者，使用堆来实现排序。\n\n但题目要求使用堆队列算法，所以可能需要手动构建堆。例如，可以使用heapq模块，将所有元素放入堆中，然后弹出n次。或者，使用heapq.nsmallest，这内部使用堆结构。\n\n但根据问题描述，可能需要手动实现堆的逻辑。例如，将每个物品的价格作为键，构建一个最小堆，然后取出前n个元素。或者，如果n较小，可以构建一个最大堆，保持堆的大小为n，这样可以更高效。\n\n不过，对于一般情况，可能直接使用heapq.nsmallest函数更简单，且符合题目要求。例如，heapq.nsmallest(n, iterable, key=...)。但需要确认是否允许使用这个函数。\n\n但题目可能希望手动实现堆的逻辑。例如，将所有物品按价格排序，然后取前n个。但这样可能没有使用堆队列算法。或者，使用堆结构来实现排序。\n\n比如，可以将所有物品放入一个堆中，然后弹出n次。但这样可能效率不高，因为每次弹出需要O(log n)时间，总共有n次，所以总时间复杂度是O(n"
+          },
+          {
+            "role": "critic",
+            "agent_id": "verifier",
+            "content": "<think>\n好的，我需要检查用户提供的函数是否满足所有约束条件。首先，函数名必须是cheap_items，参数是列表和整数n。然后，返回值应该是按价格升序排列的前n个物品。测试用例显示当n为1时返回最便宜的，当n为2时返回所有物品。\n\n用户提供的代码使用了heapq.nsmallest，这确实符合堆队列算法的要求。但需要确认是否正确处理了所有情况。例如，当n大于列表长度时，返回整个列表。此外，是否正确地按价格排序？因为nsmallest的key参数正确传递了price字段。\n\n检查代码是否处理了空列表或n为0的情况？当前代码中，如果n为0，返回空列表，这可能正确。但需要看是否允许n为0。根据问题描述，可能n是正整数，但代码应该处理所有合法输入。\n\n另外，是否保持了物品的原始顺序？比如，当有相同价格时，是否按名称排序？但测试用例中没有这种情况，所以可能不需要处理。只要按价格排序即可。\n\n综上，代码应该正确，但需要确保函数签名正确，返回值正确，并处理边界情况。\n</think>\n\nimport heapq\n\ndef cheap_items(items, n):\n    if not items or n <= 0:\n        return []\n    return heapq.nsmallest(n, items, key=lambda x: x['price'])\n\n# 检查约束\n# 1. 函数名正确：cheap_items ✅\n# 2. 参数类型正确：items是列表，n是整数 ✅\n# 3. 返回值类型正确：列表 ✅\n# 4. 处理n=0和空输入返回空列表 ✅\n# 5. 使用heapq.nsmallest符合堆队列算法要求 ✅\n# 6. 测试用例通过 ✅\n# 7. 保持物品原始顺序（按价格升序） ✅\n# 8. 处理n大于列表长度返回全部元素 ✅"
+          },
+          {
+            "role": "reviser",
+            "agent_id": "summarizer",
+            "content": "<think>\n</think>\n\nimport heapq\n\ndef cheap_items(items, n):\n    if not items or n <= 0:\n        return []\n    return heapq.nsmallest(n, items, key=lambda x: x['price'])"
+          }
+        ],
+        "custom_metrics": {
+          "num_roles": 3.0
+        },
+        "debug_info": {
+          "dataset_specific": {
+            "used_dataset_specific": true,
+            "passed": 3,
+            "total": 3,
+            "stderr": "",
+            "syntax_ok": true,
+            "entry_defined": true,
+            "exec_error": ""
+          }
+        }
+      }
+    ]
+  },
+  "structure_summary": {
+    "mode": "structure_only",
+    "signature": "structure|critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer",
+    "selected_topology_signatures": [
+      "critique_revise|critic:verifier,generator:planner,reviser:summarizer|critic:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='strict', finalization='answer_only'),generator:PromptSlots(reasoning_mode='stepwise', upstream_usage='summary', output_style='raw', verification_mode='off', finalization='answer_only'),reviser:PromptSlots(reasoning_mode='direct', upstream_usage='summary', output_style='raw', verification_mode='light', finalization='answer_only')|planner>summarizer,planner>verifier,verifier>summarizer"
+    ],
+    "selected_topology_scores": [
+      0.7724903019571656
+    ],
+    "metrics": {
+      "coverage": 0.825,
+      "complementarity": 0.0,
+      "redundancy_quality": 0.4,
+      "structural_faithfulness": 0.9375,
+      "runtime_affordability": 1.0,
+      "topology_quality": 0.879,
+      "diversity_quality": 0.15200000000000002,
+      "deployability": 1.0,
+      "execution_probe": 0.9728171699286094,
+      "total_reward": 0.6786924188878636,
+      "metadata": {
+        "template_count": 1,
+        "task_node_count": 3,
+        "task_edge_count": 3,
+        "root_count": 1,
+        "sink_count": 1
+      }
+    },
+    "metadata": {
+      "templates": [
+        "critique_revise"
+      ],
+      "graph_count": 1,
+      "root_node_ids": [
+        "generator@planner"
+      ],
+      "sink_node_ids": [
+        "reviser@summarizer"
+      ],
+      "final_graph_mode": "best"
+    }
+  },
+  "metadata": {
+    "source": "live_stage1_search_cached"
+  }
+}

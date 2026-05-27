@@ -125,6 +125,7 @@ class RouterProxyServer:
     ) -> tuple[int, list[tuple[str, str]], bytes]:
         tried: set[str] = set()
         errors: list[str] = []
+        last_client_error: tuple[int, list[tuple[str, str]], bytes] | None = None
         backend_count = len(self.router.snapshot())
         for _ in range(max(1, backend_count)):
             try:
@@ -154,6 +155,12 @@ class RouterProxyServer:
                 status = int(exc.code)
                 response_headers = list(exc.headers.items())
                 response_body = exc.read()
+                if status == 400 and path.endswith("/v1/chat/completions"):
+                    self.router.finish_request(backend.name, success=False, error="http_400")
+                    detail = response_body.decode("utf-8", errors="replace").strip()
+                    errors.append(f"{backend.name}:http_400:{detail[:240]}")
+                    last_client_error = (status, response_headers, response_body)
+                    continue
                 if status >= 500:
                     self.router.finish_request(backend.name, success=False, error=f"http_{status}")
                     errors.append(f"{backend.name}:http_{status}")
@@ -164,6 +171,8 @@ class RouterProxyServer:
                 self.router.finish_request(backend.name, success=False, error=str(exc))
                 errors.append(f"{backend.name}:{exc}")
                 continue
+        if last_client_error is not None:
+            return last_client_error
         payload = {
             "error": "all_backends_failed",
             "details": errors[-8:],
